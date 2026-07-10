@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entities::*;
 use crate::patch::{PatchBatch, PatchOp};
+use crate::proposals::{Proposal, ProposalStatus};
 use crate::state::*;
 
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
@@ -47,7 +48,7 @@ impl Transaction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
     rename_all = "snake_case",
@@ -186,6 +187,24 @@ pub enum Command {
     RenamePlan {
         name: String,
     },
+    /// Store a solver-drafted proposal (Draft). Nothing else changes.
+    CreateProposal {
+        proposal: Proposal,
+    },
+    /// Check/uncheck a review row. Excluding cascades to dependents;
+    /// including requires (and pulls in) everything it depends on.
+    ToggleProposalItem {
+        proposal: Id,
+        item: Id,
+        included: bool,
+    },
+    SetProposalStatus {
+        id: Id,
+        status: ProposalStatus,
+    },
+    DeleteProposal {
+        id: Id,
+    },
 }
 
 impl Command {
@@ -220,6 +239,10 @@ impl Command {
             Command::ClaimNode { .. } => "claim node",
             Command::ReleaseNode { .. } => "release node",
             Command::RenamePlan { .. } => "rename plan",
+            Command::CreateProposal { .. } => "draft proposal",
+            Command::ToggleProposalItem { .. } => "toggle proposal item",
+            Command::SetProposalStatus { .. } => "set proposal status",
+            Command::DeleteProposal { .. } => "discard proposal",
         }
     }
 }
@@ -990,6 +1013,91 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 path: "/meta/name".into(),
                 value: serde_json::json!(old),
             });
+        }
+        Command::CreateProposal { proposal } => {
+            let mut p = proposal.clone();
+            if p.id.is_empty() {
+                p.id = new_id();
+            }
+            // Review stamps are monotonic per plan.
+            let max = state
+                .proposals
+                .values()
+                .map(|q| q.number)
+                .max()
+                .unwrap_or(0);
+            if p.number == 0 {
+                p.number = max + 1;
+            }
+            tx.created.push(p.id.clone());
+            tx.record(state.upsert(Entity::Proposal(p)));
+        }
+        Command::ToggleProposalItem {
+            proposal,
+            item,
+            included,
+        } => {
+            let mut p = state
+                .proposals
+                .get(proposal)
+                .cloned()
+                .ok_or(DomainError::NotFound {
+                    id: proposal.clone(),
+                })?;
+            if p.status == ProposalStatus::Accepted || p.status == ProposalStatus::Rejected {
+                return Err(DomainError::Invalid {
+                    message: "proposal is closed — re-solve to review again".into(),
+                });
+            }
+            if p.item(item).is_none() {
+                return Err(DomainError::NotFound { id: item.clone() });
+            }
+            // Cascade: excluding an item excludes everything depending on it
+            // (transitively); including pulls its dependencies back in.
+            let mut queue = vec![item.clone()];
+            while let Some(next) = queue.pop() {
+                let deps_of_next: Vec<Id> = if *included {
+                    p.item(&next)
+                        .map(|i| i.depends_on.clone())
+                        .unwrap_or_default()
+                } else {
+                    p.items
+                        .iter()
+                        .filter(|i| i.depends_on.contains(&next))
+                        .map(|i| i.id.clone())
+                        .collect()
+                };
+                if let Some(it) = p.items.iter_mut().find(|i| i.id == next) {
+                    if it.included != *included {
+                        it.included = *included;
+                        queue.extend(deps_of_next);
+                    } else if next == *item {
+                        queue.extend(deps_of_next);
+                    }
+                }
+            }
+            if p.status == ProposalStatus::Draft {
+                p.status = ProposalStatus::Reviewing;
+            }
+            tx.record(state.upsert(Entity::Proposal(p)));
+        }
+        Command::SetProposalStatus { id, status } => {
+            let mut p = state
+                .proposals
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            p.status = *status;
+            tx.record(state.upsert(Entity::Proposal(p)));
+        }
+        Command::DeleteProposal { id } => {
+            state
+                .proposals
+                .get(id)
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            if let Some(ops) = state.remove(COLL_PROPOSALS, id) {
+                tx.record(ops);
+            }
         }
     }
     Ok(tx)

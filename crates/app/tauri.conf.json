@@ -28,6 +28,9 @@
   },
   "bundle": {
     "active": false,
-    "targets": []
+    "targets": [],
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }

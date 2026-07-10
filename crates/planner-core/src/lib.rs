@@ -4,6 +4,7 @@
 pub mod commands;
 pub mod entities;
 pub mod patch;
+pub mod proposals;
 pub mod state;
 pub mod undo;
 

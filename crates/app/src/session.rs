@@ -8,6 +8,7 @@ use std::path::Path;
 use planner_core::commands::{self, Command, DomainError, Transaction};
 use planner_core::entities::*;
 use planner_core::patch::PatchBatch;
+use planner_core::proposals::{fnv1a, resolve_aliases, Proposal, ProposalItem, ProposalStatus};
 use planner_core::state::{Entity, PlanState};
 use planner_core::undo::UndoLog;
 
@@ -113,6 +114,26 @@ pub struct DerivedCircuit {
     pub demand_mw: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalCheck {
+    pub item: String,
+    pub requested: f64,
+    pub achieved: f64,
+}
+
+/// Live partial-accept consequence (mock 3a footer + amber strip).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalConsequence {
+    pub goal: Vec<GoalCheck>,
+    pub goal_met: bool,
+    pub delta_power_mw: f64,
+    pub delta_generation_mw: f64,
+    pub machines: u32,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Derived {
@@ -139,6 +160,8 @@ pub struct EditResponse {
     pub can_redo: bool,
     pub undo_label: Option<String>,
     pub created: Vec<Id>,
+    /// Plan-content hash (proposals excluded) — STALE badge comparator.
+    pub plan_hash: String,
 }
 
 pub struct Session {
@@ -207,6 +230,7 @@ impl Session {
                 "buildVersion": self.gamedata.build_version,
             },
             "world": self.world,
+            "planHash": self.plan_hash(),
             "canUndo": self.undo.can_undo(),
             "canRedo": self.undo.can_redo(),
             "undoLabel": self.undo.undo_label(),
@@ -257,6 +281,7 @@ impl Session {
             can_redo: self.undo.can_redo(),
             undo_label: self.undo.undo_label().map(String::from),
             created,
+            plan_hash: self.plan_hash(),
         })
     }
 
@@ -278,6 +303,199 @@ impl Session {
         Ok(Some(self.nav_response(batch)))
     }
 
+    /// Plan-content hash for proposal staleness — proposals themselves are
+    /// excluded, or drafting one would immediately mark it stale.
+    pub fn plan_hash(&self) -> String {
+        let mut projection = self.state.project();
+        if let Some(map) = projection.as_object_mut() {
+            map.remove("proposals");
+        }
+        fnv1a(projection.to_string().as_bytes())
+    }
+
+    /// Accept a proposal: materialize every included item's commands (aliases
+    /// resolved in dependency order) + flip the status, as ONE undo entry.
+    /// ◇ planned entities only — the built layer is never touched (mock 3c).
+    pub fn accept_proposal(&mut self, id: &str) -> Result<EditResponse, SessionError> {
+        let p = self
+            .state
+            .proposals
+            .get(id)
+            .cloned()
+            .ok_or_else(|| SessionError::Internal(format!("proposal {id} not found")))?;
+        if p.status == ProposalStatus::Accepted || p.status == ProposalStatus::Rejected {
+            return Err(SessionError::Internal("proposal is closed".into()));
+        }
+        let label = format!("accept proposal #{}", p.number);
+        let mut tx = Transaction::new(label);
+        let mut symbols: BTreeMap<String, Id> = BTreeMap::new();
+        let mut apply_all =
+            |state: &mut PlanState, tx: &mut Transaction| -> Result<(), SessionError> {
+                for item in ordered_included(&p) {
+                    for (idx, cmd) in item.commands.iter().enumerate() {
+                        let resolved =
+                            resolve_aliases(cmd, &symbols).map_err(SessionError::Internal)?;
+                        let t = commands::apply(state, &resolved)?;
+                        if let (Some(Some(alias)), Some(created)) =
+                            (item.aliases.get(idx), t.created.first())
+                        {
+                            symbols.insert(alias.clone(), created.clone());
+                        }
+                        tx.forward.extend(t.forward);
+                        tx.inverse.extend(t.inverse);
+                        tx.created.extend(t.created);
+                    }
+                }
+                let t = commands::apply(
+                    state,
+                    &Command::SetProposalStatus {
+                        id: id.to_string(),
+                        status: ProposalStatus::Accepted,
+                    },
+                )?;
+                tx.forward.extend(t.forward);
+                tx.inverse.extend(t.inverse);
+                Ok(())
+            };
+        if let Err(e) = apply_all(&mut self.state, &mut tx) {
+            let mut rollback = tx.inverse.clone();
+            rollback.reverse();
+            self.state
+                .apply_batch(&rollback)
+                .map_err(|m| SessionError::Internal(format!("rollback failed: {m}")))?;
+            return Err(e);
+        }
+        let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
+        let created = tx.created.clone();
+        let entry = self.undo.commit(tx);
+        self.file
+            .commit(&entry, &self.state.meta, self.undo.entries().len())?;
+        Ok(EditResponse {
+            patches: entry.forward,
+            derived,
+            can_undo: self.undo.can_undo(),
+            can_redo: self.undo.can_redo(),
+            undo_label: self.undo.undo_label().map(String::from),
+            created,
+            plan_hash: self.plan_hash(),
+        })
+    }
+
+    /// Live consequence of the CURRENT checkbox state (mock 3a partial
+    /// accept): apply included items to a scratch copy, solve, diff, discard.
+    pub fn eval_proposal(&mut self, id: &str) -> Result<ProposalConsequence, SessionError> {
+        let p = self
+            .state
+            .proposals
+            .get(id)
+            .cloned()
+            .ok_or_else(|| SessionError::Internal(format!("proposal {id} not found")))?;
+        let before = self.solve_all_readonly();
+        let saved = self.state.clone();
+        let mut symbols: BTreeMap<String, Id> = BTreeMap::new();
+        let mut warnings: Vec<String> = Vec::new();
+        let mut machines: u32 = 0;
+        'items: for item in ordered_included(&p) {
+            for (idx, cmd) in item.commands.iter().enumerate() {
+                let resolved = match resolve_aliases(cmd, &symbols) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warnings.push(format!("{} skipped: {e}", item.label));
+                        continue 'items;
+                    }
+                };
+                if let Command::AddGroup { count, .. } = &resolved {
+                    machines += count;
+                }
+                match commands::apply(&mut self.state, &resolved) {
+                    Ok(t) => {
+                        if let (Some(Some(alias)), Some(created)) =
+                            (item.aliases.get(idx), t.created.first())
+                        {
+                            symbols.insert(alias.clone(), created.clone());
+                        }
+                    }
+                    Err(e) => {
+                        warnings.push(format!("{}: {e}", item.label));
+                        continue 'items;
+                    }
+                }
+            }
+        }
+        let after = self.solve_all_readonly();
+        // goal check: production delta of each goal item across all out ports
+        let out_rate_of = |state: &PlanState, derived: &Derived, item: &str| -> f64 {
+            state
+                .ports
+                .values()
+                .filter(|port| port.direction == PortDirection::Out && port.item == item)
+                .filter_map(|port| {
+                    derived
+                        .factories
+                        .get(&port.factory)
+                        .and_then(|df| df.ports.get(&port.id))
+                })
+                .sum()
+        };
+        let goal: Vec<GoalCheck> = p
+            .goal
+            .iter()
+            .map(|(item, requested)| GoalCheck {
+                item: item.clone(),
+                requested: *requested,
+                achieved: out_rate_of(&self.state, &after, item)
+                    - out_rate_of(&saved, &before, item),
+            })
+            .collect();
+        // new deficits + circuits gone critical feed the amber warning strip
+        let before_keys: std::collections::BTreeSet<String> = before
+            .deficits
+            .iter()
+            .map(|d| format!("{}:{}", d.factory, d.item))
+            .collect();
+        for d in &after.deficits {
+            if !before_keys.contains(&format!("{}:{}", d.factory, d.item)) {
+                let name = self
+                    .state
+                    .factories
+                    .get(&d.factory)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| d.factory.clone());
+                warnings.push(format!(
+                    "{} starved of {} — {:.1}/min short",
+                    name,
+                    d.item,
+                    d.needed - d.supplied
+                ));
+            }
+        }
+        for c in &after.circuits {
+            let headroom = if c.generation_mw > 0.0 {
+                (c.generation_mw - c.demand_mw) / c.generation_mw
+            } else if c.demand_mw > 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            if headroom < 0.05 {
+                warnings.push(format!(
+                    "{} at {:.0}/{:.0} MW — margin critical",
+                    c.name, c.demand_mw, c.generation_mw
+                ));
+            }
+        }
+        let consequence = ProposalConsequence {
+            goal_met: goal.iter().all(|g| g.achieved >= g.requested - 1e-6),
+            goal,
+            delta_power_mw: after.total_power_mw - before.total_power_mw,
+            delta_generation_mw: after.total_generation_mw - before.total_generation_mw,
+            machines,
+            warnings,
+        };
+        self.state = saved;
+        Ok(consequence)
+    }
+
     pub fn set_view_state(&mut self, json: &str) -> Result<(), SessionError> {
         self.file.set_view_state(json)?;
         Ok(())
@@ -295,6 +513,7 @@ impl Session {
             can_redo: self.undo.can_redo(),
             undo_label: self.undo.undo_label().map(String::from),
             created: vec![],
+            plan_hash: self.plan_hash(),
         }
     }
 
@@ -836,6 +1055,38 @@ fn to_derived(r: &SolveResult, solve_on_release: bool) -> DerivedFactory {
         solve_on_release,
         solve_error: None,
     }
+}
+
+/// Included items in dependency order (deps first). Items whose dependencies
+/// are excluded are skipped — the toggle cascade should prevent that state,
+/// but accept must never guess.
+fn ordered_included(p: &Proposal) -> Vec<&ProposalItem> {
+    let mut out: Vec<&ProposalItem> = Vec::new();
+    let mut placed: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    loop {
+        let mut progressed = false;
+        for item in p.items.iter().filter(|i| i.included) {
+            if placed.contains(item.id.as_str()) {
+                continue;
+            }
+            let deps_ok = item.depends_on.iter().all(|d| {
+                placed.contains(d.as_str()) || p.item(d).map(|i| !i.included).unwrap_or(true)
+            });
+            let deps_included = item
+                .depends_on
+                .iter()
+                .all(|d| p.item(d).map(|i| i.included).unwrap_or(false) || p.item(d).is_none());
+            if deps_ok && deps_included {
+                placed.insert(item.id.as_str());
+                out.push(item);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    out
 }
 
 fn polyline_length(path: &[MapPos]) -> f64 {

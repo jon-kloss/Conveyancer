@@ -5,6 +5,8 @@
 
 use std::sync::Mutex;
 
+use app::jobs::{now_rfc3339, JobRegistry};
+use app::wizard::WizardGoal;
 use app::Session;
 use planner_core::commands::Command;
 use tiny_http::{Header, Method, Response, Server};
@@ -45,6 +47,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(8791);
 
     let session = Mutex::new(Session::open(&plan_path, docs, &build)?);
+    let jobs = JobRegistry::default();
     let server =
         Server::http(("127.0.0.1", port)).map_err(|e| anyhow::anyhow!("bind failed: {e}"))?;
     eprintln!("dev-bridge listening on http://127.0.0.1:{port} (plan: {plan_path})");
@@ -80,6 +83,61 @@ fn main() -> anyhow::Result<()> {
                     Ok(()) => ok(&serde_json::json!({ "ok": true })),
                     Err(e) => err(500, e),
                 },
+                // ---- wizard jobs (SDD §5.5): solve off-thread, poll the log ----
+                (Method::Post, "/api/wizard/solve") => {
+                    match serde_json::from_str::<WizardGoal>(&body) {
+                        Ok(goal) => {
+                            let id = jobs.start(
+                                s.state.clone(),
+                                s.gamedata.clone(),
+                                s.world.clone(),
+                                goal,
+                                s.plan_hash(),
+                                now_rfc3339(),
+                            );
+                            ok(&serde_json::json!({ "jobId": id }))
+                        }
+                        Err(e) => err(400, e),
+                    }
+                }
+                (Method::Post, "/api/wizard/progress") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let id = req["jobId"].as_str().unwrap_or_default();
+                    let after = req["after"].as_u64().unwrap_or(0) as usize;
+                    match jobs.progress(id, after) {
+                        Some(p) => ok(&p),
+                        None => err(404, "unknown job"),
+                    }
+                }
+                (Method::Post, "/api/wizard/cancel") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let id = req["jobId"].as_str().unwrap_or_default();
+                    ok(&serde_json::json!({ "cancelled": jobs.cancel(id) }))
+                }
+                (Method::Post, "/api/t2/optimize") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let fid = req["factory"].as_str().unwrap_or_default().to_string();
+                    let mut proposal = app::wizard::t2_optimize(&s.state, &s.gamedata, &fid);
+                    if let Some(p) = proposal.as_mut() {
+                        p.input_hash = s.plan_hash();
+                        p.snapshot_time = now_rfc3339();
+                    }
+                    ok(&serde_json::json!({ "proposal": proposal }))
+                }
+                (Method::Post, "/api/proposal/accept") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    match s.accept_proposal(req["id"].as_str().unwrap_or_default()) {
+                        Ok(resp) => ok(&resp),
+                        Err(e) => err(422, e),
+                    }
+                }
+                (Method::Post, "/api/proposal/eval") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    match s.eval_proposal(req["id"].as_str().unwrap_or_default()) {
+                        Ok(c) => ok(&c),
+                        Err(e) => err(422, e),
+                    }
+                }
                 _ => err(404, "not found"),
             }
         };

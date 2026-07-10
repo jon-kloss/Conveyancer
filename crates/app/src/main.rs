@@ -5,11 +5,14 @@
 
 use std::sync::Mutex;
 
-use app::session::{EditResponse, Session, SessionError};
+use app::jobs::{now_rfc3339, JobProgress, JobRegistry};
+use app::session::{EditResponse, ProposalConsequence, Session, SessionError};
+use app::wizard::WizardGoal;
 use planner_core::commands::Command;
 use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<Session>);
+struct Jobs(JobRegistry);
 
 #[tauri::command]
 fn hydrate(state: State<AppState>) -> serde_json::Value {
@@ -56,6 +59,59 @@ fn set_view_state(state: State<AppState>, json: String) -> Result<(), SessionErr
     state.0.lock().unwrap().set_view_state(&json)
 }
 
+#[tauri::command]
+fn wizard_solve(state: State<AppState>, jobs: State<Jobs>, goal: WizardGoal) -> String {
+    let s = state.0.lock().unwrap();
+    jobs.0.start(
+        s.state.clone(),
+        s.gamedata.clone(),
+        s.world.clone(),
+        goal,
+        s.plan_hash(),
+        now_rfc3339(),
+    )
+}
+
+#[tauri::command]
+fn wizard_progress(jobs: State<Jobs>, job_id: String, after: usize) -> Option<JobProgress> {
+    jobs.0.progress(&job_id, after)
+}
+
+#[tauri::command]
+fn wizard_cancel(jobs: State<Jobs>, job_id: String) -> bool {
+    jobs.0.cancel(&job_id)
+}
+
+#[tauri::command]
+fn t2_optimize(
+    state: State<AppState>,
+    factory: String,
+) -> Option<planner_core::proposals::Proposal> {
+    let s = state.0.lock().unwrap();
+    let mut p = app::wizard::t2_optimize(&s.state, &s.gamedata, &factory);
+    if let Some(pr) = p.as_mut() {
+        pr.input_hash = s.plan_hash();
+        pr.snapshot_time = now_rfc3339();
+    }
+    p
+}
+
+#[tauri::command]
+fn proposal_accept(
+    window: tauri::Window,
+    state: State<AppState>,
+    id: String,
+) -> Result<EditResponse, SessionError> {
+    let resp = state.0.lock().unwrap().accept_proposal(&id)?;
+    let _ = window.emit("state://patch", &resp);
+    Ok(resp)
+}
+
+#[tauri::command]
+fn proposal_eval(state: State<AppState>, id: String) -> Result<ProposalConsequence, SessionError> {
+    state.0.lock().unwrap().eval_proposal(&id)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -71,6 +127,7 @@ fn main() {
             let build = std::env::var("FICSIT_GAME_BUILD").unwrap_or_else(|_| "fixture".into());
             let session = Session::open(&plan_path, docs, &build).expect("session open");
             app.manage(AppState(Mutex::new(session)));
+            app.manage(Jobs(JobRegistry::default()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -78,7 +135,13 @@ fn main() {
             plan_edit,
             plan_undo,
             plan_redo,
-            set_view_state
+            set_view_state,
+            wizard_solve,
+            wizard_progress,
+            wizard_cancel,
+            t2_optimize,
+            proposal_accept,
+            proposal_eval
         ])
         .run(tauri::generate_context!())
         .expect("error while running FICSIT Planner");

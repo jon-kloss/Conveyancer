@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use crate::entities::*;
 use crate::patch::{PatchBatch, PatchOp};
+use crate::proposals::Proposal;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +40,8 @@ pub struct PlanState {
     pub routes: BTreeMap<Id, Route>,
     #[serde(default)]
     pub junctions: BTreeMap<Id, Junction>,
+    #[serde(default)]
+    pub proposals: BTreeMap<Id, Proposal>,
 }
 
 /// Collection names as they appear in patch paths and the projected store.
@@ -49,6 +52,7 @@ pub const COLL_EDGES: &str = "edges";
 pub const COLL_NODE_CLAIMS: &str = "nodeClaims";
 pub const COLL_ROUTES: &str = "routes";
 pub const COLL_JUNCTIONS: &str = "junctions";
+pub const COLL_PROPOSALS: &str = "proposals";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entity {
@@ -59,6 +63,7 @@ pub enum Entity {
     NodeClaim(NodeClaim),
     Route(Route),
     Junction(Junction),
+    Proposal(Proposal),
 }
 
 impl Entity {
@@ -71,6 +76,7 @@ impl Entity {
             Entity::NodeClaim(e) => &e.id,
             Entity::Route(e) => &e.id,
             Entity::Junction(e) => &e.id,
+            Entity::Proposal(e) => &e.id,
         }
     }
 
@@ -83,6 +89,7 @@ impl Entity {
             Entity::NodeClaim(_) => COLL_NODE_CLAIMS,
             Entity::Route(_) => COLL_ROUTES,
             Entity::Junction(_) => COLL_JUNCTIONS,
+            Entity::Proposal(_) => COLL_PROPOSALS,
         }
     }
 
@@ -95,6 +102,7 @@ impl Entity {
             Entity::NodeClaim(e) => serde_json::to_value(e).unwrap(),
             Entity::Route(e) => serde_json::to_value(e).unwrap(),
             Entity::Junction(e) => serde_json::to_value(e).unwrap(),
+            Entity::Proposal(e) => serde_json::to_value(e).unwrap(),
         }
     }
 
@@ -110,6 +118,7 @@ impl Entity {
             }
             COLL_ROUTES => Entity::Route(serde_json::from_value(value.clone()).map_err(err)?),
             COLL_JUNCTIONS => Entity::Junction(serde_json::from_value(value.clone()).map_err(err)?),
+            COLL_PROPOSALS => Entity::Proposal(serde_json::from_value(value.clone()).map_err(err)?),
             other => return Err(format!("unknown collection {other}")),
         })
     }
@@ -127,6 +136,7 @@ impl PlanState {
             COLL_NODE_CLAIMS: self.node_claims,
             COLL_ROUTES: self.routes,
             COLL_JUNCTIONS: self.junctions,
+            COLL_PROPOSALS: self.proposals,
         })
     }
 
@@ -139,6 +149,7 @@ impl PlanState {
             COLL_NODE_CLAIMS => self.node_claims.get(id).cloned().map(Entity::NodeClaim),
             COLL_ROUTES => self.routes.get(id).cloned().map(Entity::Route),
             COLL_JUNCTIONS => self.junctions.get(id).cloned().map(Entity::Junction),
+            COLL_PROPOSALS => self.proposals.get(id).cloned().map(Entity::Proposal),
             _ => None,
         }
     }
@@ -166,6 +177,9 @@ impl PlanState {
             Entity::Junction(v) => {
                 self.junctions.insert(v.id.clone(), v);
             }
+            Entity::Proposal(v) => {
+                self.proposals.insert(v.id.clone(), v);
+            }
         }
     }
 
@@ -191,6 +205,9 @@ impl PlanState {
             }
             COLL_JUNCTIONS => {
                 self.junctions.remove(id);
+            }
+            COLL_PROPOSALS => {
+                self.proposals.remove(id);
             }
             _ => {}
         }
