@@ -6,7 +6,7 @@ Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), 
 - v1: Community map tile set (3 zoom levels) once licensing is verified (SDD §7).
 - ~~v1: Inter-factory routes + empire recompute + audit drawer~~ — DONE (Phase 2).
 - ~~v1: Circuits, generator factories~~ — DONE (Phase 2); priority switches still open (needs persisted Circuit entities).
-- v1: Proposal system, global solver, wizard, T2 mini-proposals (Phase 3).
+- ~~v1: Proposal system, global solver, wizard, T2 mini-proposals~~ — DONE (Phase 3).
 - v1: Rail/truck/drone inspectors + save import (Phase 4, fixtures already in `fixtures/saves/`).
 - v1: AI layer — advisor gate, chat, proposal_intent, style guides (Phase 5).
 - v1.1: Batteries/storage in circuit math (`⚡ +BUFFER` slot reserved, A2.2).
@@ -24,3 +24,7 @@ Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), 
 - v1: Pipe head-lift math from route climb (z groundwork landed; needs pipes).
 - v1: Rail grade warnings from per-segment slope (z groundwork landed; needs Phase 4 rail).
 - v1.1: Elevation from a licensed heightmap (auto-fill pin z + climb along interior waypoints) — replaces planner-entered z.
+- v1.1: True cross-item MILP recipe selection (per-item scoring today; matters once alternates create trade-offs).
+- v1.1: Multi-site decomposition in the global solver (one integrated site per solve today); EXPAND-vs-GREENFIELD preference currently only expands generators.
+- v1.1: Proposal detail popover (BEFORE→AFTER table, mock 3b) + EDIT VALUES on items; D diff key.
+- v1.1: Unlock/progression model (milestones + hard drives) — alternates render locked until then.

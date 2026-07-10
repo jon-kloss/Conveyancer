@@ -36,6 +36,8 @@ export interface CanvasLayerData {
   /** power lines (pairs of factory positions) + grid chips at centroids */
   powerLines: { from: { x: number; y: number }; to: { x: number; y: number }; selected: boolean; id: string }[];
   circuitChips: { x: number; y: number; text: string; level: "ok" | "warn" | "crit" }[];
+  /** priority switches (A2.3): square pins on power lines + P/SHEDS chip */
+  switches: { id: string; x: number; y: number; priority: number; chip: string; selected: boolean }[];
   showPower: boolean;
   /** right-drag route ghost (blueprint-dashed until confirmed) */
   ghost: { from: { x: number; y: number }; to: { x: number; y: number } } | null;
@@ -271,6 +273,35 @@ export class MapCanvasLayer extends L.Layer {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    for (const sw of this.data.switches) {
+      const p = map.latLngToContainerPoint(toLatLng(sw));
+      // 18px square pin — square = infrastructure (A2.3 grammar)
+      ctx.fillStyle = css("--steel-800");
+      ctx.strokeStyle = sw.selected ? css("--signal-500") : css("--bp-400");
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]); // planned
+      ctx.fillRect(p.x - 9, p.y - 9, 18, 18);
+      ctx.strokeRect(p.x - 9, p.y - 9, 18, 18);
+      ctx.setLineDash([]);
+      ctx.font = `700 9px ${css("--font-mono")}`;
+      ctx.fillStyle = css("--ink-100");
+      ctx.textAlign = "center";
+      ctx.fillText(`P${sw.priority}`, p.x, p.y + 3);
+      ctx.textAlign = "left";
+      if (sw.chip) {
+        ctx.font = `500 9px ${css("--font-mono")}`;
+        const w = ctx.measureText(sw.chip).width + 10;
+        ctx.fillStyle = css("--steel-800");
+        ctx.strokeStyle = sw.selected ? css("--signal-500") : css("--steel-600");
+        ctx.lineWidth = 1;
+        ctx.fillRect(p.x - w / 2, p.y + 12, w, 15);
+        ctx.strokeRect(p.x - w / 2, p.y + 12, w, 15);
+        ctx.fillStyle = css("--ink-300");
+        ctx.textAlign = "center";
+        ctx.fillText(sw.chip, p.x, p.y + 23);
+        ctx.textAlign = "left";
+      }
+    }
     for (const c of this.data.circuitChips) {
       const p = map.latLngToContainerPoint(toLatLng(c));
       ctx.font = `700 10px ${css("--font-mono")}`;
@@ -287,6 +318,17 @@ export class MapCanvasLayer extends L.Layer {
       ctx.fillText(c.text, p.x, p.y + 4);
       ctx.textAlign = "left";
     }
+  }
+
+  /** Switch square under the pointer (checked before line hits). */
+  hitTestSwitch(point: L.Point): string | null {
+    const map = this.mapRef;
+    if (!map || !this.data.showPower) return null;
+    for (const sw of this.data.switches) {
+      const p = map.latLngToContainerPoint(toLatLng(sw));
+      if (Math.abs(point.x - p.x) <= 11 && Math.abs(point.y - p.y) <= 11) return sw.id;
+    }
+    return null;
   }
 
   /** Nearest power line within 8px. */

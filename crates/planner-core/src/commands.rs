@@ -205,6 +205,19 @@ pub enum Command {
     DeleteProposal {
         id: Id,
     },
+    /// Place a priority switch on a power line (A2.3). Priority 1–8;
+    /// higher numbers shed first.
+    AddPrioritySwitch {
+        route: Id,
+        priority: u8,
+    },
+    SetSwitchPriority {
+        id: Id,
+        priority: u8,
+    },
+    DeleteSwitch {
+        id: Id,
+    },
 }
 
 impl Command {
@@ -243,6 +256,9 @@ impl Command {
             Command::ToggleProposalItem { .. } => "toggle proposal item",
             Command::SetProposalStatus { .. } => "set proposal status",
             Command::DeleteProposal { .. } => "discard proposal",
+            Command::AddPrioritySwitch { .. } => "add priority switch",
+            Command::SetSwitchPriority { .. } => "set switch priority",
+            Command::DeleteSwitch { .. } => "delete switch",
         }
     }
 }
@@ -956,6 +972,18 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     }
                 }
             }
+            // switches riding this line go with it
+            let sw_ids: Vec<Id> = state
+                .switches
+                .values()
+                .filter(|s| &s.route == id)
+                .map(|s| s.id.clone())
+                .collect();
+            for sid in sw_ids {
+                if let Some(ops) = state.remove(COLL_SWITCHES, &sid) {
+                    tx.record(ops);
+                }
+            }
             if let Some(ops) = state.remove(COLL_ROUTES, id) {
                 tx.record(ops);
             }
@@ -1096,6 +1124,69 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             if let Some(ops) = state.remove(COLL_PROPOSALS, id) {
+                tx.record(ops);
+            }
+        }
+        Command::AddPrioritySwitch { route, priority } => {
+            let r = state
+                .routes
+                .get(route)
+                .ok_or(DomainError::NotFound { id: route.clone() })?;
+            if !matches!(r.kind, RouteKind::Power) {
+                return Err(DomainError::Invalid {
+                    message: "priority switches sit on power lines".into(),
+                });
+            }
+            if !(1..=8).contains(priority) {
+                return Err(DomainError::Invalid {
+                    message: format!("priority P{priority} outside P1–P8"),
+                });
+            }
+            // midpoint of the line — square pin grammar (A2.3)
+            let a = r.path.first().copied().unwrap_or(MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+            let b = r.path.last().copied().unwrap_or(a);
+            let sw = PrioritySwitch {
+                id: new_id(),
+                route: route.clone(),
+                priority: *priority,
+                position: MapPos {
+                    x: (a.x + b.x) / 2.0,
+                    y: (a.y + b.y) / 2.0,
+                    z: (a.z + b.z) / 2.0,
+                },
+                status: Status::Planned,
+                created_by: CreatedBy::Manual,
+            };
+            tx.created.push(sw.id.clone());
+            tx.record(state.upsert(Entity::Switch(sw)));
+        }
+        Command::SetSwitchPriority { id, priority } => {
+            let mut sw = state
+                .switches
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            if !(1..=8).contains(priority) {
+                return Err(DomainError::Invalid {
+                    message: format!("priority P{priority} outside P1–P8"),
+                });
+            }
+            require_planned(sw.status, id, "reprioritize")?;
+            sw.priority = *priority;
+            tx.record(state.upsert(Entity::Switch(sw)));
+        }
+        Command::DeleteSwitch { id } => {
+            let sw = state
+                .switches
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            require_planned(sw.status, id, "delete")?;
+            if let Some(ops) = state.remove(COLL_SWITCHES, id) {
                 tx.record(ops);
             }
         }

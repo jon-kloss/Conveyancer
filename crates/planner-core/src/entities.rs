@@ -253,6 +253,22 @@ pub enum RouteKind {
     Power,
 }
 
+/// Priority switch (A2.3): an 18px square map pin sitting ON a power line.
+/// Shedding order is highest priority number first (P8 before P1) — the audit
+/// POWER tab derives each switch's SHEDS AT threshold from it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrioritySwitch {
+    pub id: Id,
+    /// The power route this switch sits on.
+    pub route: Id,
+    /// 1–8; higher sheds first.
+    pub priority: u8,
+    pub position: MapPos,
+    pub status: Status,
+    pub created_by: CreatedBy,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Route {

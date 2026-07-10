@@ -13,6 +13,7 @@ export function applyPatches(plan: Plan, ops: PatchOp[]): Plan {
     routes: { ...plan.routes },
     junctions: { ...plan.junctions },
     proposals: { ...plan.proposals },
+    switches: { ...plan.switches },
     meta: { ...plan.meta },
   };
   for (const op of ops) {

@@ -106,6 +106,16 @@ export interface Route {
   createdBy: CreatedBy;
 }
 
+/** Priority switch (A2.3): square pin ON a power line; higher P sheds first. */
+export interface PrioritySwitch {
+  id: Id;
+  route: Id;
+  priority: number;
+  position: MapPos;
+  status: Status;
+  createdBy: CreatedBy;
+}
+
 export interface NodeClaim {
   id: Id;
   node: string;
@@ -132,6 +142,7 @@ export interface Plan {
   routes: Record<Id, Route>;
   junctions: Record<Id, Junction>;
   proposals: Record<Id, Proposal>;
+  switches: Record<Id, PrioritySwitch>;
 }
 
 // ---- gamedata ----
@@ -227,11 +238,22 @@ export interface DeficitRow {
   supplied: number;
 }
 
+export interface DerivedSwitch {
+  id: Id;
+  priority: number;
+  downstreamMw: number;
+  shedsAtMw: number;
+}
+
 export interface DerivedCircuit {
   name: string;
   members: Id[];
   generationMw: number;
   demandMw: number;
+  /** shed order first (P8 → P1) */
+  switches: DerivedSwitch[];
+  /** brownout sim: next group to shed, e.g. "P4 @ +12 MW growth" */
+  nextShed: string | null;
 }
 
 export interface Derived {
@@ -389,7 +411,10 @@ export type Command =
   | { type: "create_proposal"; proposal: Proposal }
   | { type: "toggle_proposal_item"; proposal: Id; item: Id; included: boolean }
   | { type: "set_proposal_status"; id: Id; status: ProposalStatus }
-  | { type: "delete_proposal"; id: Id };
+  | { type: "delete_proposal"; id: Id }
+  | { type: "add_priority_switch"; route: Id; priority: number }
+  | { type: "set_switch_priority"; id: Id; priority: number }
+  | { type: "delete_switch"; id: Id };
 
 export const BELT_CAPACITY = [60, 120, 270, 480, 780, 1200];
 export const beltCapacity = (tier: number) => BELT_CAPACITY[Math.min(6, Math.max(1, tier)) - 1];

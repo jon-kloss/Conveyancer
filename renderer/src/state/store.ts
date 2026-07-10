@@ -22,6 +22,7 @@ export type Selection =
   | { kind: "port"; id: Id }
   | { kind: "junction"; id: Id }
   | { kind: "route"; id: Id }
+  | { kind: "switch"; id: Id }
   | null;
 
 export type ViewMode = { mode: "map" } | { mode: "factory"; factoryId: Id };
@@ -36,6 +37,7 @@ const emptyPlan: Plan = {
   routes: {},
   junctions: {},
   proposals: {},
+  switches: {},
 };
 
 const emptyDerived: Derived = {
@@ -158,6 +160,7 @@ export const useStore = create<AppStore>((set, get) => ({
       if (plan.factories[id]) set({ selection: { kind: "factory", id } });
       else if (plan.groups[id]) set({ selection: { kind: "group", id } });
       else if (plan.junctions[id]) set({ selection: { kind: "junction", id } });
+      else if (plan.switches[id]) set({ selection: { kind: "switch", id } });
     }
     return resp.created;
   },

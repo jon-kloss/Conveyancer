@@ -208,6 +208,15 @@ function PowerLineDrawer({ route }: { route: Route }) {
       <footer className="drawer-footer">
         <button
           className="btn btn-ghost"
+          onClick={() =>
+            void dispatch([{ type: "add_priority_switch", route: route.id, priority: 4 }], { select: true })
+          }
+          data-testid="btn-add-switch"
+        >
+          + PRIORITY SWITCH
+        </button>
+        <button
+          className="btn btn-ghost"
           onClick={() => {
             setSelection(null);
             void dispatch([{ type: "delete_route", id: route.id }]);

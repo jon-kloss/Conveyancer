@@ -107,11 +107,26 @@ pub struct DeficitRow {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DerivedSwitch {
+    pub id: Id,
+    pub priority: u8,
+    /// Demand on the load side of the switch (what shedding drops).
+    pub downstream_mw: f64,
+    /// Total circuit demand at which this switch sheds (A2.3 SHEDS AT).
+    pub sheds_at_mw: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DerivedCircuit {
     pub name: String,
     pub members: Vec<Id>,
     pub generation_mw: f64,
     pub demand_mw: f64,
+    /// Priority switches on this grid, shed order first (P8 → P1).
+    pub switches: Vec<DerivedSwitch>,
+    /// Brownout sim: `P4 @ +0.4 GW growth` — the next group to shed.
+    pub next_shed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -976,11 +991,86 @@ impl Session {
                     .filter_map(|f| derived.factories.get(f))
                     .map(|df| df.total_power_mw)
                     .sum();
+                // A2.3 shedding: split the grid at each switch's line; the
+                // load side is the half with less generation. Shed order is
+                // P8 → P1; SHEDS AT accumulates earlier sheds.
+                let member_set: std::collections::BTreeSet<&Id> = members.iter().collect();
+                let circuit_routes: Vec<&Route> = self
+                    .state
+                    .routes
+                    .values()
+                    .filter(|r| {
+                        matches!(r.kind, RouteKind::Power) && member_set.contains(&r.endpoints.0)
+                    })
+                    .collect();
+                let demand_of = |fid: &Id| -> f64 {
+                    derived
+                        .factories
+                        .get(fid)
+                        .map(|df| df.total_power_mw)
+                        .unwrap_or(0.0)
+                };
+                let mut switches: Vec<DerivedSwitch> = Vec::new();
+                for sw in self.state.switches.values() {
+                    let Some(on) = circuit_routes.iter().find(|r| r.id == sw.route) else {
+                        continue;
+                    };
+                    // component containing endpoint B with the switch's line cut
+                    let mut side: std::collections::BTreeSet<Id> = Default::default();
+                    let mut stack = vec![on.endpoints.1.clone()];
+                    while let Some(f) = stack.pop() {
+                        if !side.insert(f.clone()) {
+                            continue;
+                        }
+                        for r in &circuit_routes {
+                            if r.id == sw.route {
+                                continue;
+                            }
+                            if r.endpoints.0 == f && !side.contains(&r.endpoints.1) {
+                                stack.push(r.endpoints.1.clone());
+                            } else if r.endpoints.1 == f && !side.contains(&r.endpoints.0) {
+                                stack.push(r.endpoints.0.clone());
+                            }
+                        }
+                    }
+                    let gen_b: f64 = side.iter().map(&gen_of).sum();
+                    let gen_a = generation_mw - gen_b;
+                    let downstream_mw = if gen_b <= gen_a {
+                        side.iter().map(&demand_of).sum()
+                    } else {
+                        members
+                            .iter()
+                            .filter(|m| !side.contains(*m))
+                            .map(&demand_of)
+                            .sum()
+                    };
+                    switches.push(DerivedSwitch {
+                        id: sw.id.clone(),
+                        priority: sw.priority,
+                        downstream_mw,
+                        sheds_at_mw: 0.0, // filled after the shed-order sort
+                    });
+                }
+                switches.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
+                let mut shed_acc = 0.0;
+                for sw in switches.iter_mut() {
+                    sw.sheds_at_mw = generation_mw + shed_acc;
+                    shed_acc += sw.downstream_mw;
+                }
+                let next_shed = switches.first().map(|sw| {
+                    format!(
+                        "P{} @ +{:.0} MW growth",
+                        sw.priority,
+                        (sw.sheds_at_mw - demand_mw).max(0.0)
+                    )
+                });
                 derived.circuits.push(DerivedCircuit {
                     name: format!("GRID {}", (b'A' + (i as u8 % 26)) as char),
                     members,
                     generation_mw,
                     demand_mw,
+                    switches,
+                    next_shed,
                 });
             }
             derived.total_generation_mw = self.state.factories.keys().map(gen_of).sum();

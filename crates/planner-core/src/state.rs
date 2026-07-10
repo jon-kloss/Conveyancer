@@ -42,6 +42,8 @@ pub struct PlanState {
     pub junctions: BTreeMap<Id, Junction>,
     #[serde(default)]
     pub proposals: BTreeMap<Id, Proposal>,
+    #[serde(default)]
+    pub switches: BTreeMap<Id, PrioritySwitch>,
 }
 
 /// Collection names as they appear in patch paths and the projected store.
@@ -53,6 +55,7 @@ pub const COLL_NODE_CLAIMS: &str = "nodeClaims";
 pub const COLL_ROUTES: &str = "routes";
 pub const COLL_JUNCTIONS: &str = "junctions";
 pub const COLL_PROPOSALS: &str = "proposals";
+pub const COLL_SWITCHES: &str = "switches";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entity {
@@ -64,6 +67,7 @@ pub enum Entity {
     Route(Route),
     Junction(Junction),
     Proposal(Proposal),
+    Switch(PrioritySwitch),
 }
 
 impl Entity {
@@ -77,6 +81,7 @@ impl Entity {
             Entity::Route(e) => &e.id,
             Entity::Junction(e) => &e.id,
             Entity::Proposal(e) => &e.id,
+            Entity::Switch(e) => &e.id,
         }
     }
 
@@ -90,6 +95,7 @@ impl Entity {
             Entity::Route(_) => COLL_ROUTES,
             Entity::Junction(_) => COLL_JUNCTIONS,
             Entity::Proposal(_) => COLL_PROPOSALS,
+            Entity::Switch(_) => COLL_SWITCHES,
         }
     }
 
@@ -103,6 +109,7 @@ impl Entity {
             Entity::Route(e) => serde_json::to_value(e).unwrap(),
             Entity::Junction(e) => serde_json::to_value(e).unwrap(),
             Entity::Proposal(e) => serde_json::to_value(e).unwrap(),
+            Entity::Switch(e) => serde_json::to_value(e).unwrap(),
         }
     }
 
@@ -119,6 +126,7 @@ impl Entity {
             COLL_ROUTES => Entity::Route(serde_json::from_value(value.clone()).map_err(err)?),
             COLL_JUNCTIONS => Entity::Junction(serde_json::from_value(value.clone()).map_err(err)?),
             COLL_PROPOSALS => Entity::Proposal(serde_json::from_value(value.clone()).map_err(err)?),
+            COLL_SWITCHES => Entity::Switch(serde_json::from_value(value.clone()).map_err(err)?),
             other => return Err(format!("unknown collection {other}")),
         })
     }
@@ -137,6 +145,7 @@ impl PlanState {
             COLL_ROUTES: self.routes,
             COLL_JUNCTIONS: self.junctions,
             COLL_PROPOSALS: self.proposals,
+            COLL_SWITCHES: self.switches,
         })
     }
 
@@ -150,6 +159,7 @@ impl PlanState {
             COLL_ROUTES => self.routes.get(id).cloned().map(Entity::Route),
             COLL_JUNCTIONS => self.junctions.get(id).cloned().map(Entity::Junction),
             COLL_PROPOSALS => self.proposals.get(id).cloned().map(Entity::Proposal),
+            COLL_SWITCHES => self.switches.get(id).cloned().map(Entity::Switch),
             _ => None,
         }
     }
@@ -180,6 +190,9 @@ impl PlanState {
             Entity::Proposal(v) => {
                 self.proposals.insert(v.id.clone(), v);
             }
+            Entity::Switch(v) => {
+                self.switches.insert(v.id.clone(), v);
+            }
         }
     }
 
@@ -208,6 +221,9 @@ impl PlanState {
             }
             COLL_PROPOSALS => {
                 self.proposals.remove(id);
+            }
+            COLL_SWITCHES => {
+                self.switches.remove(id);
             }
             _ => {}
         }

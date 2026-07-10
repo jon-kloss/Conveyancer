@@ -1027,3 +1027,171 @@ fn elevation_flows_into_route_length_and_climb() {
     let dr = &resp.derived.routes[&route];
     assert!((dr.length_m - 500.0).abs() < 1e-6, "undo: {}", dr.length_m);
 }
+
+#[test]
+fn priority_switches_derive_shed_thresholds() {
+    let mut s = Session::in_memory(None).unwrap();
+    // three factories on one grid: 150 MW plant + two consumers
+    let mk = |s: &mut Session, name: &str, x: f64| -> Id {
+        s.edit(vec![Command::CreateFactory {
+            name: name.into(),
+            position: MapPos { x, y: 0.0, z: 0.0 },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+            .clone()
+    };
+    let plant = mk(&mut s, "PLANT", 0.0);
+    let a = mk(&mut s, "LOAD A", 500.0);
+    let b = mk(&mut s, "LOAD B", 1000.0);
+    // give the loads real draw: constructor banks idling at a target
+    for fid in [&a, &b] {
+        let in_p = s
+            .edit(vec![Command::AddPort {
+                factory: fid.clone(),
+                direction: PortDirection::In,
+                item: "Desc_IronIngot_C".into(),
+                rate: 0.0,
+                rate_ceiling: Some(120.0),
+                graph_pos: gp(0.0, 100.0),
+            }])
+            .unwrap()
+            .created[0]
+            .clone();
+        let out_p = s
+            .edit(vec![Command::AddPort {
+                factory: fid.clone(),
+                direction: PortDirection::Out,
+                item: "Desc_IronRod_C".into(),
+                rate: 0.0,
+                rate_ceiling: None,
+                graph_pos: gp(600.0, 100.0),
+            }])
+            .unwrap()
+            .created[0]
+            .clone();
+        let g = add_group(
+            &mut s,
+            fid,
+            "Build_ConstructorMk1_C",
+            "Recipe_IronRod_C",
+            gp(300.0, 100.0),
+        );
+        connect(
+            &mut s,
+            fid,
+            EdgeEnd::Port(in_p),
+            EdgeEnd::Group(g.clone()),
+            "Desc_IronIngot_C",
+            2,
+        );
+        connect(
+            &mut s,
+            fid,
+            EdgeEnd::Group(g),
+            EdgeEnd::Port(out_p.clone()),
+            "Desc_IronRod_C",
+            2,
+        );
+        s.edit(vec![Command::SetPortRate {
+            id: out_p,
+            rate: 15.0,
+        }])
+        .unwrap();
+    }
+    // plant → A → B power lines
+    let line_a = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Power,
+            from: plant.clone(),
+            to: a.clone(),
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 500.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let line_b = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Power,
+            from: a.clone(),
+            to: b.clone(),
+            path: vec![
+                MapPos {
+                    x: 500.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 1000.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+
+    // switches: P3 on the A line, P8 on the far B line (sheds first)
+    let sw_a = s
+        .edit(vec![Command::AddPrioritySwitch {
+            route: line_a.clone(),
+            priority: 3,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let resp = s
+        .edit(vec![Command::AddPrioritySwitch {
+            route: line_b,
+            priority: 8,
+        }])
+        .unwrap();
+
+    let grid = &resp.derived.circuits[0];
+    assert_eq!(grid.members.len(), 3);
+    assert_eq!(grid.switches.len(), 2, "both switches derive");
+    // shed order: P8 first at demand == generation, P3 after shedding B's load
+    assert_eq!(grid.switches[0].priority, 8);
+    assert!((grid.switches[0].sheds_at_mw - grid.generation_mw).abs() < 1e-6);
+    assert_eq!(grid.switches[1].priority, 3);
+    assert!(
+        (grid.switches[1].sheds_at_mw - (grid.generation_mw + grid.switches[0].downstream_mw))
+            .abs()
+            < 1e-6
+    );
+    // the P8 switch's load side is LOAD B only; P3 cuts A+B off the plant
+    assert!(grid.switches[0].downstream_mw > 0.0);
+    assert!(grid.switches[1].downstream_mw >= grid.switches[0].downstream_mw);
+    assert!(grid.next_shed.as_deref().unwrap_or("").starts_with("P8"));
+
+    // priority is editable and validated; deleting the line removes the switch
+    assert!(s
+        .edit(vec![Command::SetSwitchPriority {
+            id: sw_a.clone(),
+            priority: 9
+        }])
+        .is_err());
+    s.edit(vec![Command::SetSwitchPriority {
+        id: sw_a.clone(),
+        priority: 1,
+    }])
+    .unwrap();
+    let resp = s.edit(vec![Command::DeleteRoute { id: line_a }]).unwrap();
+    assert!(!s.state.switches.contains_key(&sw_a), "cascade delete");
+    // plant's line gone: it leaves the grid; A—B remain one circuit
+    assert_eq!(resp.derived.circuits.len(), 1);
+    assert_eq!(resp.derived.circuits[0].members.len(), 2);
+}

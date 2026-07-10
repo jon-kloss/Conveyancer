@@ -289,6 +289,65 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
                 </span>
               </div>
             ))}
+            {circuitRows.map(
+              (c) =>
+                c.switches.length > 0 && (
+                  <div key={`${c.name}-shed`}>
+                    <div className="audit-row" data-testid="brownout-row">
+                      <span className="audit-name" style={{ color: "var(--ink-500)" }}>
+                        {c.name} · BROWNOUT SIM — next shed: {c.nextShed}
+                      </span>
+                      <span className="mono audit-tier">SIM</span>
+                      <span className="mono audit-load" />
+                      <span className="audit-bar" />
+                      <span className="mono audit-proj" />
+                      <span className="mono audit-trend">—</span>
+                      <span className="audit-actions">
+                        <button
+                          className="chip"
+                          onClick={() => {
+                            const first = c.switches[0];
+                            if (first) {
+                              setView({ mode: "map" });
+                              setSelection({ kind: "switch", id: first.id });
+                            }
+                          }}
+                        >
+                          TRACE
+                        </button>
+                      </span>
+                    </div>
+                    {c.switches.map((sw) => (
+                      <div className="audit-row" key={sw.id} data-testid="switch-row">
+                        <span className="audit-name">
+                          {c.name} switch · sheds {fmtPower(sw.downstreamMw)}
+                        </span>
+                        <span className="mono audit-tier">PRIORITY P{sw.priority}</span>
+                        <span className="mono audit-load">{fmtPower(sw.shedsAtMw)}</span>
+                        <span className="audit-bar">
+                          <span
+                            className={c.demandMw >= sw.shedsAtMw ? "crit" : ""}
+                            style={{ width: `${Math.min(100, (c.demandMw / Math.max(1, sw.shedsAtMw)) * 100)}%` }}
+                          />
+                        </span>
+                        <span className="mono audit-proj projected">SHEDS AT {fmtPower(sw.shedsAtMw)}</span>
+                        <span className="mono audit-trend">—</span>
+                        <span className="audit-actions">
+                          <button
+                            className="chip"
+                            onClick={() => {
+                              setView({ mode: "map" });
+                              setSelection({ kind: "switch", id: sw.id });
+                            }}
+                          >
+                            TRACE
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ),
+            )}
             {powerRows.map((r) => (
               <div className="audit-row" key={r.fid}>
                 <span className="audit-name">{r.name}</span>

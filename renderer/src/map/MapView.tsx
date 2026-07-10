@@ -14,6 +14,7 @@ import type { WorldNode } from "../state/types";
 import SummaryDrawer from "./SummaryDrawer";
 import NodeDrawer from "./NodeDrawer";
 import RouteDrawer from "./RouteDrawer";
+import SwitchDrawer from "./SwitchDrawer";
 import RoutePopover from "./RoutePopover";
 import Legend from "./Legend";
 import SearchBox from "./SearchBox";
@@ -122,6 +123,7 @@ export default function MapView() {
       showRoutes: true,
       powerLines: [],
       circuitChips: [],
+      switches: [],
       showPower: true,
       ghost: null,
       review: null,
@@ -175,6 +177,17 @@ export default function MapView() {
         to: plan.factories[r.endpoints[1]]?.position ?? r.path[r.path.length - 1] ?? { x: 0, y: 0 },
         selected: selection?.kind === "route" && selection.id === r.id,
       }));
+    const shedBySwitch: Record<string, number> = {};
+    for (const c of derived.circuits) for (const sw of c.switches) shedBySwitch[sw.id] = sw.shedsAtMw;
+    const switches = Object.values(plan.switches).map((sw) => ({
+      id: sw.id,
+      x: sw.position.x,
+      y: sw.position.y,
+      priority: sw.priority,
+      chip:
+        shedBySwitch[sw.id] != null ? `P${sw.priority} · SHEDS AT ${fmtPower(shedBySwitch[sw.id])}` : `P${sw.priority}`,
+      selected: selection?.kind === "switch" && selection.id === sw.id,
+    }));
     const circuitChips = derived.circuits
       .map((c) => {
         const pts = c.members.map((m) => plan.factories[m]?.position).filter((p): p is { x: number; y: number } => !!p);
@@ -228,6 +241,7 @@ export default function MapView() {
       showRoutes: overlays.flows,
       powerLines,
       circuitChips,
+      switches,
       showPower: overlays.power,
       ghost: src && routeDraft ? { from: src.position, to: routeDraft.cursor } : null,
       review,
@@ -245,9 +259,10 @@ export default function MapView() {
       }
       const pt = map.latLngToContainerPoint(e.latlng);
       const hit = layerRef.current?.hitTest(pt) ?? null;
-      const routeHit = hit ? null : layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
+      const switchHit = hit ? null : layerRef.current?.hitTestSwitch(pt);
+      const routeHit = hit || switchHit ? null : layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
       setHoveredNode(hit);
-      map.getContainer().style.cursor = placing ? "crosshair" : hit || routeHit ? "pointer" : "";
+      map.getContainer().style.cursor = placing ? "crosshair" : hit || switchHit || routeHit ? "pointer" : "";
     };
     const onClick = (e: L.LeafletMouseEvent) => {
       if (placing) {
@@ -269,6 +284,11 @@ export default function MapView() {
       const hit = layerRef.current?.hitTest(pt);
       if (hit) {
         setSelection({ kind: "node", id: hit.id });
+        return;
+      }
+      const switchHit = layerRef.current?.hitTestSwitch(pt);
+      if (switchHit) {
+        setSelection({ kind: "switch", id: switchHit });
         return;
       }
       const routeHit = layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
@@ -450,6 +470,9 @@ export default function MapView() {
       {selectedNode && <NodeDrawer node={selectedNode} />}
       {selection?.kind === "route" && plan.routes[selection.id] && (
         <RouteDrawer route={plan.routes[selection.id]} />
+      )}
+      {selection?.kind === "switch" && plan.switches[selection.id] && (
+        <SwitchDrawer sw={plan.switches[selection.id]} />
       )}
       {routePopover && (
         <RoutePopover
