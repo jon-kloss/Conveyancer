@@ -179,6 +179,80 @@
 .belt-lift {
   font-weight: 700;
 }
+.lift-pad {
+  fill: var(--steel-800);
+  stroke: var(--ink-500);
+  stroke-width: 1.5;
+}
+.lift-portal {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  pointer-events: all;
+  cursor: pointer;
+  background: none;
+  padding: 2px;
+}
+.lift-portal-pin {
+  /* square = infrastructure (A2.3 grammar); diamond = factory */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: var(--steel-800);
+  border: 1.5px dashed var(--ink-500);
+  border-radius: 2px;
+  box-shadow: 0 0 0 3px rgba(13, 16, 19, 0.85);
+  font-size: 11px;
+  color: var(--ink-100);
+  line-height: 1;
+}
+.lift-portal:hover .lift-portal-pin {
+  border-color: var(--signal-400);
+  color: var(--signal-400);
+}
+.lift-portal.selected .lift-portal-pin {
+  border-color: var(--signal-500);
+}
+.lift-portal-chip {
+  padding: 1px 5px;
+  background: var(--steel-950);
+  border: 1px solid var(--steel-600);
+  border-radius: 2px;
+  font-size: 9px;
+  color: var(--ink-300);
+  white-space: nowrap;
+  box-shadow: 0 0 0 3px rgba(13, 16, 19, 0.75);
+}
+
+/* ---- floor plates ---- */
+.floor-plate {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  background: rgba(28, 32, 36, 0.38);
+  border: 1px dashed var(--steel-600);
+  border-radius: var(--radius);
+  transition: opacity var(--dur-hover) var(--ease);
+}
+.floor-plate.inactive {
+  opacity: 0.25;
+}
+.floor-plate-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 10px;
+}
+.floor-plate-label .t-label {
+  color: var(--ink-300);
+}
+.floor-plate-meta {
+  font-size: 9px;
+  color: var(--ink-faint);
+}
 .belt-label.dimmed {
   opacity: 0.25;
 }

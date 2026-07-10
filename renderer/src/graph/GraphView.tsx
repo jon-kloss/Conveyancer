@@ -29,6 +29,7 @@ import AddGroupMenu from "./AddGroupMenu";
 import AddPortMenu from "./AddPortMenu";
 import { fmtPower } from "../lib/format";
 import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
+import FloorPlates from "./FloorPlates";
 import { fmtRate, fmtPercent } from "../lib/format";
 import { beltCapacity } from "../state/types";
 import "./graph.css";
@@ -65,6 +66,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     (id: string): number => useStore.getState().plan.groups[id]?.floor ?? 0,
     [],
   );
+  const jumpFloor = useCallback(
+    (floor: number, edgeId: string) => {
+      setFloorFilter(floor);
+      setSelection({ kind: "edge", id: edgeId });
+    },
+    [setSelection],
+  );
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; flowX: number; flowY: number } | null>(null);
   const [portMenu, setPortMenu] = useState<"in" | "out" | null>(null);
 
@@ -87,7 +95,8 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         position: { x: g.graphPos.x, y: g.graphPos.y },
         data: { group: g, factoryId, showFloorBadge: floors.length > 1 } satisfies GroupNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "group" && selection.id === gid,
-        style: dimmed ? { opacity: 0.22 } : undefined,
+        // ghosts of other floors: visible context, but never interactive
+        style: dimmed ? { opacity: 0.22, pointerEvents: "none" as const } : undefined,
       });
     }
     for (const pid of factory.ports) {
@@ -160,12 +169,44 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       beltEdges.map((e) => ({ id: e.id, source: e.from.id, target: e.to.id })),
       labelSizes,
     );
+    // Portal stubs: on a filtered floor, a cross-floor belt runs from its
+    // on-floor card to a lift portal instead of dimming into noise. Stubs on
+    // the same card face fan out so several lifts stay distinct.
+    const portalCounts = new Map<string, number>();
     return beltEdges.map((e) => {
       const d = df?.edges[e.id];
       const srcFloor = e.from.kind === "group" ? groupFloor(e.from.id) : 0;
       const dstFloor = e.to.kind === "group" ? groupFloor(e.to.id) : 0;
       const lift = srcFloor !== dstFloor;
-      const dimmed = floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter;
+      let dimmed = floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter;
+      let geom = layout[e.id] ?? null;
+      let portal: { x: number; y: number; dir: "up" | "down"; otherFloor: number } | null = null;
+      if (floorFilter !== "all" && lift) {
+        const srcOn = srcFloor === floorFilter;
+        const dstOn = dstFloor === floorFilter;
+        if (srcOn !== dstOn) {
+          const anchorNode = geoms[srcOn ? e.from.id : e.to.id];
+          if (anchorNode) {
+            const key = `${srcOn ? e.from.id : e.to.id}:${srcOn ? "out" : "in"}`;
+            const idx = portalCounts.get(key) ?? 0;
+            portalCounts.set(key, idx + 1);
+            const y = anchorNode.y + anchorNode.h / 2 + (idx % 2 === 0 ? 1 : -1) * Math.ceil(idx / 2) * 26;
+            const fromX = srcOn ? anchorNode.x + anchorNode.w : anchorNode.x;
+            const toX = srcOn ? fromX + 72 : fromX - 72;
+            const otherFloor = srcOn ? dstFloor : srcFloor;
+            portal = { x: toX, y, dir: otherFloor > floorFilter ? "up" : "down", otherFloor };
+            geom = {
+              points: [],
+              hops: [],
+              path: `M ${fromX} ${y} L ${toX} ${y}`,
+              labelX: toX,
+              labelY: y,
+              pathLen: 72,
+            };
+            dimmed = false;
+          }
+        }
+      }
       return {
         id: e.id,
         source: e.from.id,
@@ -179,13 +220,36 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           projected: isProjected || e.status === "planned",
           flowOverlay,
           settled: settled.has(`/edges/${e.id}`),
-          geom: layout[e.id] ?? null,
+          geom,
           lift,
+          srcFloor,
+          dstFloor,
+          portal,
+          onJumpFloor: jumpFloor,
           dimmed,
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
-  }, [factory, plan.edges, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor]);
+  }, [factory, plan.edges, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor]);
+
+  // Card geometry for the floor plates (same source as the edge layout).
+  const plateGeoms = useMemo(() => {
+    const out: Record<string, NodeGeom> = {};
+    for (const n of nodes) {
+      if (n.type !== "group") continue;
+      const m = (n as { measured?: { width?: number; height?: number } }).measured;
+      out[n.id] = { x: n.position.x, y: n.position.y, w: m?.width ?? 248, h: m?.height ?? 150 };
+    }
+    return out;
+  }, [nodes]);
+  const factoryGroups = useMemo(
+    () => (factory ? factory.groups.map((gid) => plan.groups[gid]).filter(Boolean) : []),
+    [factory, plan.groups],
+  );
+  const factoryEdges = useMemo(
+    () => Object.values(plan.edges).filter((e) => e.factory === factoryId),
+    [plan.edges, factoryId],
+  );
 
   const onConnect = useCallback(
     (conn: Connection) => {
@@ -336,6 +400,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           deleteKeyCode={null}
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1.5} color="var(--graph-dot)" />
+          <FloorPlates groups={factoryGroups} edges={factoryEdges} geoms={plateGeoms} activeFloor={floorFilter} />
           <MiniMap
             position="bottom-left"
             className="graph-minimap"
