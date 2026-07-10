@@ -255,6 +255,12 @@
   color: var(--ink-300);
   pointer-events: all;
   white-space: nowrap;
+  /* a whisper of halo so chips stay legible wherever they had to dodge to */
+  box-shadow: 0 0 0 3px rgba(13, 16, 19, 0.75);
+}
+.belt-label.compact {
+  padding: 0 4px;
+  font-size: 9px;
 }
 .belt-label.crit {
   background: var(--flow-crit);

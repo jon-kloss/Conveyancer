@@ -28,7 +28,9 @@ import RecipeStrip from "./RecipeStrip";
 import AddGroupMenu from "./AddGroupMenu";
 import AddPortMenu from "./AddPortMenu";
 import { fmtPower } from "../lib/format";
-import { computeEdgeLayout, type NodeGeom } from "./edgeLayout";
+import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
+import { fmtRate, fmtPercent } from "../lib/format";
+import { beltCapacity } from "../state/types";
 import "./graph.css";
 
 const nodeTypes = { group: MachineGroupNode, boundaryPort: BoundaryPortNode };
@@ -146,9 +148,17 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         h: m?.height ?? (n.type === "group" ? 150 : 96),
       };
     }
+    // Chip footprint from the real text (mono ≈ 6.4px/char at 10px + padding).
+    const labelSizes: Record<string, LabelSize> = {};
+    for (const e of beltEdges) {
+      const d = df?.edges[e.id];
+      const text = `${fmtRate(d?.flow ?? 0)}/${fmtRate(beltCapacity(e.tier))} · ${fmtPercent(d?.saturation ?? 0)} MK.${e.tier}`;
+      labelSizes[e.id] = { w: text.length * 6.4 + 16, h: 20 };
+    }
     const layout = computeEdgeLayout(
       geoms,
       beltEdges.map((e) => ({ id: e.id, source: e.from.id, target: e.to.id })),
+      labelSizes,
     );
     return beltEdges.map((e) => {
       const d = df?.edges[e.id];

@@ -35,6 +35,13 @@ export interface EdgeGeom {
   path: string;
   labelX: number;
   labelY: number;
+  /** total polyline length — short belts render compact labels */
+  pathLen: number;
+}
+
+export interface LabelSize {
+  w: number;
+  h: number;
 }
 
 const STUB = 24; // straight run leaving/entering a card
@@ -196,27 +203,68 @@ function buildPath(points: Pt[], hops: Hop[]): string {
   return d;
 }
 
-function labelPoint(points: Pt[]): Pt {
-  // Prefer the longest horizontal run — chips read along the belt and stay
-  // clear of card faces; fall back to the longest segment of any kind.
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function pathLength(points: Pt[]): number {
+  let len = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    len += Math.abs(points[i + 1].x - points[i].x) + Math.abs(points[i + 1].y - points[i].y);
+  }
+  return len;
+}
+
+/** Collision-aware chip placement: try several spots along the belt (preferring
+ *  long horizontal runs), rejecting any that overlap a card or an already
+ *  placed chip. Chips are the always-present data channel (mock 1e) — they must
+ *  stay readable when machines crowd together. */
+function placeLabel(points: Pt[], size: LabelSize, obstacles: Rect[], placed: Rect[]): Pt {
   const segs = segments(points);
-  let best: Seg | null = null;
-  let bestLen = 0;
-  for (const s of segs) {
-    const len = Math.abs(s.b.x - s.a.x) + Math.abs(s.b.y - s.a.y);
-    const weighted = s.horizontal ? len * 2 : len;
-    if (weighted > bestLen) {
-      bestLen = weighted;
-      best = s;
+  const ranked = segs
+    .map((seg) => ({ seg, len: Math.abs(seg.b.x - seg.a.x) + Math.abs(seg.b.y - seg.a.y) }))
+    .sort((a, b) => (Number(b.seg.horizontal) - Number(a.seg.horizontal)) * 1000 + (b.len - a.len));
+
+  const candidates: Pt[] = [];
+  for (const { seg } of ranked) {
+    for (const t of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+      candidates.push({ x: seg.a.x + (seg.b.x - seg.a.x) * t, y: seg.a.y + (seg.b.y - seg.a.y) * t });
     }
   }
-  const b = best ?? segs[0];
-  return { x: (b.a.x + b.b.x) / 2, y: (b.a.y + b.b.y) / 2 };
+
+  const rectFor = (c: Pt): Rect => ({ x: c.x - size.w / 2, y: c.y - size.h / 2, w: size.w, h: size.h });
+  let fallback = candidates[0] ?? points[0];
+  let fallbackScore = Infinity;
+  for (const c of candidates) {
+    const r = rectFor(c);
+    const hitsCard = obstacles.some((o) => overlaps(r, o));
+    const hitsChip = placed.some((o) => overlaps(r, o));
+    if (!hitsCard && !hitsChip) {
+      placed.push(r);
+      return c;
+    }
+    // score fallbacks: card overlap is worse than chip overlap
+    const score = (hitsCard ? 2 : 0) + (hitsChip ? 1 : 0);
+    if (score < fallbackScore) {
+      fallbackScore = score;
+      fallback = c;
+    }
+  }
+  placed.push(rectFor(fallback));
+  return fallback;
 }
 
 export function computeEdgeLayout(
   nodes: Record<string, NodeGeom>,
   edges: EdgeIn[],
+  labelSizes: Record<string, LabelSize> = {},
 ): Record<string, EdgeGeom> {
   const usable = edges.filter((e) => nodes[e.source] && nodes[e.target]);
   const { src, dst } = anchorPositions(nodes, usable);
@@ -225,15 +273,34 @@ export function computeEdgeLayout(
     points: dedupe(route(src[e.id], dst[e.id], nodes[e.source], nodes[e.target])),
   }));
   const hops = findHops(polylines);
+
+  // Cards (slightly inflated) are obstacles; chips also avoid one another.
+  const obstacles: Rect[] = Object.values(nodes).map((n) => ({
+    x: n.x - 4,
+    y: n.y - 4,
+    w: n.w + 8,
+    h: n.h + 8,
+  }));
+  const placed: Rect[] = [];
+
+  // Place labels for the longest belts first — short belts have fewer options
+  // and will dodge around the chips that matter most.
+  const byLen = [...polylines].sort((a, b) => pathLength(b.points) - pathLength(a.points));
+  const labels: Record<string, Pt> = {};
+  for (const p of byLen) {
+    const size = labelSizes[p.id] ?? { w: 120, h: 20 };
+    labels[p.id] = placeLabel(p.points, size, obstacles, placed);
+  }
+
   const out: Record<string, EdgeGeom> = {};
   for (const p of polylines) {
-    const label = labelPoint(p.points);
     out[p.id] = {
       points: p.points,
       hops: hops[p.id] ?? [],
       path: buildPath(p.points, hops[p.id] ?? []),
-      labelX: label.x,
-      labelY: label.y,
+      labelX: labels[p.id].x,
+      labelY: labels[p.id].y,
+      pathLen: pathLength(p.points),
     };
   }
   return out;

@@ -53,6 +53,11 @@ export default function BeltEdgeView(props: EdgeProps) {
   const capacity = beltCapacity(data.edge.tier);
   const s = data.flowOverlay ? STROKE[level] : { width: 2, dash: undefined, color: "var(--steel-500)" };
   const isCrit = data.flowOverlay && level === "crit";
+  // Very short belts can't carry the full chip — compact to the saturation %
+  // (the load signal), full detail on hover and in the inspector. CRIT belts
+  // always show the full chip: the alarm outranks tidiness.
+  const compact = !isCrit && !props.selected && (data.geom?.pathLen ?? Infinity) < 150;
+  const fullText = `${fmtRate(data.flow)}/${fmtRate(capacity)} · ${fmtPercent(data.saturation)} MK.${data.edge.tier}`;
 
   return (
     <>
@@ -71,16 +76,23 @@ export default function BeltEdgeView(props: EdgeProps) {
       />
       <EdgeLabelRenderer>
         <div
-          className={`belt-label mono ${isCrit ? "crit" : ""} ${data.projected ? "projected" : ""} ${
-            data.settled ? "settle" : ""
-          } ${props.selected ? "selected" : ""} ${data.dimmed ? "dimmed" : ""}`}
+          className={`belt-label mono ${isCrit ? "crit" : ""} ${compact ? "compact" : ""} ${
+            data.projected ? "projected" : ""
+          } ${data.settled ? "settle" : ""} ${props.selected ? "selected" : ""} ${data.dimmed ? "dimmed" : ""}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+          title={fullText}
           data-testid={`belt-label-${data.edge.id}`}
         >
           {isCrit && "⚠ "}
           {data.lift && <span className="belt-lift">⇅ </span>}
-          {fmtRate(data.flow)}/{fmtRate(capacity)} · {fmtPercent(data.saturation)}
-          <span className="belt-tier">MK.{data.edge.tier}</span>
+          {compact ? (
+            fmtPercent(data.saturation)
+          ) : (
+            <>
+              {fmtRate(data.flow)}/{fmtRate(capacity)} · {fmtPercent(data.saturation)}
+              <span className="belt-tier">MK.{data.edge.tier}</span>
+            </>
+          )}
         </div>
       </EdgeLabelRenderer>
     </>
