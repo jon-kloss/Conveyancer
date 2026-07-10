@@ -52,7 +52,29 @@ export interface Port {
   createdBy: CreatedBy;
 }
 
-export type EdgeEnd = { kind: "group"; id: Id } | { kind: "port"; id: Id };
+export type EdgeEnd = { kind: "group"; id: Id } | { kind: "port"; id: Id } | { kind: "junction"; id: Id };
+
+export type JunctionKind = "splitter" | "smart_splitter" | "programmable_splitter" | "merger" | "storage";
+
+export interface Junction {
+  id: Id;
+  factory: Id;
+  kind: JunctionKind;
+  buildable: string;
+  graphPos: GraphPos;
+  floor: number;
+  status: Status;
+  createdBy: CreatedBy;
+}
+
+/** Physical port budget (inputs, outputs) per junction kind — game constraints. */
+export const JUNCTION_CAPS: Record<JunctionKind, [number, number]> = {
+  splitter: [1, 3],
+  smart_splitter: [1, 3],
+  programmable_splitter: [1, 3],
+  merger: [3, 1],
+  storage: [1, 1],
+};
 
 export interface BeltEdge {
   id: Id;
@@ -89,6 +111,7 @@ export interface Plan {
   edges: Record<Id, BeltEdge>;
   nodeClaims: Record<Id, NodeClaim>;
   routes: Record<Id, unknown>;
+  junctions: Record<Id, Junction>;
 }
 
 // ---- gamedata ----
@@ -106,11 +129,14 @@ export interface GameRecipe {
 export interface GameMachine { className: string; displayName: string; powerMw: number; kind: string }
 export interface GameBelt { className: string; displayName: string; capacityPerMin: number; tier: number }
 
+export interface GameBuildable { className: string; displayName: string; nativeClass: string }
+
 export interface GameData {
   items: Record<string, GameItem>;
   recipes: Record<string, GameRecipe>;
   machines: Record<string, GameMachine>;
   belts: Record<string, GameBelt>;
+  buildables: Record<string, GameBuildable>;
   buildVersion: string;
 }
 
@@ -206,6 +232,10 @@ export type Command =
   | { type: "move_port_card"; id: Id; graphPos: GraphPos }
   | { type: "delete_port"; id: Id }
   | { type: "add_edge"; factory: Id; from: EdgeEnd; to: EdgeEnd; item: string; tier: number }
+  | { type: "add_junction"; factory: Id; kind: JunctionKind; graphPos: GraphPos; floor: number }
+  | { type: "move_junction_card"; id: Id; graphPos: GraphPos }
+  | { type: "set_junction_floor"; id: Id; floor: number }
+  | { type: "delete_junction"; id: Id }
   | { type: "set_edge_tier"; id: Id; tier: number }
   | { type: "delete_edge"; id: Id }
   | { type: "claim_node"; factory: Id; node: string; extractor: string; clock: number }

@@ -73,6 +73,17 @@ pub struct Belt {
     pub tier: u8,
 }
 
+/// Any buildable in the game — the full catalog for display/search. The
+/// specialized tables (machines/belts) carry solver-relevant detail on top.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Buildable {
+    pub class_name: String,
+    pub display_name: String,
+    /// FG native class, e.g. `FGBuildableAttachmentSplitter`.
+    pub native_class: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameData {
@@ -81,6 +92,8 @@ pub struct GameData {
     pub recipes: BTreeMap<String, Recipe>,
     pub machines: BTreeMap<String, Machine>,
     pub belts: BTreeMap<String, Belt>,
+    #[serde(default)]
+    pub buildables: BTreeMap<String, Buildable>,
 }
 
 /// Decode raw Docs.json bytes: UTF-16LE when BOM'd (real installs), UTF-8 otherwise.
@@ -193,6 +206,20 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             .next()
             .unwrap_or_default()
             .trim_end_matches('\'');
+        // Every FGBuildable* class lands in the display catalog, whatever it
+        // is — the app can name and show anything the game data knows about.
+        if fg.starts_with("FGBuildable") {
+            for c in &classes {
+                let b = Buildable {
+                    class_name: s(c, "ClassName"),
+                    display_name: s(c, "mDisplayName"),
+                    native_class: fg.to_string(),
+                };
+                if !b.class_name.is_empty() {
+                    gd.buildables.insert(b.class_name.clone(), b);
+                }
+            }
+        }
         match fg {
             "FGItemDescriptor"
             | "FGResourceDescriptor"
@@ -367,5 +394,24 @@ mod tests {
         assert_eq!(extraction_rate(miner, "normal", 1.0), 60.0);
         assert_eq!(extraction_rate(miner, "pure", 1.0), 120.0);
         assert_eq!(extraction_rate(miner, "impure", 1.0), 30.0);
+        // full buildable catalog: everything FGBuildable* is displayable
+        assert_eq!(
+            gd.buildables["Build_ConveyorAttachmentSplitter_C"].display_name,
+            "Conveyor Splitter"
+        );
+        assert_eq!(
+            gd.buildables["Build_ConveyorAttachmentMerger_C"].display_name,
+            "Conveyor Merger"
+        );
+        assert!(gd.buildables.contains_key("Build_StorageContainerMk1_C"));
+        assert!(
+            gd.buildables.contains_key("Build_ConveyorBeltMk3_C"),
+            "belts are buildables too"
+        );
+        assert!(
+            gd.buildables.contains_key("Build_SmelterMk1_C"),
+            "machines are buildables too"
+        );
+        assert!(gd.buildables.contains_key("Build_ConveyorLiftMk2_C"));
     }
 }

@@ -177,8 +177,9 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   expect(p1.y + p1.height).toBeLessThanOrEqual(p0.y + 1); // F1 band fully above F0
   await page.keyboard.press("ControlOrMeta+z"); // single undo restores the layout
   await page.waitForTimeout(400);
+  const p0b = (await page.getByTestId("floor-plate-0").boundingBox())!;
   const p1b = (await page.getByTestId("floor-plate-1").boundingBox())!;
-  expect(p1b.y + p1b.height).toBeGreaterThan(p0.y + 1);
+  expect(p1b.y + p1b.height).toBeGreaterThan(p0b.y + 1); // bands interleave again
   // put it back on F0 (undoable command like any other)
   await page.getByTestId("floor-stepper").getByRole("button", { name: "−" }).click();
   await page.waitForTimeout(300);
@@ -226,6 +227,17 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await expect(page.getByTestId("floor-chips")).not.toBeVisible();
   const afterReopenRedo = parseFloat(await page.getByTestId("target-value").innerText());
   expect(Math.abs(afterReopenRedo - rate)).toBeLessThan(0.05);
+
+  // ---- logistics: place a splitter from the catalog, then remove it ----
+  await page.getByTestId("btn-logistic").click();
+  await page.getByTestId("logistic-menu").getByRole("button", { name: "Conveyor Splitter" }).click();
+  await expect(page.locator('[data-testid^="junction-splitter-"]')).toBeVisible();
+  await page.keyboard.press("Delete");
+  await expect(page.locator('[data-testid^="junction-splitter-"]')).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+z"); // undo restores the buildable
+  await expect(page.locator('[data-testid^="junction-splitter-"]')).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect(page.locator('[data-testid^="junction-splitter-"]')).toHaveCount(0);
 
   // back to the map: pin still there, position intact
   await page.getByTestId("btn-world").click();

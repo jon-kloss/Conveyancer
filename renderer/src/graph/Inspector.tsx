@@ -73,6 +73,7 @@ export default function Inspector({
   }, [outPort, dragValue, dispatch]);
 
   const selectedGroup = selection?.kind === "group" ? plan.groups[selection.id] : null;
+  const selectedJunction = selection?.kind === "junction" ? plan.junctions[selection.id] : null;
   const selectedEdge = selection?.kind === "edge" ? plan.edges[selection.id] : null;
   const selectedPort = selection?.kind === "port" ? plan.ports[selection.id] : null;
   const chip = solveChip(authoritative);
@@ -278,6 +279,65 @@ export default function Inspector({
             })}
           </section>
         </>
+      )}
+
+      {/* ---- selected junction ---- */}
+      {selectedJunction && (
+        <section className="insp-section">
+          <h3 className="t-label">
+            {(gamedata.buildables?.[selectedJunction.buildable]?.displayName ?? selectedJunction.kind).toUpperCase()}
+          </h3>
+          <div className="drawer-row">
+            <span className="drawer-row-name">Floor</span>
+            <div className="floor-stepper">
+              <button
+                className="insp-clock-btn mono"
+                disabled={selectedJunction.floor === 0}
+                onClick={() =>
+                  void dispatch([
+                    { type: "set_junction_floor", id: selectedJunction.id, floor: selectedJunction.floor - 1 },
+                  ])
+                }
+              >
+                −
+              </button>
+              <span className="t-data-12 floor-value">F{selectedJunction.floor}</span>
+              <button
+                className="insp-clock-btn mono"
+                onClick={() =>
+                  void dispatch([
+                    { type: "set_junction_floor", id: selectedJunction.id, floor: selectedJunction.floor + 1 },
+                  ])
+                }
+              >
+                +
+              </button>
+            </div>
+          </div>
+          {Object.values(plan.edges)
+            .filter(
+              (e) =>
+                (e.from.kind === "junction" && e.from.id === selectedJunction.id) ||
+                (e.to.kind === "junction" && e.to.id === selectedJunction.id),
+            )
+            .map((e) => {
+              const inbound = e.to.kind === "junction" && e.to.id === selectedJunction.id;
+              return (
+                <div className="drawer-row" key={e.id}>
+                  <span className="drawer-row-name">
+                    {inbound ? "←" : "→"} {gamedata.items[e.item]?.displayName ?? e.item}
+                  </span>
+                  <span className={`t-data-12 ${isProjected ? "projected" : ""}`}>
+                    {fmtRate(df?.edges[e.id]?.flow ?? 0)}
+                    <span className="unit">/min</span>
+                  </span>
+                </div>
+              );
+            })}
+          <div className="insp-note">
+            Junctions never change totals — they split, merge, or buffer the flow the solver routes through them.
+          </div>
+        </section>
       )}
 
       {/* ---- selected belt ---- */}

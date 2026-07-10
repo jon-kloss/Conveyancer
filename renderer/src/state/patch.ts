@@ -11,6 +11,7 @@ export function applyPatches(plan: Plan, ops: PatchOp[]): Plan {
     edges: { ...plan.edges },
     nodeClaims: { ...plan.nodeClaims },
     routes: { ...plan.routes },
+    junctions: { ...plan.junctions },
     meta: { ...plan.meta },
   };
   for (const op of ops) {

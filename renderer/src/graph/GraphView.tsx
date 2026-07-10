@@ -22,6 +22,7 @@ import { useStore, solveChip } from "../state/store";
 import type { Command, DerivedFactory, Id } from "../state/types";
 import MachineGroupNode, { type GroupNodeData } from "./MachineGroupNode";
 import BoundaryPortNode, { type PortNodeData } from "./BoundaryPortNode";
+import JunctionNode, { type JunctionNodeData } from "./JunctionNode";
 import BeltEdgeView, { type BeltEdgeData } from "./BeltEdgeView";
 import Inspector from "./Inspector";
 import RecipeStrip from "./RecipeStrip";
@@ -34,7 +35,7 @@ import { fmtRate, fmtPercent } from "../lib/format";
 import { beltCapacity } from "../state/types";
 import "./graph.css";
 
-const nodeTypes = { group: MachineGroupNode, boundaryPort: BoundaryPortNode };
+const nodeTypes = { group: MachineGroupNode, boundaryPort: BoundaryPortNode, junction: JunctionNode };
 const edgeTypes = { belt: BeltEdgeView };
 
 const snap = (v: number) => Math.round(v / 16) * 16;
@@ -50,7 +51,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const dispatch = useStore((s) => s.dispatch);
 
   const factory = plan.factories[factoryId];
-  const { fitView, getNodes } = useReactFlow();
+  const { fitView, getNodes, screenToFlowPosition: screenToFlow } = useReactFlow();
   const [flowOverlay, setFlowOverlay] = useState(true);
   // Floor filter: 'all' or a specific floor. Chips appear once floors exist.
   const [floorFilter, setFloorFilter] = useState<"all" | number>("all");
@@ -60,8 +61,11 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       const g = plan.groups[gid];
       if (g) set.add(g.floor);
     }
+    for (const j of Object.values(plan.junctions)) {
+      if (j.factory === factoryId) set.add(j.floor);
+    }
     return [...set].sort((a, b) => a - b);
-  }, [factory, plan.groups]);
+  }, [factory, plan.groups, plan.junctions, factoryId]);
   const groupFloor = useCallback(
     (id: string): number => useStore.getState().plan.groups[id]?.floor ?? 0,
     [],
@@ -78,7 +82,10 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
    *  (highest floor on top), preserving intra-floor layout. `floorOf` lets
    *  AUTO-FLOOR stack against floors it is about to assign. */
   const bandMoves = useCallback(
-    (groups: { id: string; graphPos: { x: number; y: number } }[], floorOf: (id: string) => number): Command[] => {
+    (
+      groups: { id: string; graphPos: { x: number; y: number }; junction?: boolean }[],
+      floorOf: (id: string) => number,
+    ): Command[] => {
       const byFloor = new Map<number, typeof groups>();
       for (const g of groups) {
         const fl = floorOf(g.id);
@@ -105,7 +112,11 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         for (const g of members) {
           const newY = snap16(cursorY + ((measured[g.id]?.y ?? g.graphPos.y) - minY));
           if (Math.abs(newY - g.graphPos.y) > 0.5) {
-            cmds.push({ type: "move_group_card", id: g.id, graphPos: { x: g.graphPos.x, y: newY } });
+            cmds.push(
+              g.junction
+                ? { type: "move_junction_card", id: g.id, graphPos: { x: g.graphPos.x, y: newY } }
+                : { type: "move_group_card", id: g.id, graphPos: { x: g.graphPos.x, y: newY } },
+            );
           }
         }
         cursorY += bandH + GAP;
@@ -130,8 +141,15 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     const state = useStore.getState();
     const f = state.plan.factories[factoryId];
     if (!f) return;
-    const groups = f.groups.map((gid) => state.plan.groups[gid]).filter(Boolean);
-    commitArrange(bandMoves(groups, (id) => state.plan.groups[id]?.floor ?? 0));
+    const placeables = [
+      ...f.groups.map((gid) => state.plan.groups[gid]).filter(Boolean),
+      ...Object.values(state.plan.junctions)
+        .filter((j) => j.factory === factoryId)
+        .map((j) => ({ ...j, junction: true })),
+    ];
+    commitArrange(
+      bandMoves(placeables, (id) => state.plan.groups[id]?.floor ?? state.plan.junctions[id]?.floor ?? 0),
+    );
   }, [factoryId, bandMoves, commitArrange]);
 
   /** Assign floors by production stage — topological depth from the input
@@ -141,10 +159,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     const f = state.plan.factories[factoryId];
     if (!f) return;
     const groups = f.groups.map((gid) => state.plan.groups[gid]).filter(Boolean);
+    const junctions = Object.values(state.plan.junctions).filter((j) => j.factory === factoryId);
     if (groups.length < 2) return;
+    // stage over groups AND junctions so belts through splitters/mergers count
+    const staged = (k: string) => k === "group" || k === "junction";
     const preds = new Map<string, string[]>();
     for (const e of Object.values(state.plan.edges)) {
-      if (e.factory === factoryId && e.from.kind === "group" && e.to.kind === "group") {
+      if (e.factory === factoryId && staged(e.from.kind) && staged(e.to.kind)) {
         preds.set(e.to.id, [...(preds.get(e.to.id) ?? []), e.from.id]);
       }
     }
@@ -165,18 +186,31 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       return d;
     };
     groups.forEach((g) => depth(g.id));
+    junctions.forEach((j) => depth(j.id));
     if (cyclic) return; // loops have no stages — leave the plan alone
 
+    // a junction sits on its feeder's floor (it's part of that floor's belt run)
+    const junctionStage = (id: string) => Math.max(0, (stage.get(id) ?? 1) - 1);
     const cmds: Command[] = [];
     for (const g of groups) {
       const fl = stage.get(g.id) ?? 0;
       if (fl !== g.floor) cmds.push({ type: "set_group_floor", id: g.id, floor: fl });
     }
-    cmds.push(...bandMoves(groups, (id) => stage.get(id) ?? 0));
+    for (const j of junctions) {
+      const fl = junctionStage(j.id);
+      if (fl !== j.floor) cmds.push({ type: "set_junction_floor", id: j.id, floor: fl });
+    }
+    cmds.push(
+      ...bandMoves(
+        [...groups, ...junctions.map((j) => ({ ...j, junction: true }))],
+        (id) => (state.plan.junctions[id] ? junctionStage(id) : stage.get(id) ?? 0),
+      ),
+    );
     commitArrange(cmds);
   }, [factoryId, bandMoves, commitArrange]);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; flowX: number; flowY: number } | null>(null);
   const [portMenu, setPortMenu] = useState<"in" | "out" | null>(null);
+  const [logisticMenu, setLogisticMenu] = useState(false);
 
   // Display derived: T0 projection during drag, else authoritative T1.
   const df: DerivedFactory | undefined =
@@ -201,6 +235,18 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         style: dimmed ? { opacity: 0.22, pointerEvents: "none" as const } : undefined,
       });
     }
+    for (const j of Object.values(plan.junctions)) {
+      if (j.factory !== factoryId) continue;
+      const dimmed = floorFilter !== "all" && j.floor !== floorFilter;
+      out.push({
+        id: j.id,
+        type: "junction",
+        position: { x: j.graphPos.x, y: j.graphPos.y },
+        data: { junction: j, factoryId, showFloorBadge: floors.length > 1 } satisfies JunctionNodeData as unknown as Record<string, unknown>,
+        selected: selection?.kind === "junction" && selection.id === j.id,
+        style: dimmed ? { opacity: 0.22, pointerEvents: "none" as const } : undefined,
+      });
+    }
     for (const pid of factory.ports) {
       const p = plan.ports[pid];
       if (!p) continue;
@@ -213,7 +259,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       });
     }
     return out;
-  }, [factory, plan.groups, plan.ports, selection, factoryId, floorFilter, floors.length]);
+  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length]);
 
   const [nodes, setNodes] = useState<Node[]>(buildNodes);
   useEffect(() => setNodes(buildNodes()), [buildNodes]);
@@ -223,21 +269,27 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       setNodes((ns) => applyNodeChanges(changes, ns));
       for (const ch of changes) {
         if (ch.type === "select" && ch.selected) {
-          const isGroup = !!useStore.getState().plan.groups[ch.id];
-          setSelection(isGroup ? { kind: "group", id: ch.id } : { kind: "port", id: ch.id });
+          const st = useStore.getState().plan;
+          setSelection(
+            st.groups[ch.id]
+              ? { kind: "group", id: ch.id }
+              : st.junctions[ch.id]
+                ? { kind: "junction", id: ch.id }
+                : { kind: "port", id: ch.id },
+          );
         }
         if (ch.type === "position" && ch.dragging === false) {
-          const node = useStore.getState().plan.groups[ch.id]
-            ? ("group" as const)
-            : ("port" as const);
+          const st = useStore.getState().plan;
           const current = nodes.find((n) => n.id === ch.id);
           const pos = ch.position ?? current?.position;
           if (!pos) continue;
           const graphPos = { x: snap(pos.x), y: snap(pos.y) };
           void dispatch([
-            node === "group"
+            st.groups[ch.id]
               ? { type: "move_group_card", id: ch.id, graphPos }
-              : { type: "move_port_card", id: ch.id, graphPos },
+              : st.junctions[ch.id]
+                ? { type: "move_junction_card", id: ch.id, graphPos }
+                : { type: "move_port_card", id: ch.id, graphPos },
           ]);
         }
       }
@@ -255,8 +307,8 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       geoms[n.id] = {
         x: n.position.x,
         y: n.position.y,
-        w: m?.width ?? (n.type === "group" ? 248 : 200),
-        h: m?.height ?? (n.type === "group" ? 150 : 96),
+        w: m?.width ?? (n.type === "group" ? 248 : n.type === "junction" ? 168 : 200),
+        h: m?.height ?? (n.type === "group" ? 150 : n.type === "junction" ? 52 : 96),
       };
     }
     // Chip footprint from the real text (mono ≈ 6.4px/char at 10px + padding).
@@ -277,8 +329,14 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     const portalCounts = new Map<string, number>();
     return beltEdges.map((e) => {
       const d = df?.edges[e.id];
-      const srcFloor = e.from.kind === "group" ? groupFloor(e.from.id) : 0;
-      const dstFloor = e.to.kind === "group" ? groupFloor(e.to.id) : 0;
+      const floorOfEnd = (end: { kind: string; id: string }) =>
+        end.kind === "group"
+          ? groupFloor(end.id)
+          : end.kind === "junction"
+            ? useStore.getState().plan.junctions[end.id]?.floor ?? 0
+            : 0;
+      const srcFloor = floorOfEnd(e.from);
+      const dstFloor = floorOfEnd(e.to);
       const lift = srcFloor !== dstFloor;
       let dimmed = floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter;
       let geom = layout[e.id] ?? null;
@@ -358,24 +416,51 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       const state = useStore.getState();
       const { plan: p, gamedata: gd } = state;
       // Infer the item: source's produced items ∩ target's consumed items.
-      const produced = (id: string): string[] => {
+      const junctionItems = (id: string): string[] => {
+        // a junction carries whatever already flows through it; empty = wildcard
+        const j = p.junctions[id];
+        if (!j) return [];
+        const touching = Object.values(p.edges).filter(
+          (e) => (e.from.kind === "junction" && e.from.id === id) || (e.to.kind === "junction" && e.to.id === id),
+        );
+        return [...new Set(touching.map((e) => e.item))];
+      };
+      const produced = (id: string): string[] | "any" => {
         const g = p.groups[id];
         if (g) return (gd.recipes[g.recipe]?.products ?? []).map(([item]) => item);
+        if (p.junctions[id]) {
+          const items = junctionItems(id);
+          return items.length ? items : "any";
+        }
         const port = p.ports[id];
         return port && port.direction === "in" ? [port.item] : [];
       };
-      const consumed = (id: string): string[] => {
+      const consumed = (id: string): string[] | "any" => {
         const g = p.groups[id];
         if (g) return (gd.recipes[g.recipe]?.ingredients ?? []).map(([item]) => item);
+        if (p.junctions[id]) {
+          const items = junctionItems(id);
+          return items.length ? items : "any";
+        }
         const port = p.ports[id];
         return port && port.direction === "out" ? [port.item] : [];
       };
       if (!conn.source || !conn.target) return;
-      const item = produced(conn.source).find((i) => consumed(conn.target!).includes(i));
+      const prod = produced(conn.source);
+      const cons = consumed(conn.target);
+      let item: string | undefined;
+      if (prod === "any" && cons === "any") item = undefined; // two blank junctions — nothing to infer
+      else if (prod === "any") item = (cons as string[])[0];
+      else if (cons === "any") item = (prod as string[])[0];
+      else item = (prod as string[]).find((i) => (cons as string[]).includes(i));
       if (!item) return; // no shared item — connection is meaningless, refuse silently
-      const from = p.groups[conn.source] ? { kind: "group" as const, id: conn.source } : { kind: "port" as const, id: conn.source };
-      const to = p.groups[conn.target] ? { kind: "group" as const, id: conn.target } : { kind: "port" as const, id: conn.target };
-      void dispatch([{ type: "add_edge", factory: factoryId, from, to, item, tier: 1 }]);
+      const endOf = (id: string) =>
+        p.groups[id]
+          ? { kind: "group" as const, id }
+          : p.junctions[id]
+            ? { kind: "junction" as const, id }
+            : { kind: "port" as const, id };
+      void dispatch([{ type: "add_edge", factory: factoryId, from: endOf(conn.source), to: endOf(conn.target), item, tier: 1 }]);
     },
     [dispatch, factoryId],
   );
@@ -395,6 +480,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         if (sel.kind === "group") void dispatch([{ type: "delete_group", id: sel.id }]);
         else if (sel.kind === "edge") void dispatch([{ type: "delete_edge", id: sel.id }]);
         else if (sel.kind === "port") void dispatch([{ type: "delete_port", id: sel.id }]);
+        else if (sel.kind === "junction") void dispatch([{ type: "delete_junction", id: sel.id }]);
         setSelection(null);
       } else if (e.key === "r" || e.key === "R") {
         setStripOpen((o) => !o);
@@ -479,6 +565,59 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         >
           FLOW
         </button>
+        <div style={{ position: "relative" }}>
+          <button className="btn btn-ghost" onClick={() => setLogisticMenu((o) => !o)} data-testid="btn-logistic">
+            + LOGISTIC
+          </button>
+          {logisticMenu && (
+            <div className="logistic-menu" data-testid="logistic-menu">
+              {(
+                [
+                  ["splitter", "Conveyor Splitter"],
+                  ["smart_splitter", "Smart Splitter"],
+                  ["programmable_splitter", "Programmable Splitter"],
+                  ["merger", "Conveyor Merger"],
+                  ["storage", "Storage Container"],
+                ] as const
+              ).map(([kind, fallback]) => {
+                const cls = {
+                  splitter: "Build_ConveyorAttachmentSplitter_C",
+                  smart_splitter: "Build_ConveyorAttachmentSplitterSmart_C",
+                  programmable_splitter: "Build_ConveyorAttachmentSplitterProgrammable_C",
+                  merger: "Build_ConveyorAttachmentMerger_C",
+                  storage: "Build_StorageContainerMk1_C",
+                }[kind];
+                const name = useStore.getState().gamedata.buildables?.[cls]?.displayName ?? fallback;
+                return (
+                  <button
+                    key={kind}
+                    className="addgroup-item"
+                    onClick={() => {
+                      const rect = flowRef.current!.getBoundingClientRect();
+                      const pos = screenToFlow({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 3 });
+                      void dispatch(
+                        [
+                          {
+                            type: "add_junction",
+                            factory: factoryId,
+                            kind,
+                            graphPos: { x: Math.round(pos.x / 16) * 16, y: Math.round(pos.y / 16) * 16 },
+                            floor: floorFilter === "all" ? 0 : floorFilter,
+                          },
+                        ],
+                        { select: true },
+                      );
+                      setLogisticMenu(false);
+                    }}
+                  >
+                    <div className="icon-ph s20" />
+                    <span>{name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <button className="btn btn-ghost" onClick={() => setPortMenu("in")}>
           + IN PORT
         </button>

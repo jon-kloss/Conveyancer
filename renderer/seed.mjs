@@ -36,19 +36,28 @@ const group = async (machine, recipe, x, y) =>
 const smelt = await group("Build_SmelterMk1_C", "Recipe_IngotIron_C", 288, 256);
 const rods = await group("Build_ConstructorMk1_C", "Recipe_IronRod_C", 608, 96);
 const plates = await group("Build_ConstructorMk1_C", "Recipe_IronPlate_C", 608, 416);
-const screws = await group("Build_ConstructorMk1_C", "Recipe_Screw_C", 896, 96);
+const screws = await group("Build_ConstructorMk1_C", "Recipe_Screw_C", 1088, 64);
 const rip = await group("Build_AssemblerMk1_C", "Recipe_IronPlateReinforced_C", 1184, 416);
 const mf = await group("Build_AssemblerMk1_C", "Recipe_ModularFrame_C", 1312, 176);
 
 const G = (id) => ({ kind: "group", id });
 const P = (id) => ({ kind: "port", id });
+const J = (id) => ({ kind: "junction", id });
 const belt = (from, to, item, tier) => edit([{ type: "add_edge", factory: fid, from, to, item, tier }]);
+
+// the rod run fans out through an explicit splitter, like a real build
+const split = (
+  await edit([
+    { type: "add_junction", factory: fid, kind: "splitter", graphPos: { x: 912, y: 128 }, floor: 0 },
+  ])
+).created[0];
 
 await belt(P(inP), G(smelt), "Desc_OreIron_C", 3);
 await belt(G(smelt), G(rods), "Desc_IronIngot_C", 2);
 await belt(G(smelt), G(plates), "Desc_IronIngot_C", 2);
-await belt(G(rods), G(screws), "Desc_IronRod_C", 1);
-await belt(G(rods), G(mf), "Desc_IronRod_C", 1);
+await belt(G(rods), J(split), "Desc_IronRod_C", 2);
+await belt(J(split), G(screws), "Desc_IronRod_C", 1);
+await belt(J(split), G(mf), "Desc_IronRod_C", 1);
 await belt(G(plates), G(rip), "Desc_IronPlate_C", 1);
 await belt(G(screws), G(rip), "Desc_IronScrew_C", 1);
 await belt(G(rip), G(mf), "Desc_IronPlateReinforced_C", 1);

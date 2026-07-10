@@ -20,6 +20,7 @@ export type Selection =
   | { kind: "group"; id: Id }
   | { kind: "edge"; id: Id }
   | { kind: "port"; id: Id }
+  | { kind: "junction"; id: Id }
   | null;
 
 export type ViewMode = { mode: "map" } | { mode: "factory"; factoryId: Id };
@@ -32,6 +33,7 @@ const emptyPlan: Plan = {
   edges: {},
   nodeClaims: {},
   routes: {},
+  junctions: {},
 };
 
 const emptyDerived: Derived = { factories: {}, nodes: {}, totalPowerMw: 0 };
@@ -73,7 +75,7 @@ export const useStore = create<AppStore>((set, get) => ({
   error: null,
   plan: emptyPlan,
   derived: emptyDerived,
-  gamedata: { items: {}, recipes: {}, machines: {}, belts: {}, buildVersion: "" },
+  gamedata: { items: {}, recipes: {}, machines: {}, belts: {}, buildables: {}, buildVersion: "" },
   world: { version: 0, source: "", bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 }, regions: [], nodes: [] },
   canUndo: false,
   canRedo: false,
@@ -129,6 +131,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const { plan } = get();
       if (plan.factories[id]) set({ selection: { kind: "factory", id } });
       else if (plan.groups[id]) set({ selection: { kind: "group", id } });
+      else if (plan.junctions[id]) set({ selection: { kind: "junction", id } });
     }
     return resp.created;
   },

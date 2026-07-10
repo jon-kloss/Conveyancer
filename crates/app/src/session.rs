@@ -157,6 +157,7 @@ impl Session {
                 "recipes": self.gamedata.recipes,
                 "machines": self.gamedata.machines,
                 "belts": self.gamedata.belts,
+                "buildables": self.gamedata.buildables,
                 "buildVersion": self.gamedata.build_version,
             },
             "world": self.world,
@@ -287,6 +288,7 @@ impl Session {
                 Command::AddGroup { factory, .. }
                 | Command::AddPort { factory, .. }
                 | Command::AddEdge { factory, .. }
+                | Command::AddJunction { factory, .. }
                 | Command::ClaimNode { factory, .. } => push(Some(factory.clone())),
                 Command::SetGroupRecipe { id, .. }
                 | Command::SetGroupCount { id, .. }
@@ -305,6 +307,11 @@ impl Session {
                 }
                 Command::ReleaseNode { id } => {
                     push(self.state.node_claims.get(id).map(|c| c.factory.clone()))
+                }
+                Command::DeleteJunction { id }
+                | Command::MoveJunctionCard { id, .. }
+                | Command::SetJunctionFloor { id, .. } => {
+                    push(self.state.junctions.get(id).map(|j| j.factory.clone()))
                 }
                 _ => {}
             }
@@ -369,11 +376,19 @@ impl Session {
                 capacity: belt_capacity(e.tier),
             })
             .collect();
+        let junctions = self
+            .state
+            .junctions
+            .values()
+            .filter(|j| &j.factory == fid)
+            .map(|j| j.id.clone())
+            .collect();
         Some(FactorySnapshot {
             groups,
             edges,
             inputs,
             outputs,
+            junctions,
         })
     }
 
@@ -548,6 +563,7 @@ impl Session {
 fn to_node_ref(end: &EdgeEnd, state: &PlanState) -> NodeRef {
     match end {
         EdgeEnd::Group(id) => NodeRef::Group(id.clone()),
+        EdgeEnd::Junction(id) => NodeRef::Junction(id.clone()),
         EdgeEnd::Port(id) => match state.ports.get(id).map(|p| p.direction) {
             Some(PortDirection::In) => NodeRef::Input(id.clone()),
             _ => NodeRef::Output(id.clone()),

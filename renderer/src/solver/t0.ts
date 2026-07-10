@@ -28,6 +28,7 @@ export interface FactorySnapshot {
   edges: unknown[];
   inputs: unknown[];
   outputs: unknown[];
+  junctions: string[];
 }
 
 export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): FactorySnapshot | null {
@@ -60,16 +61,24 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
     if (p.direction === "in") inputs.push({ id: p.id, item: p.item, ceiling: p.rateCeiling });
     else outputs.push({ id: p.id, item: p.item, rate: p.rate });
   }
+  const toRef = (end: { kind: string; id: string }) => {
+    if (end.kind === "group") return { kind: "group", id: end.id };
+    if (end.kind === "junction") return { kind: "junction", id: end.id };
+    return plan.ports[end.id]?.direction === "in" ? { kind: "input", id: end.id } : { kind: "output", id: end.id };
+  };
   const edges = Object.values(plan.edges)
     .filter((e) => e.factory === factoryId)
     .map((e) => ({
       id: e.id,
-      from: e.from.kind === "group" ? { kind: "group", id: e.from.id } : plan.ports[e.from.id]?.direction === "in" ? { kind: "input", id: e.from.id } : { kind: "output", id: e.from.id },
-      to: e.to.kind === "group" ? { kind: "group", id: e.to.id } : plan.ports[e.to.id]?.direction === "in" ? { kind: "input", id: e.to.id } : { kind: "output", id: e.to.id },
+      from: toRef(e.from),
+      to: toRef(e.to),
       item: e.item,
       capacity: beltCapacity(e.tier),
     }));
-  return { groups, edges, inputs, outputs };
+  const junctions = Object.values(plan.junctions)
+    .filter((j) => j.factory === factoryId)
+    .map((j) => j.id);
+  return { groups, edges, inputs, outputs, junctions };
 }
 
 /** Projected drag-frame solve. Returns null if the wasm module isn't ready or errors. */

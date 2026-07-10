@@ -134,6 +134,40 @@
     ]
   },
   {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableAttachmentSplitter'",
+    "Classes": [
+      { "ClassName": "Build_ConveyorAttachmentSplitter_C", "mDisplayName": "Conveyor Splitter" }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableSplitterSmart'",
+    "Classes": [
+      { "ClassName": "Build_ConveyorAttachmentSplitterSmart_C", "mDisplayName": "Smart Splitter" },
+      { "ClassName": "Build_ConveyorAttachmentSplitterProgrammable_C", "mDisplayName": "Programmable Splitter" }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableAttachmentMerger'",
+    "Classes": [
+      { "ClassName": "Build_ConveyorAttachmentMerger_C", "mDisplayName": "Conveyor Merger" }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableStorage'",
+    "Classes": [
+      { "ClassName": "Build_StorageContainerMk1_C", "mDisplayName": "Storage Container" },
+      { "ClassName": "Build_StorageContainerMk2_C", "mDisplayName": "Industrial Storage Container" }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableConveyorLift'",
+    "Classes": [
+      { "ClassName": "Build_ConveyorLiftMk1_C", "mDisplayName": "Conveyor Lift Mk.1", "mSpeed": "120.000000" },
+      { "ClassName": "Build_ConveyorLiftMk2_C", "mDisplayName": "Conveyor Lift Mk.2", "mSpeed": "240.000000" },
+      { "ClassName": "Build_ConveyorLiftMk3_C", "mDisplayName": "Conveyor Lift Mk.3", "mSpeed": "540.000000" }
+    ]
+  },
+  {
     "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableConveyorBelt'",
     "Classes": [
       { "ClassName": "Build_ConveyorBeltMk1_C", "mDisplayName": "Conveyor Belt Mk.1", "mSpeed": "120.000000" },

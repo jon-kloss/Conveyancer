@@ -37,6 +37,8 @@ pub struct PlanState {
     pub edges: BTreeMap<Id, BeltEdge>,
     pub node_claims: BTreeMap<Id, NodeClaim>,
     pub routes: BTreeMap<Id, Route>,
+    #[serde(default)]
+    pub junctions: BTreeMap<Id, Junction>,
 }
 
 /// Collection names as they appear in patch paths and the projected store.
@@ -46,6 +48,7 @@ pub const COLL_PORTS: &str = "ports";
 pub const COLL_EDGES: &str = "edges";
 pub const COLL_NODE_CLAIMS: &str = "nodeClaims";
 pub const COLL_ROUTES: &str = "routes";
+pub const COLL_JUNCTIONS: &str = "junctions";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entity {
@@ -55,6 +58,7 @@ pub enum Entity {
     Edge(BeltEdge),
     NodeClaim(NodeClaim),
     Route(Route),
+    Junction(Junction),
 }
 
 impl Entity {
@@ -66,6 +70,7 @@ impl Entity {
             Entity::Edge(e) => &e.id,
             Entity::NodeClaim(e) => &e.id,
             Entity::Route(e) => &e.id,
+            Entity::Junction(e) => &e.id,
         }
     }
 
@@ -77,6 +82,7 @@ impl Entity {
             Entity::Edge(_) => COLL_EDGES,
             Entity::NodeClaim(_) => COLL_NODE_CLAIMS,
             Entity::Route(_) => COLL_ROUTES,
+            Entity::Junction(_) => COLL_JUNCTIONS,
         }
     }
 
@@ -88,6 +94,7 @@ impl Entity {
             Entity::Edge(e) => serde_json::to_value(e).unwrap(),
             Entity::NodeClaim(e) => serde_json::to_value(e).unwrap(),
             Entity::Route(e) => serde_json::to_value(e).unwrap(),
+            Entity::Junction(e) => serde_json::to_value(e).unwrap(),
         }
     }
 
@@ -102,6 +109,7 @@ impl Entity {
                 Entity::NodeClaim(serde_json::from_value(value.clone()).map_err(err)?)
             }
             COLL_ROUTES => Entity::Route(serde_json::from_value(value.clone()).map_err(err)?),
+            COLL_JUNCTIONS => Entity::Junction(serde_json::from_value(value.clone()).map_err(err)?),
             other => return Err(format!("unknown collection {other}")),
         })
     }
@@ -118,6 +126,7 @@ impl PlanState {
             COLL_EDGES: self.edges,
             COLL_NODE_CLAIMS: self.node_claims,
             COLL_ROUTES: self.routes,
+            COLL_JUNCTIONS: self.junctions,
         })
     }
 
@@ -129,6 +138,7 @@ impl PlanState {
             COLL_EDGES => self.edges.get(id).cloned().map(Entity::Edge),
             COLL_NODE_CLAIMS => self.node_claims.get(id).cloned().map(Entity::NodeClaim),
             COLL_ROUTES => self.routes.get(id).cloned().map(Entity::Route),
+            COLL_JUNCTIONS => self.junctions.get(id).cloned().map(Entity::Junction),
             _ => None,
         }
     }
@@ -153,6 +163,9 @@ impl PlanState {
             Entity::Route(v) => {
                 self.routes.insert(v.id.clone(), v);
             }
+            Entity::Junction(v) => {
+                self.junctions.insert(v.id.clone(), v);
+            }
         }
     }
 
@@ -175,6 +188,9 @@ impl PlanState {
             }
             COLL_ROUTES => {
                 self.routes.remove(id);
+            }
+            COLL_JUNCTIONS => {
+                self.junctions.remove(id);
             }
             _ => {}
         }

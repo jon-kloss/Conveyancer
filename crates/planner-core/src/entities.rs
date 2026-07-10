@@ -116,6 +116,59 @@ pub fn belt_capacity(tier: u8) -> f64 {
 pub enum EdgeEnd {
     Group(Id),
     Port(Id),
+    Junction(Id),
+}
+
+/// Belt-side logistics buildables. Junctions transform nothing — they only
+/// split/merge/buffer flows — so solvers treat them as conservation nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JunctionKind {
+    Splitter,
+    SmartSplitter,
+    ProgrammableSplitter,
+    Merger,
+    Storage,
+}
+
+impl JunctionKind {
+    /// Physical port budget (inputs, outputs) — game constraints, enforced on connect.
+    pub fn port_caps(&self) -> (usize, usize) {
+        match self {
+            JunctionKind::Splitter
+            | JunctionKind::SmartSplitter
+            | JunctionKind::ProgrammableSplitter => (1, 3),
+            JunctionKind::Merger => (3, 1),
+            JunctionKind::Storage => (1, 1),
+        }
+    }
+
+    /// Default buildable class for display/footprint lookup.
+    pub fn buildable_class(&self) -> &'static str {
+        match self {
+            JunctionKind::Splitter => "Build_ConveyorAttachmentSplitter_C",
+            JunctionKind::SmartSplitter => "Build_ConveyorAttachmentSplitterSmart_C",
+            JunctionKind::ProgrammableSplitter => "Build_ConveyorAttachmentSplitterProgrammable_C",
+            JunctionKind::Merger => "Build_ConveyorAttachmentMerger_C",
+            JunctionKind::Storage => "Build_StorageContainerMk1_C",
+        }
+    }
+}
+
+/// A belt junction on the factory graph (splitter/merger/storage).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Junction {
+    pub id: Id,
+    pub factory: Id,
+    pub kind: JunctionKind,
+    /// Buildable class for display (icon/footprint); defaults per kind.
+    pub buildable: String,
+    pub graph_pos: GraphPos,
+    #[serde(default)]
+    pub floor: u32,
+    pub status: Status,
+    pub created_by: CreatedBy,
 }
 
 /// Intra-factory belt connection (graph edge). Flow rate is derived solver

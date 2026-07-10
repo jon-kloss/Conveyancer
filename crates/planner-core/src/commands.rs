@@ -134,6 +134,24 @@ pub enum Command {
         item: String,
         tier: u8,
     },
+    AddJunction {
+        factory: Id,
+        kind: JunctionKind,
+        graph_pos: GraphPos,
+        #[serde(default)]
+        floor: u32,
+    },
+    MoveJunctionCard {
+        id: Id,
+        graph_pos: GraphPos,
+    },
+    SetJunctionFloor {
+        id: Id,
+        floor: u32,
+    },
+    DeleteJunction {
+        id: Id,
+    },
     SetEdgeTier {
         id: Id,
         tier: u8,
@@ -175,6 +193,10 @@ impl Command {
             Command::MovePortCard { .. } => "move port",
             Command::DeletePort { .. } => "delete port",
             Command::AddEdge { .. } => "connect belt",
+            Command::AddJunction { .. } => "add junction",
+            Command::MoveJunctionCard { .. } => "move junction",
+            Command::SetJunctionFloor { .. } => "set junction floor",
+            Command::DeleteJunction { .. } => "delete junction",
             Command::SetEdgeTier { .. } => "set belt tier",
             Command::DeleteEdge { .. } => "delete belt",
             Command::ClaimNode { .. } => "claim node",
@@ -290,6 +312,12 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .filter(|c| &c.factory == id)
                 .map(|c| c.id.clone())
                 .collect();
+            let junction_ids: Vec<Id> = state
+                .junctions
+                .values()
+                .filter(|j| &j.factory == id)
+                .map(|j| j.id.clone())
+                .collect();
             for eid in edge_ids {
                 if let Some(ops) = state.remove(COLL_EDGES, &eid) {
                     tx.record(ops);
@@ -307,6 +335,11 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             }
             for cid in claim_ids {
                 if let Some(ops) = state.remove(COLL_NODE_CLAIMS, &cid) {
+                    tx.record(ops);
+                }
+            }
+            for jid in junction_ids {
+                if let Some(ops) = state.remove(COLL_JUNCTIONS, &jid) {
                     tx.record(ops);
                 }
             }
@@ -533,6 +566,59 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             state.factories.get(factory).ok_or(DomainError::NotFound {
                 id: factory.clone(),
             })?;
+            // Junction port budgets are physical game constraints (splitter
+            // 1-in/3-out, merger 3-in/1-out, storage 1/1) — refuse overflow.
+            for (end, incoming) in [(from, false), (to, true)] {
+                if let EdgeEnd::Junction(jid) = end {
+                    let j = state
+                        .junctions
+                        .get(jid)
+                        .ok_or(DomainError::NotFound { id: jid.clone() })?;
+                    let (in_cap, out_cap) = j.kind.port_caps();
+                    let used = state
+                        .edges
+                        .values()
+                        .filter(|e| {
+                            if incoming {
+                                e.to == EdgeEnd::Junction(jid.clone())
+                            } else {
+                                e.from == EdgeEnd::Junction(jid.clone())
+                            }
+                        })
+                        .count();
+                    let cap = if incoming { in_cap } else { out_cap };
+                    if used >= cap {
+                        return Err(DomainError::Invalid {
+                            message: format!(
+                                "{:?} has all {} {} ports connected",
+                                j.kind,
+                                cap,
+                                if incoming { "input" } else { "output" }
+                            ),
+                        });
+                    }
+                    // A standard splitter/merger/storage carries one item type;
+                    // smart/programmable splitters may filter per output.
+                    if !matches!(
+                        j.kind,
+                        JunctionKind::SmartSplitter | JunctionKind::ProgrammableSplitter
+                    ) {
+                        if let Some(other) = state.edges.values().find(|e| {
+                            e.from == EdgeEnd::Junction(jid.clone())
+                                || e.to == EdgeEnd::Junction(jid.clone())
+                        }) {
+                            if &other.item != item {
+                                return Err(DomainError::Invalid {
+                                    message: format!(
+                                        "{:?} already carries a different item",
+                                        j.kind
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             let e = BeltEdge {
                 id: new_id(),
                 factory: factory.clone(),
@@ -563,6 +649,71 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(e.status, id, "delete")?;
             if let Some(ops) = state.remove(COLL_EDGES, id) {
+                tx.record(ops);
+            }
+        }
+        Command::AddJunction {
+            factory,
+            kind,
+            graph_pos,
+            floor,
+        } => {
+            state.factories.get(factory).ok_or(DomainError::NotFound {
+                id: factory.clone(),
+            })?;
+            let j = Junction {
+                id: new_id(),
+                factory: factory.clone(),
+                kind: *kind,
+                buildable: kind.buildable_class().to_string(),
+                graph_pos: *graph_pos,
+                floor: *floor,
+                status: Status::Planned,
+                created_by: CreatedBy::Manual,
+            };
+            tx.created.push(j.id.clone());
+            tx.record(state.upsert(Entity::Junction(j)));
+        }
+        Command::MoveJunctionCard { id, graph_pos } => {
+            let mut j = state
+                .junctions
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            j.graph_pos = *graph_pos;
+            tx.record(state.upsert(Entity::Junction(j)));
+        }
+        Command::SetJunctionFloor { id, floor } => {
+            let mut j = state
+                .junctions
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            require_planned(j.status, id, "set floor")?;
+            j.floor = *floor;
+            tx.record(state.upsert(Entity::Junction(j)));
+        }
+        Command::DeleteJunction { id } => {
+            let j = state
+                .junctions
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            require_planned(j.status, id, "delete")?;
+            let edge_ids: Vec<Id> = state
+                .edges
+                .values()
+                .filter(|e| {
+                    e.from == EdgeEnd::Junction(id.clone()) || e.to == EdgeEnd::Junction(id.clone())
+                })
+                .map(|e| e.id.clone())
+                .collect();
+            for eid in edge_ids {
+                if let Some(ops) = state.remove(COLL_EDGES, &eid) {
+                    tx.record(ops);
+                }
+            }
+            if let Some(ops) = state.remove(COLL_JUNCTIONS, id) {
                 tx.record(ops);
             }
         }

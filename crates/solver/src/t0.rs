@@ -37,6 +37,9 @@ impl<'a> Graph<'a> {
         for p in &s.outputs {
             nodes.push(NodeRef::Output(p.id.clone()));
         }
+        for j in &s.junctions {
+            nodes.push(NodeRef::Junction(j.clone()));
+        }
         for n in &nodes {
             out_edges.entry(n.clone()).or_default();
             in_edges.entry(n.clone()).or_default();
@@ -130,6 +133,8 @@ fn demand_pass(
                     .and_then(|p| p.ceiling)
                     .unwrap_or(0.0),
                 NodeRef::Output(_) => 0.0,
+                // junctions relay whatever feeds them; weight them equally
+                NodeRef::Junction(_) => 1.0,
             })
             .collect();
         let total: f64 = weights.iter().sum();
@@ -176,6 +181,19 @@ fn demand_pass(
                 for (item, _) in group.recipe.inputs.clone() {
                     let need = cycles * group.recipe.in_rate(&item);
                     pull(node, &item, need, &mut edge_flow);
+                }
+            }
+            NodeRef::Junction(_) => {
+                // pure pass-through: demand assigned to outgoing edges pulls the
+                // same per-item demand across incoming edges
+                let mut demand_by_item: BTreeMap<&str, f64> = BTreeMap::new();
+                for &ei in graph.out_edges[node].iter() {
+                    *demand_by_item
+                        .entry(s.edges[ei].item.as_str())
+                        .or_insert(0.0) += edge_flow[ei];
+                }
+                for (item, demand) in demand_by_item {
+                    pull(node, item, demand, &mut edge_flow);
                 }
             }
             NodeRef::Input(_) => {} // sources terminate the pull

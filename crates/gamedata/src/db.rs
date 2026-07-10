@@ -3,7 +3,7 @@
 
 use rusqlite::Connection;
 
-use crate::docs::{Belt, GameData, Item, Machine, MachineKind, Recipe};
+use crate::docs::{Belt, Buildable, GameData, Item, Machine, MachineKind, Recipe};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS items (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS recipes (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS machines (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS belts (class TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS buildables (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 ";
 
 pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
@@ -33,6 +34,7 @@ pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
     clear("recipes")?;
     clear("machines")?;
     clear("belts")?;
+    clear("buildables")?;
     for (class, item) in &gd.items {
         conn.execute(
             "INSERT INTO items (class, json) VALUES (?1, ?2)",
@@ -54,6 +56,12 @@ pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
     for (class, b) in &gd.belts {
         conn.execute(
             "INSERT INTO belts (class, json) VALUES (?1, ?2)",
+            (class, serde_json::to_string(b)?),
+        )?;
+    }
+    for (class, b) in &gd.buildables {
+        conn.execute(
+            "INSERT INTO buildables (class, json) VALUES (?1, ?2)",
             (class, serde_json::to_string(b)?),
         )?;
     }
@@ -91,6 +99,10 @@ pub fn read(conn: &Connection) -> Result<GameData, DbError> {
     }
     for (class, json) in load("belts")? {
         gd.belts.insert(class, serde_json::from_str::<Belt>(&json)?);
+    }
+    for (class, json) in load("buildables")? {
+        gd.buildables
+            .insert(class, serde_json::from_str::<Buildable>(&json)?);
     }
     Ok(gd)
 }

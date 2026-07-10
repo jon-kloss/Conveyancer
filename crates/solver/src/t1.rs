@@ -111,6 +111,25 @@ fn run_lp(
             model = model.with(constraint!(outflow <= ceiling));
         }
     }
+    // Junctions conserve flow per item: Σin == Σout (no transform, no sink).
+    for jid in &snapshot.junctions {
+        let node = NodeRef::Junction(jid.clone());
+        let items: std::collections::BTreeSet<&str> = snapshot
+            .edges
+            .iter()
+            .filter(|e| e.from == node || e.to == node)
+            .map(|e| e.item.as_str())
+            .collect();
+        for item in items {
+            let inflow: Expression = edges_into(snapshot, &node, Some(item))
+                .map(|ei| lp.edge_vars[ei])
+                .sum();
+            let outflow: Expression = edges_out_of(snapshot, &node, Some(item))
+                .map(|ei| lp.edge_vars[ei])
+                .sum();
+            model = model.with(constraint!(inflow == outflow));
+        }
+    }
     for p in &snapshot.outputs {
         let node = NodeRef::Output(p.id.clone());
         let inflow: Expression = edges_into(snapshot, &node, None)

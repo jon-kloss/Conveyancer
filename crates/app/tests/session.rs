@@ -296,6 +296,124 @@ fn infeasible_target_clamps_and_names_constraint() {
 }
 
 #[test]
+fn junctions_split_and_enforce_port_caps() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (fid, out_port, _) = build_modular_frame_factory(&mut s);
+
+    // Insert a splitter on the rod run: rods → splitter → (screws, assembler).
+    let rods = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.recipe == "Recipe_IronRod_C")
+        .unwrap()
+        .id
+        .clone();
+    let screws = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.recipe == "Recipe_Screw_C")
+        .unwrap()
+        .id
+        .clone();
+    let mf = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.recipe == "Recipe_ModularFrame_C")
+        .unwrap()
+        .id
+        .clone();
+    let old_edges: Vec<Id> = s
+        .state
+        .edges
+        .values()
+        .filter(|e| e.from == EdgeEnd::Group(rods.clone()))
+        .map(|e| e.id.clone())
+        .collect();
+    for eid in old_edges {
+        s.edit(vec![Command::DeleteEdge { id: eid }]).unwrap();
+    }
+    let r = s
+        .edit(vec![Command::AddJunction {
+            factory: fid.clone(),
+            kind: JunctionKind::Splitter,
+            graph_pos: GraphPos { x: 700.0, y: 140.0 },
+            floor: 0,
+        }])
+        .unwrap();
+    let split = r.created[0].clone();
+    let je = EdgeEnd::Junction(split.clone());
+    connect_ends(
+        &mut s,
+        &fid,
+        EdgeEnd::Group(rods.clone()),
+        je.clone(),
+        "Desc_IronRod_C",
+        2,
+    );
+    connect_ends(
+        &mut s,
+        &fid,
+        je.clone(),
+        EdgeEnd::Group(screws),
+        "Desc_IronRod_C",
+        2,
+    );
+    connect_ends(
+        &mut s,
+        &fid,
+        je.clone(),
+        EdgeEnd::Group(mf),
+        "Desc_IronRod_C",
+        2,
+    );
+
+    // A splitter has exactly one input — a second feed must refuse.
+    let err = s.edit(vec![Command::AddEdge {
+        factory: fid.clone(),
+        from: EdgeEnd::Group(rods.clone()),
+        to: je.clone(),
+        item: "Desc_IronRod_C".into(),
+        tier: 1,
+    }]);
+    assert!(err.is_err(), "splitter input budget is 1");
+
+    // The golden chain still solves identically through the junction.
+    let r = s
+        .edit(vec![Command::SetPortRate {
+            id: out_port.clone(),
+            rate: 2.0,
+        }])
+        .unwrap();
+    let df = &r.derived.factories[&fid];
+    assert!((df.ports[&out_port] - 2.0).abs() < 1e-6);
+    let trunk = s
+        .state
+        .edges
+        .values()
+        .find(|e| e.to == je)
+        .map(|e| e.id.clone())
+        .unwrap();
+    assert!(
+        (df.edges[&trunk].flow - 21.0).abs() < 1e-4,
+        "trunk carries full 10.5T rods"
+    );
+}
+
+fn connect_ends(s: &mut Session, fid: &str, from: EdgeEnd, to: EdgeEnd, item: &str, tier: u8) {
+    s.edit(vec![Command::AddEdge {
+        factory: fid.into(),
+        from,
+        to,
+        item: item.into(),
+        tier,
+    }])
+    .unwrap();
+}
+
+#[test]
 fn floor_assignment_is_undoable_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("world.ficsit");

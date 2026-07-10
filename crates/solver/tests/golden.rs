@@ -154,12 +154,32 @@ fn modular_frame_snapshot(
             item: "ore".into(),
             ceiling: ore_ceiling,
         }],
+        junctions: vec![],
         outputs: vec![OutputPortSpec {
             id: "out-mf".into(),
             item: "mf".into(),
             rate: target,
         }],
     }
+}
+
+/// Same chain, but the rod run feeds screws and final assembly through an
+/// explicit splitter, and a merger sits on the RIP line — junctions must be
+/// invisible to the math (pure conservation).
+fn modular_frame_with_junctions(target: f64) -> FactorySnapshot {
+    let mut snap = modular_frame_snapshot(target, None, 780.0);
+    snap.junctions = vec!["split-rods".into(), "merge-rip".into()];
+    let j = |id: &str| NodeRef::Junction(id.to_string());
+    snap.edges
+        .retain(|e| e.id != "e-rod-screws" && e.id != "e-rod-mf" && e.id != "e-rip-mf");
+    snap.edges.extend([
+        edge("e-rod-split", g("rods"), j("split-rods"), "rod", 780.0),
+        edge("e-split-screws", j("split-rods"), g("screws"), "rod", 780.0),
+        edge("e-split-mf", j("split-rods"), g("mf"), "rod", 780.0),
+        edge("e-rip-merge", g("rip"), j("merge-rip"), "rip", 780.0),
+        edge("e-merge-mf", j("merge-rip"), g("mf"), "rip", 780.0),
+    ]);
+    snap
 }
 
 fn assert_close(actual: f64, expected: f64, what: &str) {
@@ -332,6 +352,39 @@ fn mass_balance_property() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn junctions_are_conservation_only() {
+    // Splitter + merger topology must reproduce the golden numbers exactly,
+    // with the splitter trunk carrying the full 10.5T rod flow.
+    let snap = modular_frame_with_junctions(0.0);
+    for solve in [solver::t0::solve, solver::t1::solve as fn(&_, &_) -> _] {
+        let r = solve(
+            &snap,
+            &T0Edit::SetTarget {
+                port: "out-mf".into(),
+                rate: 2.0,
+            },
+        )
+        .unwrap();
+        assert_close(r.ports["in-ore"], 48.0, "ore intake");
+        assert_close(r.groups["screws"].out_rates["screw"], 36.0, "screw rate");
+        assert_close(
+            r.edges["e-rod-split"].flow,
+            21.0,
+            "splitter trunk = full rod flow",
+        );
+        assert_close(
+            r.edges["e-split-screws"].flow,
+            9.0,
+            "split branch to screws",
+        );
+        assert_close(r.edges["e-split-mf"].flow, 12.0, "split branch to assembly");
+        assert_close(r.edges["e-rip-merge"].flow, 3.0, "merger in");
+        assert_close(r.edges["e-merge-mf"].flow, 3.0, "merger out");
+        assert_close(r.ports["out-mf"], 2.0, "target");
     }
 }
 

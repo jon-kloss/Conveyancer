@@ -59,6 +59,8 @@ pub enum NodeRef {
     Input(String),
     /// Boundary output port (items leave here; targets live here).
     Output(String),
+    /// Belt junction (splitter/merger/storage): pure conservation, no transform.
+    Junction(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +99,9 @@ pub struct FactorySnapshot {
     pub edges: Vec<EdgeSpec>,
     pub inputs: Vec<InputPortSpec>,
     pub outputs: Vec<OutputPortSpec>,
+    /// Junction node ids (splitters/mergers/storage) — conservation only.
+    #[serde(default)]
+    pub junctions: Vec<String>,
 }
 
 /// The edit being previewed (T0) or committed (T1).
