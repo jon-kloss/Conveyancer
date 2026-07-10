@@ -414,6 +414,426 @@ fn connect_ends(s: &mut Session, fid: &str, from: EdgeEnd, to: EdgeEnd, item: &s
 }
 
 #[test]
+fn empire_routes_propagate_supply_and_deficits() {
+    let mut s = Session::in_memory(None).unwrap();
+
+    // Upstream: iron rod factory shipping rods out.
+    let rod_fid = s
+        .edit(vec![Command::CreateFactory {
+            name: "ROD WORKS".into(),
+            position: MapPos { x: 0.0, y: 0.0 },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let rod_in = s
+        .edit(vec![Command::AddPort {
+            factory: rod_fid.clone(),
+            direction: PortDirection::In,
+            item: "Desc_OreIron_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(240.0),
+            graph_pos: GraphPos { x: 0.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let rod_out = s
+        .edit(vec![Command::AddPort {
+            factory: rod_fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronRod_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 600.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let smelt = add_group(
+        &mut s,
+        &rod_fid,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(200.0, 100.0),
+    );
+    let rods = add_group(
+        &mut s,
+        &rod_fid,
+        "Build_ConstructorMk1_C",
+        "Recipe_IronRod_C",
+        gp(400.0, 100.0),
+    );
+    let g = EdgeEnd::Group;
+    connect_in(
+        &mut s,
+        &rod_fid,
+        EdgeEnd::Port(rod_in),
+        g(smelt.clone()),
+        "Desc_OreIron_C",
+        3,
+    );
+    connect_in(
+        &mut s,
+        &rod_fid,
+        g(smelt),
+        g(rods.clone()),
+        "Desc_IronIngot_C",
+        3,
+    );
+    connect_in(
+        &mut s,
+        &rod_fid,
+        g(rods),
+        EdgeEnd::Port(rod_out.clone()),
+        "Desc_IronRod_C",
+        3,
+    );
+
+    // Downstream: screw factory that wants rods from the route.
+    let screw_fid = s
+        .edit(vec![Command::CreateFactory {
+            name: "SCREW WORKS".into(),
+            position: MapPos { x: 500.0, y: 0.0 },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let screw_in = s
+        .edit(vec![Command::AddPort {
+            factory: screw_fid.clone(),
+            direction: PortDirection::In,
+            item: "Desc_IronRod_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 0.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let screw_out = s
+        .edit(vec![Command::AddPort {
+            factory: screw_fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronScrew_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 600.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let screws = add_group(
+        &mut s,
+        &screw_fid,
+        "Build_ConstructorMk1_C",
+        "Recipe_Screw_C",
+        gp(300.0, 100.0),
+    );
+    connect_in(
+        &mut s,
+        &screw_fid,
+        EdgeEnd::Port(screw_in.clone()),
+        g(screws.clone()),
+        "Desc_IronRod_C",
+        3,
+    );
+    connect_in(
+        &mut s,
+        &screw_fid,
+        g(screws),
+        EdgeEnd::Port(screw_out.clone()),
+        "Desc_IronScrew_C",
+        3,
+    );
+
+    // Draw the route: rod OUT → screw IN, Mk.1 belt (60/min cap).
+    let r = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Belt { tier: 1 },
+            from: rod_out.clone(),
+            to: screw_in.clone(),
+            path: vec![MapPos { x: 0.0, y: 0.0 }, MapPos { x: 300.0, y: 400.0 }],
+        }])
+        .unwrap();
+    let route = r.created[0].clone();
+    assert_eq!(
+        s.state.ports[&rod_out].bound_route.as_deref(),
+        Some(route.as_str())
+    );
+
+    // Upstream ships 30 rods/min; downstream wants 100 screws/min = 25 rods.
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out.clone(),
+        rate: 30.0,
+    }])
+    .unwrap();
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: screw_out.clone(),
+            rate: 100.0,
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    let rt = &d.routes[&route];
+    assert!(
+        (rt.supplied - 30.0).abs() < 1e-6,
+        "supply = upstream rate: {}",
+        rt.supplied
+    );
+    assert!(
+        (rt.flow - 25.0).abs() < 1e-6,
+        "downstream intake 25 rods: {}",
+        rt.flow
+    );
+    assert!((rt.length_m - 500.0).abs() < 1e-6, "3-4-5 route length");
+    assert!(d.deficits.is_empty(), "supply covers demand");
+    // manifest is canonical and solver-maintained (§3.1.4)
+    assert_eq!(
+        s.state.routes[&route].manifest,
+        vec![("Desc_IronRod_C".to_string(), 25.0)]
+    );
+
+    // Now demand beyond the supply: 200 screws needs 50 rods, only 30 ship.
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: screw_out.clone(),
+            rate: 200.0,
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    // downstream hard-stops at the supplied ceiling: 30 rods → 120 screws
+    let clamped = s.state.ports[&screw_out].rate;
+    assert!(
+        (clamped - 120.0).abs() < 1e-4,
+        "clamped at supply: {clamped}"
+    );
+    // the route runs saturated at 30/60
+    assert!((d.routes[&route].flow - 30.0).abs() < 1e-4);
+    // raising upstream un-starves downstream up to the Mk.1 belt cap
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out.clone(),
+        rate: 80.0,
+    }])
+    .unwrap();
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: screw_out.clone(),
+            rate: 200.0,
+        }])
+        .unwrap();
+    let clamped = s.state.ports[&screw_out].rate;
+    assert!(
+        (clamped - 200.0).abs() < 1e-4,
+        "belt still allows 50 rods: {clamped}"
+    );
+    assert!((resp.derived.routes[&route].flow - 50.0).abs() < 1e-4);
+
+    // Upstream drops back to 30 while downstream still wants 200: the target
+    // must NOT be silently rewritten — it surfaces as a deficit instead.
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: rod_out.clone(),
+            rate: 30.0,
+        }])
+        .unwrap();
+    assert!(
+        (s.state.ports[&screw_out].rate - 200.0).abs() < 1e-4,
+        "target untouched"
+    );
+    let d = &resp.derived;
+    assert_eq!(d.deficits.len(), 1, "starvation surfaces as a deficit row");
+    let deficit = &d.deficits[0];
+    assert_eq!(deficit.factory, screw_fid);
+    assert!((deficit.supplied - 30.0).abs() < 1e-4);
+    assert!(
+        (deficit.needed - 50.0).abs() < 1e-4,
+        "200 screws need 50 rods: {}",
+        deficit.needed
+    );
+}
+
+fn connect_in(s: &mut Session, fid: &str, from: EdgeEnd, to: EdgeEnd, item: &str, tier: u8) {
+    s.edit(vec![Command::AddEdge {
+        factory: fid.into(),
+        from,
+        to,
+        item: item.into(),
+        tier,
+    }])
+    .unwrap();
+}
+
+#[test]
+fn generator_factories_and_circuits() {
+    let mut s = Session::in_memory(None).unwrap();
+
+    // A coal power plant: coal in → generators → MW out. Power is production.
+    let plant = s
+        .edit(vec![Command::CreateFactory {
+            name: "COASTAL COAL".into(),
+            position: MapPos { x: 0.0, y: 0.0 },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let coal_in = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Coal_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(120.0),
+            graph_pos: GraphPos { x: 0.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let mw_out = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::Out,
+            item: gamedata::docs::POWER_ITEM.into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 600.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let burn_recipe = s
+        .gamedata
+        .recipes
+        .values()
+        .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
+        .unwrap()
+        .class_name
+        .clone();
+    let gens = add_group(
+        &mut s,
+        &plant,
+        "Build_GeneratorCoal_C",
+        &burn_recipe,
+        gp(300.0, 100.0),
+    );
+    connect_in(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(coal_in),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Coal_C",
+        3,
+    );
+    connect_in(
+        &mut s,
+        &plant,
+        EdgeEnd::Group(gens.clone()),
+        EdgeEnd::Port(mw_out.clone()),
+        gamedata::docs::POWER_ITEM,
+        6,
+    );
+
+    // Target 300 MW — the MW slider back-solves the fuel chain like items.
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: mw_out.clone(),
+            rate: 300.0,
+        }])
+        .unwrap();
+    let df = &resp.derived.factories[&plant];
+    assert!((df.ports[&mw_out] - 300.0).abs() < 1e-6);
+    assert_eq!(s.state.groups[&gens].count, 4, "4 generators at 75 MW");
+    // 300 MW burns 60 coal/min (15/gen)
+    let coal_used: f64 = df.groups[&gens].in_rates["Desc_Coal_C"];
+    assert!((coal_used - 60.0).abs() < 1e-4, "coal burn: {coal_used}");
+
+    // A consumer factory joined by a power line forms a grid with a margin.
+    let consumer = s
+        .edit(vec![Command::CreateFactory {
+            name: "IRON WORKS".into(),
+            position: MapPos { x: 800.0, y: 0.0 },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let ore_in = s
+        .edit(vec![Command::AddPort {
+            factory: consumer.clone(),
+            direction: PortDirection::In,
+            item: "Desc_OreIron_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(120.0),
+            graph_pos: GraphPos { x: 0.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let ingot_out = s
+        .edit(vec![Command::AddPort {
+            factory: consumer.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 400.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let smelt = add_group(
+        &mut s,
+        &consumer,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(100.0, 100.0),
+    );
+    connect_in(
+        &mut s,
+        &consumer,
+        EdgeEnd::Port(ore_in),
+        EdgeEnd::Group(smelt.clone()),
+        "Desc_OreIron_C",
+        3,
+    );
+    connect_in(
+        &mut s,
+        &consumer,
+        EdgeEnd::Group(smelt),
+        EdgeEnd::Port(ingot_out.clone()),
+        "Desc_IronIngot_C",
+        3,
+    );
+    s.edit(vec![Command::SetPortRate {
+        id: ingot_out,
+        rate: 30.0,
+    }])
+    .unwrap();
+    let resp = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Power,
+            from: plant.clone(),
+            to: consumer.clone(),
+            path: vec![MapPos { x: 0.0, y: 0.0 }, MapPos { x: 800.0, y: 0.0 }],
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    assert_eq!(d.circuits.len(), 1, "one grid");
+    let grid = &d.circuits[0];
+    assert_eq!(grid.members.len(), 2);
+    assert!(
+        (grid.generation_mw - 300.0).abs() < 1e-4,
+        "gen {}",
+        grid.generation_mw
+    );
+    assert!(grid.demand_mw > 0.0, "smelter draws power");
+    assert!((d.total_generation_mw - 300.0).abs() < 1e-4);
+}
+
+#[test]
 fn floor_assignment_is_undoable_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("world.ficsit");

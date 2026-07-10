@@ -23,6 +23,9 @@ pub struct Item {
     /// RF_SOLID | RF_LIQUID | RF_GAS
     pub form: String,
     pub stack_size: String,
+    /// MJ per item — drives generator fuel-burn synthesis.
+    #[serde(default)]
+    pub energy_mj: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,6 +53,11 @@ pub enum MachineKind {
     Extractor {
         items_per_cycle: f64,
         cycle_time_s: f64,
+    },
+    /// Fuel generator: produces MW (as the `POWER_ITEM` pseudo-item) by
+    /// burning fuel through synthesized recipes.
+    Generator {
+        power_production_mw: f64,
     },
 }
 
@@ -169,6 +177,10 @@ fn f(v: &Value, key: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Pseudo-item carried by generator outputs: 1 "item/min" = 1 MW.
+/// Power is production (Addendum A2) — the ordinary solver handles it.
+pub const POWER_ITEM: &str = "__PowerMW";
+
 const BELT_TIERS: [(&str, u8); 6] = [
     ("Build_ConveyorBeltMk1_C", 1),
     ("Build_ConveyorBeltMk2_C", 2),
@@ -189,6 +201,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         build_version: build_version.to_string(),
         ..Default::default()
     };
+    let mut generator_fuels: Vec<(String, f64, Vec<String>)> = Vec::new();
 
     for section in sections {
         let native = section
@@ -232,6 +245,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         display_name: s(c, "mDisplayName"),
                         form: s(c, "mForm"),
                         stack_size: s(c, "mStackSize"),
+                        energy_mj: f(c, "mEnergyValue"),
                     };
                     if !item.class_name.is_empty() {
                         gd.items.insert(item.class_name.clone(), item);
@@ -285,6 +299,37 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     }
                 }
             }
+            "FGBuildableGeneratorFuel" | "FGBuildableGeneratorNuclear" => {
+                for c in &classes {
+                    let class_name = s(c, "ClassName");
+                    if class_name.is_empty() {
+                        continue;
+                    }
+                    let mw = f(c, "mPowerProduction");
+                    // fuel classes: modern Docs nests them in mFuel[].mFuelClass
+                    let mut fuels: Vec<String> = Vec::new();
+                    if let Some(list) = c.get("mFuel").and_then(Value::as_array) {
+                        for entry in list {
+                            let fc = s(entry, "mFuelClass");
+                            if !fc.is_empty() {
+                                fuels.push(fc);
+                            }
+                        }
+                    }
+                    gd.machines.insert(
+                        class_name.clone(),
+                        Machine {
+                            class_name: class_name.clone(),
+                            display_name: s(c, "mDisplayName"),
+                            power_mw: 0.0, // generators draw nothing; they produce
+                            kind: MachineKind::Generator {
+                                power_production_mw: mw,
+                            },
+                        },
+                    );
+                    generator_fuels.push((class_name, mw, fuels));
+                }
+            }
             "FGBuildableConveyorBelt" => {
                 for c in &classes {
                     let class_name = s(c, "ClassName");
@@ -308,6 +353,52 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             _ => {}
         }
     }
+
+    // Synthesize fuel-burn recipes: MW·60 MJ/min ÷ fuel MJ = fuel/min.
+    // Supplemental fluids (water) wait for the pipe network model — noted in
+    // DECISIONS.md; the fuel math itself is exact.
+    for (gen_class, mw, fuels) in generator_fuels {
+        for fuel in fuels {
+            let Some(fuel_item) = gd.items.get(&fuel) else {
+                continue;
+            };
+            if fuel_item.energy_mj <= 0.0 {
+                continue;
+            }
+            let per_min = mw * 60.0 / fuel_item.energy_mj;
+            let class_name = format!("Recipe_Power_{}_{}", gen_class.trim_end_matches("_C"), fuel);
+            gd.recipes.insert(
+                class_name.clone(),
+                Recipe {
+                    alternate: false,
+                    class_name,
+                    display_name: format!(
+                        "{} — {}",
+                        gd.machines
+                            .get(&gen_class)
+                            .map(|m| m.display_name.clone())
+                            .unwrap_or_default(),
+                        fuel_item.display_name
+                    ),
+                    duration_s: 60.0,
+                    ingredients: vec![(fuel, per_min)],
+                    products: vec![(POWER_ITEM.to_string(), mw)],
+                    produced_in: vec![gen_class.clone()],
+                },
+            );
+        }
+    }
+    // The pseudo power item so names resolve everywhere.
+    gd.items.insert(
+        POWER_ITEM.to_string(),
+        Item {
+            class_name: POWER_ITEM.to_string(),
+            display_name: "Power".to_string(),
+            form: "RF_POWER".to_string(),
+            stack_size: String::new(),
+            energy_mj: 0.0,
+        },
+    );
 
     // Liquids/gases: Docs amounts are liters; normalize to m³ (game rates are m³/min).
     let liquid_forms = ["RF_LIQUID", "RF_GAS"];
@@ -413,5 +504,19 @@ mod tests {
             "machines are buildables too"
         );
         assert!(gd.buildables.contains_key("Build_ConveyorLiftMk2_C"));
+        // generator fuel synthesis: 75 MW · 60 ÷ 300 MJ = 15 coal/min
+        let gen = &gd.machines["Build_GeneratorCoal_C"];
+        assert!(
+            matches!(gen.kind, MachineKind::Generator { power_production_mw } if power_production_mw == 75.0)
+        );
+        assert_eq!(gen.power_mw, 0.0, "generators draw nothing");
+        let burn = gd
+            .recipes
+            .values()
+            .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
+            .expect("synthesized burn recipe");
+        assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
+        assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
+        assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
     }
 }

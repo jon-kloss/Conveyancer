@@ -76,11 +76,54 @@ pub struct DerivedNode {
     pub conflict: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivedRoute {
+    /// items/min actually moving (downstream intake).
+    pub flow: f64,
+    /// what the upstream factory can push (post-cap) — flow < supplied means slack.
+    pub supplied: f64,
+    pub capacity: f64,
+    pub saturation: f64,
+    pub length_m: f64,
+    pub item: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeficitRow {
+    pub factory: Id,
+    pub port: Id,
+    pub route: Option<Id>,
+    pub item: String,
+    /// items/min the factory's own target would need through this port.
+    pub needed: f64,
+    pub supplied: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivedCircuit {
+    pub name: String,
+    pub members: Vec<Id>,
+    pub generation_mw: f64,
+    pub demand_mw: f64,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Derived {
     pub factories: BTreeMap<String, DerivedFactory>,
     pub nodes: BTreeMap<String, DerivedNode>,
+    pub routes: BTreeMap<String, DerivedRoute>,
+    pub deficits: Vec<DeficitRow>,
+    /// Power grids: connected components over Power routes (A2.1).
+    pub circuits: Vec<DerivedCircuit>,
+    pub total_generation_mw: f64,
+    /// True when factories feed each other in a loop — solved independently.
+    pub empire_cycle: bool,
+    /// Whole-empire recompute wall time (SDD §5.4 budget: 200ms).
+    pub recompute_us: u64,
     pub total_power_mw: f64,
 }
 
@@ -193,12 +236,11 @@ impl Session {
             }
         }
 
-        // T1 re-solve every factory touched by the edit; fold write-backs in.
+        // Empire re-solve (SDD §5.4): edits ripple downstream through routes.
+        // Solver-owned write-backs (counts/clocks, clamped targets, route
+        // manifests) fold into the same undo entry as the causing edit.
         let trigger = Self::solve_trigger(&cmds);
-        let touched = self.touched_factories(&cmds);
-        for fid in &touched {
-            self.solve_factory_into_tx(fid, &trigger, &mut tx);
-        }
+        let derived = self.empire_solve(&trigger, Some(&mut tx));
 
         let created = tx.created.clone();
         let entry = self.undo.commit(tx);
@@ -207,7 +249,7 @@ impl Session {
 
         Ok(EditResponse {
             patches: entry.forward,
-            derived: self.solve_all_readonly(),
+            derived,
             can_undo: self.undo.can_undo(),
             can_redo: self.undo.can_redo(),
             undo_label: self.undo.undo_label().map(String::from),
@@ -272,51 +314,6 @@ impl Session {
             }
         }
         T0Edit::Recompute
-    }
-
-    fn touched_factories(&self, cmds: &[Command]) -> Vec<Id> {
-        let mut out: Vec<Id> = Vec::new();
-        let mut push = |id: Option<Id>| {
-            if let Some(id) = id {
-                if !out.contains(&id) {
-                    out.push(id);
-                }
-            }
-        };
-        for cmd in cmds {
-            match cmd {
-                Command::AddGroup { factory, .. }
-                | Command::AddPort { factory, .. }
-                | Command::AddEdge { factory, .. }
-                | Command::AddJunction { factory, .. }
-                | Command::ClaimNode { factory, .. } => push(Some(factory.clone())),
-                Command::SetGroupRecipe { id, .. }
-                | Command::SetGroupCount { id, .. }
-                | Command::SetGroupClock { id, .. }
-                | Command::SetGroupFloor { id, .. }
-                | Command::DeleteGroup { id } => {
-                    push(self.state.groups.get(id).map(|g| g.factory.clone()))
-                }
-                Command::SetPortRate { id, .. }
-                | Command::SetPortCeiling { id, .. }
-                | Command::DeletePort { id } => {
-                    push(self.state.ports.get(id).map(|p| p.factory.clone()))
-                }
-                Command::SetEdgeTier { id, .. } | Command::DeleteEdge { id } => {
-                    push(self.state.edges.get(id).map(|e| e.factory.clone()))
-                }
-                Command::ReleaseNode { id } => {
-                    push(self.state.node_claims.get(id).map(|c| c.factory.clone()))
-                }
-                Command::DeleteJunction { id }
-                | Command::MoveJunctionCard { id, .. }
-                | Command::SetJunctionFloor { id, .. } => {
-                    push(self.state.junctions.get(id).map(|j| j.factory.clone()))
-                }
-                _ => {}
-            }
-        }
-        out
     }
 
     /// Build the pure solver snapshot for one factory from canonical state + gamedata.
@@ -403,65 +400,9 @@ impl Session {
         gamedata::docs::extraction_rate(machine, &node.purity, claim.clock)
     }
 
-    /// T1 solve one factory; fold count/clock write-backs into the open tx.
-    fn solve_factory_into_tx(&mut self, fid: &Id, trigger: &T0Edit, tx: &mut Transaction) {
-        let Some(snapshot) = self.snapshot(fid) else {
-            return;
-        };
-        if snapshot.groups.is_empty() {
-            return;
-        }
-        let trigger = self.trigger_for_factory(fid, &snapshot, trigger);
-        let Ok(result) = solver::t1::solve(&snapshot, &trigger) else {
-            return;
-        };
-        // Write back solver-owned numbers (counts/clocks) — same undo entry.
-        for (gid, gr) in &result.groups {
-            if let Some(g) = self.state.groups.get(gid) {
-                if g.count != gr.count || (g.clock - gr.clock).abs() > 1e-9 {
-                    let mut g = g.clone();
-                    g.count = gr.count;
-                    g.clock = gr.clock;
-                    let ops = self.state.upsert(Entity::Group(g));
-                    tx.forward.push(ops.0);
-                    tx.inverse.push(ops.1);
-                }
-            }
-        }
-        // Honest clamp: if the committed target exceeded the ceiling, the port
-        // rate settles at the ceiling (slider hard-stop made visible).
-        if result.clamped {
-            if let T0Edit::SetTarget { port, .. } = &trigger {
-                if let (Some(p), Some(rate)) = (self.state.ports.get(port), result.ports.get(port))
-                {
-                    if (p.rate - rate).abs() > 1e-9 {
-                        let mut p = p.clone();
-                        p.rate = *rate;
-                        let ops = self.state.upsert(Entity::Port(p));
-                        tx.forward.push(ops.0);
-                        tx.inverse.push(ops.1);
-                    }
-                }
-            }
-        }
-        // A4 miss tracking.
-        let ms = result.solve_us as f64 / 1000.0;
-        let slow = self.slow_solves.entry(fid.clone()).or_insert(0);
-        if ms > T1_BUDGET_MS {
-            *slow += 1;
-        } else {
-            *slow = 0;
-        }
-    }
-
     /// If the factory has a single output port, always solve as SetTarget on it
     /// so the ceiling/binding is available for the slider tick.
-    fn trigger_for_factory(
-        &self,
-        _fid: &Id,
-        snapshot: &FactorySnapshot,
-        trigger: &T0Edit,
-    ) -> T0Edit {
+    fn trigger_for_factory(&self, snapshot: &FactorySnapshot, trigger: &T0Edit) -> T0Edit {
         match trigger {
             T0Edit::SetTarget { port, rate } if snapshot.outputs.iter().any(|p| &p.id == port) => {
                 T0Edit::SetTarget {
@@ -488,60 +429,255 @@ impl Session {
         }
     }
 
-    /// Recompute derived state for everything, without touching canonical state.
-    pub fn solve_all_readonly(&mut self) -> Derived {
+    /// Solve order over the inter-factory route graph (upstream first).
+    /// Cycles fall back to key order with the cycle flagged — no dead ends.
+    fn empire_order(&self) -> (Vec<Id>, bool) {
+        let mut deps: BTreeMap<Id, Vec<Id>> = BTreeMap::new(); // factory -> upstream factories
+        for r in self.state.routes.values() {
+            if let RouteKind::Belt { .. } = r.kind {
+                let (Some(src), Some(dst)) = (
+                    self.state.ports.get(&r.endpoints.0),
+                    self.state.ports.get(&r.endpoints.1),
+                ) else {
+                    continue;
+                };
+                deps.entry(dst.factory.clone())
+                    .or_default()
+                    .push(src.factory.clone());
+            }
+        }
+        let all: Vec<Id> = self.state.factories.keys().cloned().collect();
+        let mut order = Vec::new();
+        let mut placed: std::collections::BTreeSet<Id> = Default::default();
+        let mut remaining: Vec<Id> = all.clone();
+        while !remaining.is_empty() {
+            let before = order.len();
+            remaining.retain(|fid| {
+                let ready = deps
+                    .get(fid)
+                    .map(|ups| {
+                        ups.iter()
+                            .all(|u| placed.contains(u) || !self.state.factories.contains_key(u))
+                    })
+                    .unwrap_or(true);
+                if ready {
+                    order.push(fid.clone());
+                    placed.insert(fid.clone());
+                }
+                !ready
+            });
+            if order.len() == before {
+                // cycle: take the rest in stable order
+                order.extend(remaining.iter().cloned());
+                return (order, true);
+            }
+        }
+        (order, false)
+    }
+
+    /// The empire pass: solve factories upstream-first, propagating supply
+    /// ceilings through bound routes. With `tx`, solver-owned numbers write
+    /// back into canonical state (counts/clocks, clamped edited target, route
+    /// manifests) — all inside the causing command's undo entry.
+    fn empire_solve(&mut self, trigger: &T0Edit, mut tx: Option<&mut Transaction>) -> Derived {
+        let started = std::time::Instant::now();
         let mut derived = Derived::default();
-        let fids: Vec<Id> = self.state.factories.keys().cloned().collect();
-        for fid in fids {
-            let Some(snapshot) = self.snapshot(&fid) else {
+        let (order, cyclic) = self.empire_order();
+        derived.empire_cycle = cyclic;
+
+        // supplied rate per bound In port (upstream out rate capped by the belt)
+        let mut supplies: BTreeMap<Id, f64> = BTreeMap::new();
+        let mut route_supply: BTreeMap<Id, f64> = BTreeMap::new();
+
+        for fid in &order {
+            let Some(mut snapshot) = self.snapshot(fid) else {
                 derived.factories.insert(
-                    fid,
-                    DerivedFactory {
-                        groups: BTreeMap::new(),
-                        edges: BTreeMap::new(),
-                        ports: BTreeMap::new(),
-                        total_power_mw: 0.0,
-                        target_ceiling: None,
-                        solve_us: 0,
-                        solve_on_release: false,
-                        solve_error: Some("missing recipe or machine data".into()),
-                    },
+                    fid.clone(),
+                    Self::error_factory("missing recipe or machine data"),
                 );
                 continue;
             };
-            let trigger = if snapshot.outputs.len() == 1 {
-                T0Edit::SetTarget {
-                    port: snapshot.outputs[0].id.clone(),
-                    rate: snapshot.outputs[0].rate,
+            // effective ceilings: a bound In port can't intake more than its route supplies
+            for input in &mut snapshot.inputs {
+                if let Some(port) = self.state.ports.get(&input.id) {
+                    if port.bound_route.is_some() {
+                        if let Some(supply) = supplies.get(&input.id) {
+                            input.ceiling = Some(match input.ceiling {
+                                Some(c) => c.min(*supply),
+                                None => *supply,
+                            });
+                        }
+                    }
                 }
-            } else {
-                T0Edit::Recompute
-            };
-            let solve_on_release = self.slow_solves.get(&fid).copied().unwrap_or(0) >= 3;
-            match solver::t1::solve(&snapshot, &trigger) {
-                Ok(r) => {
-                    derived.total_power_mw += r.total_power_mw;
+            }
+            if snapshot.groups.is_empty() {
+                derived
+                    .factories
+                    .insert(fid.clone(), Self::error_factory("no machine groups yet"));
+                continue;
+            }
+            let trig = self.trigger_for_factory(&snapshot, trigger);
+            let solve_on_release = self.slow_solves.get(fid).copied().unwrap_or(0) >= 3;
+            let result = match solver::t1::solve(&snapshot, &trig) {
+                Ok(r) => r,
+                Err(e) => {
                     derived
                         .factories
-                        .insert(fid, to_derived(&r, solve_on_release));
+                        .insert(fid.clone(), Self::error_factory(&e.to_string()));
+                    continue;
                 }
-                Err(e) => {
-                    derived.factories.insert(
-                        fid,
-                        DerivedFactory {
-                            groups: BTreeMap::new(),
-                            edges: BTreeMap::new(),
-                            ports: BTreeMap::new(),
-                            total_power_mw: 0.0,
-                            target_ceiling: None,
-                            solve_us: 0,
-                            solve_on_release,
-                            solve_error: Some(e.to_string()),
-                        },
-                    );
+            };
+
+            // write-backs (only on the edit path)
+            if let Some(tx) = tx.as_deref_mut() {
+                for (gid, gr) in &result.groups {
+                    if let Some(g) = self.state.groups.get(gid) {
+                        if g.count != gr.count || (g.clock - gr.clock).abs() > 1e-9 {
+                            let mut g = g.clone();
+                            g.count = gr.count;
+                            g.clock = gr.clock;
+                            let ops = self.state.upsert(Entity::Group(g));
+                            tx.forward.push(ops.0);
+                            tx.inverse.push(ops.1);
+                        }
+                    }
+                }
+                // Clamp write-back only for the port the user actually edited —
+                // an upstream dip must surface as a deficit, never silently
+                // rewrite a downstream target.
+                if result.clamped {
+                    if let T0Edit::SetTarget { port, .. } = trigger {
+                        if let (Some(p), Some(rate)) =
+                            (self.state.ports.get(port), result.ports.get(port))
+                        {
+                            if (p.rate - rate).abs() > 1e-9 {
+                                let mut p = p.clone();
+                                p.rate = *rate;
+                                let ops = self.state.upsert(Entity::Port(p));
+                                tx.forward.push(ops.0);
+                                tx.inverse.push(ops.1);
+                            }
+                        }
+                    }
+                }
+                let ms = result.solve_us as f64 / 1000.0;
+                let slow = self.slow_solves.entry(fid.clone()).or_insert(0);
+                if ms > T1_BUDGET_MS {
+                    *slow += 1;
+                } else {
+                    *slow = 0;
+                }
+            }
+
+            // feed downstream: out port rate capped by the route's belt tier
+            for pid in &self.state.factories[fid].ports.clone() {
+                let Some(port) = self.state.ports.get(pid) else {
+                    continue;
+                };
+                if port.direction != PortDirection::Out {
+                    continue;
+                }
+                let Some(rid) = &port.bound_route else {
+                    continue;
+                };
+                let Some(route) = self.state.routes.get(rid) else {
+                    continue;
+                };
+                let RouteKind::Belt { tier } = route.kind else {
+                    continue;
+                };
+                let out_rate = result.ports.get(pid).copied().unwrap_or(0.0);
+                let supply = out_rate.min(belt_capacity(tier));
+                supplies.insert(route.endpoints.1.clone(), supply);
+                route_supply.insert(rid.clone(), supply);
+            }
+
+            derived.total_power_mw += result.total_power_mw;
+            derived
+                .factories
+                .insert(fid.clone(), to_derived(&result, solve_on_release));
+        }
+
+        // Route flows (= downstream intake), deficits, manifests.
+        let route_list: Vec<planner_core::entities::Route> =
+            self.state.routes.values().cloned().collect();
+        for r in &route_list {
+            let RouteKind::Belt { tier } = r.kind else {
+                continue;
+            };
+            let capacity = belt_capacity(tier);
+            let dst_port = &r.endpoints.1;
+            let dst_factory = self.state.ports.get(dst_port).map(|p| p.factory.clone());
+            let flow = dst_factory
+                .as_ref()
+                .and_then(|f| derived.factories.get(f))
+                .and_then(|df| df.ports.get(dst_port))
+                .copied()
+                .unwrap_or(0.0);
+            let supplied = route_supply.get(&r.id).copied().unwrap_or(0.0);
+            let item = r.manifest.first().map(|(i, _)| i.clone());
+            derived.routes.insert(
+                r.id.clone(),
+                DerivedRoute {
+                    flow,
+                    supplied,
+                    capacity,
+                    saturation: if capacity > 0.0 { flow / capacity } else { 0.0 },
+                    length_m: polyline_length(&r.path),
+                    item,
+                },
+            );
+            // Deficit: the downstream factory's own target is clamped by this port.
+            if let (Some(fid), Some(df)) = (
+                dst_factory.clone(),
+                dst_factory.as_ref().and_then(|f| derived.factories.get(f)),
+            ) {
+                if let Some(ceiling) = &df.target_ceiling {
+                    if let solver::model::Constraint::InputCeiling { port, item, .. } =
+                        &ceiling.binding
+                    {
+                        if port == dst_port {
+                            let requested = self
+                                .state
+                                .factories
+                                .get(&fid)
+                                .and_then(|f| {
+                                    f.ports.iter().find_map(|pid| {
+                                        let p = self.state.ports.get(pid)?;
+                                        (p.direction == PortDirection::Out).then_some(p.rate)
+                                    })
+                                })
+                                .unwrap_or(0.0);
+                            if requested > ceiling.max_rate + 1e-6 && ceiling.max_rate > 0.0 {
+                                let needed = flow * requested / ceiling.max_rate;
+                                derived.deficits.push(DeficitRow {
+                                    factory: fid,
+                                    port: dst_port.clone(),
+                                    route: Some(r.id.clone()),
+                                    item: item.clone(),
+                                    needed,
+                                    supplied,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // Manifest is canonical (§3.1.4) — the solver maintains it.
+            if let Some(tx) = tx.as_deref_mut() {
+                if let Some(cur) = self.state.routes.get(&r.id) {
+                    let want = vec![(item_or(&cur.manifest, &r.endpoints.0, &self.state), flow)];
+                    if cur.manifest != want {
+                        let mut updated = cur.clone();
+                        updated.manifest = want;
+                        let ops = self.state.upsert(Entity::Route(updated));
+                        tx.forward.push(ops.0);
+                        tx.inverse.push(ops.1);
+                    }
                 }
             }
         }
+
         // Node claim conflicts (§3.1.3 — representable, rendered CRIT, never prevented).
         let mut by_node: BTreeMap<String, u32> = BTreeMap::new();
         for c in self.state.node_claims.values() {
@@ -556,7 +692,95 @@ impl Session {
                 },
             );
         }
+        // Power circuits: union-find over Power routes; a grid's generation is
+        // the POWER_ITEM output of its member factories, demand their draw.
+        {
+            let mut parent: BTreeMap<Id, Id> = self
+                .state
+                .factories
+                .keys()
+                .map(|k| (k.clone(), k.clone()))
+                .collect();
+            fn find(parent: &mut BTreeMap<Id, Id>, x: &Id) -> Id {
+                let p = parent.get(x).cloned().unwrap_or_else(|| x.clone());
+                if &p == x {
+                    p
+                } else {
+                    let root = find(parent, &p);
+                    parent.insert(x.clone(), root.clone());
+                    root
+                }
+            }
+            let mut in_grid: std::collections::BTreeSet<Id> = Default::default();
+            for r in self.state.routes.values() {
+                if matches!(r.kind, RouteKind::Power) {
+                    let (a, b) = (&r.endpoints.0, &r.endpoints.1);
+                    in_grid.insert(a.clone());
+                    in_grid.insert(b.clone());
+                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+                    if ra != rb {
+                        parent.insert(ra, rb);
+                    }
+                }
+            }
+            let mut grids: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
+            for fid in in_grid {
+                let root = find(&mut parent, &fid);
+                grids.entry(root).or_default().push(fid);
+            }
+            let gen_of = |fid: &Id| -> f64 {
+                derived
+                    .factories
+                    .get(fid)
+                    .map(|df| {
+                        df.groups
+                            .values()
+                            .map(|g| {
+                                g.out_rates
+                                    .get(gamedata::docs::POWER_ITEM)
+                                    .copied()
+                                    .unwrap_or(0.0)
+                            })
+                            .sum::<f64>()
+                    })
+                    .unwrap_or(0.0)
+            };
+            for (i, (_, members)) in grids.into_iter().enumerate() {
+                let generation_mw: f64 = members.iter().map(&gen_of).sum();
+                let demand_mw: f64 = members
+                    .iter()
+                    .filter_map(|f| derived.factories.get(f))
+                    .map(|df| df.total_power_mw)
+                    .sum();
+                derived.circuits.push(DerivedCircuit {
+                    name: format!("GRID {}", (b'A' + (i as u8 % 26)) as char),
+                    members,
+                    generation_mw,
+                    demand_mw,
+                });
+            }
+            derived.total_generation_mw = self.state.factories.keys().map(gen_of).sum();
+        }
+        derived.recompute_us = started.elapsed().as_micros() as u64;
         derived
+    }
+
+    fn error_factory(message: &str) -> DerivedFactory {
+        DerivedFactory {
+            groups: BTreeMap::new(),
+            edges: BTreeMap::new(),
+            ports: BTreeMap::new(),
+            total_power_mw: 0.0,
+            target_ceiling: None,
+            solve_us: 0,
+            solve_on_release: false,
+            solve_error: Some(message.into()),
+        }
+    }
+
+    /// Recompute derived state for everything, without touching canonical state.
+    pub fn solve_all_readonly(&mut self) -> Derived {
+        self.empire_solve(&T0Edit::Recompute, None)
     }
 }
 
@@ -607,4 +831,18 @@ fn to_derived(r: &SolveResult, solve_on_release: bool) -> DerivedFactory {
         solve_on_release,
         solve_error: None,
     }
+}
+
+fn polyline_length(path: &[MapPos]) -> f64 {
+    path.windows(2)
+        .map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt())
+        .sum()
+}
+
+fn item_or(manifest: &[(String, f64)], src_port: &Id, state: &PlanState) -> String {
+    manifest
+        .first()
+        .map(|(i, _)| i.clone())
+        .or_else(|| state.ports.get(src_port).map(|p| p.item.clone()))
+        .unwrap_or_default()
 }

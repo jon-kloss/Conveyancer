@@ -152,6 +152,21 @@ pub enum Command {
     DeleteJunction {
         id: Id,
     },
+    /// Bind an Out port of one factory to an In port of another with a map
+    /// route. Phase 2 kinds: Belt (items) and Power (endpoints are factories).
+    AddRoute {
+        kind: RouteKind,
+        from: Id,
+        to: Id,
+        path: Vec<MapPos>,
+    },
+    SetRouteTier {
+        id: Id,
+        tier: u8,
+    },
+    DeleteRoute {
+        id: Id,
+    },
     SetEdgeTier {
         id: Id,
         tier: u8,
@@ -197,6 +212,9 @@ impl Command {
             Command::MoveJunctionCard { .. } => "move junction",
             Command::SetJunctionFloor { .. } => "set junction floor",
             Command::DeleteJunction { .. } => "delete junction",
+            Command::AddRoute { .. } => "draw route",
+            Command::SetRouteTier { .. } => "set route tier",
+            Command::DeleteRoute { .. } => "delete route",
             Command::SetEdgeTier { .. } => "set belt tier",
             Command::DeleteEdge { .. } => "delete belt",
             Command::ClaimNode { .. } => "claim node",
@@ -318,6 +336,34 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .filter(|j| &j.factory == id)
                 .map(|j| j.id.clone())
                 .collect();
+            let port_set: std::collections::BTreeSet<Id> = port_ids.iter().cloned().collect();
+            let route_ids: Vec<Id> = state
+                .routes
+                .values()
+                .filter(|r| {
+                    port_set.contains(&r.endpoints.0)
+                        || port_set.contains(&r.endpoints.1)
+                        || r.endpoints.0 == *id
+                        || r.endpoints.1 == *id
+                })
+                .map(|r| r.id.clone())
+                .collect();
+            for rid in route_ids {
+                if let Some(r) = state.routes.get(&rid).cloned() {
+                    // unbind the far port so it doesn't dangle
+                    for pid in [&r.endpoints.0, &r.endpoints.1] {
+                        if let Some(mut p) = state.ports.get(pid).cloned() {
+                            if p.bound_route.as_deref() == Some(rid.as_str()) {
+                                p.bound_route = None;
+                                tx.record(state.upsert(Entity::Port(p)));
+                            }
+                        }
+                    }
+                }
+                if let Some(ops) = state.remove(COLL_ROUTES, &rid) {
+                    tx.record(ops);
+                }
+            }
             for eid in edge_ids {
                 if let Some(ops) = state.remove(COLL_EDGES, &eid) {
                     tx.record(ops);
@@ -535,6 +581,21 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(p.status, id, "delete")?;
+            if let Some(rid) = p.bound_route.clone() {
+                if let Some(r) = state.routes.get(&rid).cloned() {
+                    for pid in [&r.endpoints.0, &r.endpoints.1] {
+                        if pid != id {
+                            if let Some(mut far) = state.ports.get(pid).cloned() {
+                                far.bound_route = None;
+                                tx.record(state.upsert(Entity::Port(far)));
+                            }
+                        }
+                    }
+                }
+                if let Some(ops) = state.remove(COLL_ROUTES, &rid) {
+                    tx.record(ops);
+                }
+            }
             let edge_ids: Vec<Id> = state
                 .edges
                 .values()
@@ -714,6 +775,137 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 }
             }
             if let Some(ops) = state.remove(COLL_JUNCTIONS, id) {
+                tx.record(ops);
+            }
+        }
+        Command::AddRoute {
+            kind,
+            from,
+            to,
+            path,
+        } => {
+            match kind {
+                RouteKind::Power => {
+                    // power lines join factories; endpoints are factory ids
+                    for fid in [from, to] {
+                        state
+                            .factories
+                            .get(fid)
+                            .ok_or(DomainError::NotFound { id: fid.clone() })?;
+                    }
+                    if from == to {
+                        return Err(DomainError::Invalid {
+                            message: "a power line needs two different factories".into(),
+                        });
+                    }
+                    if state.routes.values().any(|r| {
+                        matches!(r.kind, RouteKind::Power)
+                            && ((r.endpoints.0 == *from && r.endpoints.1 == *to)
+                                || (r.endpoints.0 == *to && r.endpoints.1 == *from))
+                    }) {
+                        return Err(DomainError::Invalid {
+                            message: "these factories are already connected".into(),
+                        });
+                    }
+                    let r = Route {
+                        id: new_id(),
+                        kind: kind.clone(),
+                        path: path.clone(),
+                        endpoints: (from.clone(), to.clone()),
+                        manifest: vec![],
+                        status: Status::Planned,
+                        created_by: CreatedBy::Manual,
+                    };
+                    tx.created.push(r.id.clone());
+                    tx.record(state.upsert(Entity::Route(r)));
+                }
+                RouteKind::Belt { tier } => {
+                    valid_tier(*tier)?;
+                    let src = state
+                        .ports
+                        .get(from)
+                        .cloned()
+                        .ok_or(DomainError::NotFound { id: from.clone() })?;
+                    let dst = state
+                        .ports
+                        .get(to)
+                        .cloned()
+                        .ok_or(DomainError::NotFound { id: to.clone() })?;
+                    if src.direction != PortDirection::Out || dst.direction != PortDirection::In {
+                        return Err(DomainError::Invalid {
+                            message: "belt routes run from an OUT port to an IN port".into(),
+                        });
+                    }
+                    if src.item != dst.item {
+                        return Err(DomainError::Invalid {
+                            message: "the ports carry different items".into(),
+                        });
+                    }
+                    if src.bound_route.is_some() || dst.bound_route.is_some() {
+                        return Err(DomainError::Invalid {
+                            message: "a port is already bound to a route".into(),
+                        });
+                    }
+                    let r = Route {
+                        id: new_id(),
+                        kind: kind.clone(),
+                        path: path.clone(),
+                        endpoints: (from.clone(), to.clone()),
+                        manifest: vec![(src.item.clone(), 0.0)],
+                        status: Status::Planned,
+                        created_by: CreatedBy::Manual,
+                    };
+                    tx.created.push(r.id.clone());
+                    let mut src = src;
+                    let mut dst = dst;
+                    src.bound_route = Some(r.id.clone());
+                    dst.bound_route = Some(r.id.clone());
+                    tx.record(state.upsert(Entity::Route(r)));
+                    tx.record(state.upsert(Entity::Port(src)));
+                    tx.record(state.upsert(Entity::Port(dst)));
+                }
+                other => {
+                    return Err(DomainError::Invalid {
+                        message: format!("{other:?} routes arrive in a later phase"),
+                    });
+                }
+            }
+        }
+        Command::SetRouteTier { id, tier } => {
+            let mut r = state
+                .routes
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            match &mut r.kind {
+                RouteKind::Belt { tier: t } => *t = valid_tier(*tier)?,
+                other => {
+                    return Err(DomainError::Invalid {
+                        message: format!("{other:?} routes have no belt tier"),
+                    });
+                }
+            }
+            tx.record(state.upsert(Entity::Route(r)));
+        }
+        Command::DeleteRoute { id } => {
+            let r = state
+                .routes
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            require_planned(r.status, id, "delete")?;
+            // unbind ports on belt routes
+            if matches!(r.kind, RouteKind::Belt { .. }) {
+                for pid in [&r.endpoints.0, &r.endpoints.1] {
+                    if let Some(mut p) = state.ports.get(pid).cloned() {
+                        if p.bound_route.as_deref() == Some(id.as_str()) {
+                            p.bound_route = None;
+                            tx.record(state.upsert(Entity::Port(p)));
+                        }
+                    }
+                }
+            }
+            if let Some(ops) = state.remove(COLL_ROUTES, id) {
                 tx.record(ops);
             }
         }

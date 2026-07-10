@@ -5,7 +5,7 @@
       { "ClassName": "Desc_OreIron_C", "mDisplayName": "Iron Ore", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
       { "ClassName": "Desc_OreCopper_C", "mDisplayName": "Copper Ore", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
       { "ClassName": "Desc_Stone_C", "mDisplayName": "Limestone", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
-      { "ClassName": "Desc_Coal_C", "mDisplayName": "Coal", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" }
+      { "ClassName": "Desc_Coal_C", "mDisplayName": "Coal", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE", "mEnergyValue": "300.000000" }
     ]
   },
   {
@@ -131,6 +131,19 @@
       { "ClassName": "Build_MinerMk1_C", "mDisplayName": "Miner Mk.1", "mPowerConsumption": "5.000000", "mItemsPerCycle": "1.000000", "mExtractCycleTime": "1.000000" },
       { "ClassName": "Build_MinerMk2_C", "mDisplayName": "Miner Mk.2", "mPowerConsumption": "12.000000", "mItemsPerCycle": "2.000000", "mExtractCycleTime": "1.000000" },
       { "ClassName": "Build_MinerMk3_C", "mDisplayName": "Miner Mk.3", "mPowerConsumption": "30.000000", "mItemsPerCycle": "4.000000", "mExtractCycleTime": "1.000000" }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorFuel'",
+    "Classes": [
+      {
+        "ClassName": "Build_GeneratorCoal_C",
+        "mDisplayName": "Coal-Powered Generator",
+        "mPowerProduction": "75.000000",
+        "mFuel": [
+          { "mFuelClass": "Desc_Coal_C", "mSupplementalResourceClass": "Desc_Water_C", "mByproduct": "" }
+        ]
+      }
     ]
   },
   {
