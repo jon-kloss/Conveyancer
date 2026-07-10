@@ -10,6 +10,9 @@
   inset: 0;
   background: var(--map-canvas);
   outline: none;
+  /* trap Leaflet's internal pane z-indexes (200–700) in their own stacking
+     context so app chrome (drawers, audit HUD) always layers above the map */
+  z-index: 0;
 }
 .leaflet-container {
   font: inherit;
@@ -378,3 +381,32 @@
 }
 
 /* overlay mode: drawers slide over with scrim (A1) — handled by width vars */
+
+/* ---- route creation popover ---- */
+.route-popover {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 320px;
+  padding: 12px 14px;
+  background: var(--steel-900);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  clip-path: var(--corner-cut);
+  z-index: 26;
+}
+.route-cand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.route-cand input {
+  accent-color: var(--signal-500);
+}
+.minibar > span.crit {
+  background: var(--flow-crit);
+}

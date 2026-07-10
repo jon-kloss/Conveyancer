@@ -13,9 +13,21 @@ import { useStore } from "../state/store";
 import type { WorldNode } from "../state/types";
 import SummaryDrawer from "./SummaryDrawer";
 import NodeDrawer from "./NodeDrawer";
+import RouteDrawer from "./RouteDrawer";
+import RoutePopover from "./RoutePopover";
 import Legend from "./Legend";
 import SearchBox from "./SearchBox";
+import { fmtPower } from "../lib/format";
 import "./map.css";
+
+/** Circuit margin level (SDD §12): headroom ≥20% OK, 5–20% WARN, <5% CRIT. */
+function circuitLevel(genMw: number, demandMw: number): "ok" | "warn" | "crit" {
+  if (genMw <= 0) return demandMw > 0 ? "crit" : "ok";
+  const headroom = (genMw - demandMw) / genMw;
+  if (headroom < 0.05) return "crit";
+  if (headroom < 0.2) return "warn";
+  return "ok";
+}
 
 function pinHtml(name: string, status: string, selected: boolean): string {
   const glyph = status === "planned" ? "◇" : status === "under_construction" ? "◈" : "◆";
@@ -44,6 +56,7 @@ export default function MapView() {
   const plan = useStore((s) => s.plan);
   const world = useStore((s) => s.world);
   const derived = useStore((s) => s.derived);
+  const gamedata = useStore((s) => s.gamedata);
   const overlays = useStore((s) => s.overlays);
   const selection = useStore((s) => s.selection);
   const placing = useStore((s) => s.placingFactory);
@@ -55,6 +68,10 @@ export default function MapView() {
 
   const [hoveredNode, setHoveredNode] = useState<WorldNode | null>(null);
   const [zoomPct, setZoomPct] = useState(100);
+  const [routeDraft, setRouteDraft] = useState<{ from: string; cursor: { x: number; y: number } } | null>(null);
+  const [routePopover, setRoutePopover] = useState<{ from: string; to: string } | null>(null);
+  const routeDraftRef = useRef<typeof routeDraft>(null);
+  routeDraftRef.current = routeDraft;
 
   const nodeStates = useMemo(() => {
     const out: Record<string, NodeRenderState> = {};
@@ -98,6 +115,12 @@ export default function MapView() {
       hoveredNode: null,
       selectedNode: null,
       showNodes: true,
+      routes: [],
+      showRoutes: true,
+      powerLines: [],
+      circuitChips: [],
+      showPower: true,
+      ghost: null,
     });
     layer.addTo(map);
     layerRef.current = layer;
@@ -122,23 +145,74 @@ export default function MapView() {
 
   // ---- canvas layer data sync ----
   useEffect(() => {
+    const routes = Object.values(plan.routes)
+      .filter((r) => r.kind.kind === "belt")
+      .map((r) => {
+        const d = derived.routes[r.id];
+        const itemClass = r.manifest[0]?.[0] ?? "";
+        return {
+          id: r.id,
+          path: r.path,
+          planned: r.status === "planned",
+          saturation: d?.saturation ?? 0,
+          flow: d?.flow ?? 0,
+          capacity: d?.capacity ?? 0,
+          tier: r.kind.kind === "belt" ? r.kind.tier : 0,
+          itemName: (gamedata.items[itemClass]?.displayName ?? itemClass).toUpperCase(),
+          selected: selection?.kind === "route" && selection.id === r.id,
+        };
+      });
+    // power lines connect factory pins; the chip carries the grid margin
+    const powerLines = Object.values(plan.routes)
+      .filter((r) => r.kind.kind === "power")
+      .map((r) => ({
+        id: r.id,
+        from: plan.factories[r.endpoints[0]]?.position ?? r.path[0] ?? { x: 0, y: 0 },
+        to: plan.factories[r.endpoints[1]]?.position ?? r.path[r.path.length - 1] ?? { x: 0, y: 0 },
+        selected: selection?.kind === "route" && selection.id === r.id,
+      }));
+    const circuitChips = derived.circuits
+      .map((c) => {
+        const pts = c.members.map((m) => plan.factories[m]?.position).filter((p): p is { x: number; y: number } => !!p);
+        if (!pts.length) return null;
+        return {
+          x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+          y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+          text: `${c.name} · ${fmtPower(c.demandMw)} / ${fmtPower(c.generationMw)}`,
+          level: circuitLevel(c.generationMw, c.demandMw),
+        };
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null);
+    const src = routeDraft ? plan.factories[routeDraft.from] : null;
     layerRef.current?.setData({
       world,
       nodeStates,
       hoveredNode: hoveredNode?.id ?? null,
       selectedNode: selection?.kind === "node" ? selection.id : null,
       showNodes: overlays.nodes,
+      routes,
+      showRoutes: overlays.flows,
+      powerLines,
+      circuitChips,
+      showPower: overlays.power,
+      ghost: src && routeDraft ? { from: src.position, to: routeDraft.cursor } : null,
     });
-  }, [world, nodeStates, hoveredNode, selection, overlays.nodes]);
+  }, [world, nodeStates, hoveredNode, selection, overlays, plan.routes, plan.factories, derived.routes, derived.circuits, gamedata.items, routeDraft]);
 
   // ---- pointer interactions (hover + click on canvas nodes, placement) ----
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const onMove = (e: L.LeafletMouseEvent) => {
-      const hit = layerRef.current?.hitTest(map.latLngToContainerPoint(e.latlng)) ?? null;
+      if (routeDraftRef.current) {
+        setRouteDraft({ from: routeDraftRef.current.from, cursor: fromLatLng(e.latlng) });
+        return;
+      }
+      const pt = map.latLngToContainerPoint(e.latlng);
+      const hit = layerRef.current?.hitTest(pt) ?? null;
+      const routeHit = hit ? null : layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
       setHoveredNode(hit);
-      map.getContainer().style.cursor = placing ? "crosshair" : hit ? "pointer" : "";
+      map.getContainer().style.cursor = placing ? "crosshair" : hit || routeHit ? "pointer" : "";
     };
     const onClick = (e: L.LeafletMouseEvent) => {
       if (placing) {
@@ -156,15 +230,41 @@ export default function MapView() {
         setPlacing(false);
         return;
       }
-      const hit = layerRef.current?.hitTest(map.latLngToContainerPoint(e.latlng));
-      if (hit) setSelection({ kind: "node", id: hit.id });
+      const pt = map.latLngToContainerPoint(e.latlng);
+      const hit = layerRef.current?.hitTest(pt);
+      if (hit) {
+        setSelection({ kind: "node", id: hit.id });
+        return;
+      }
+      const routeHit = layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
+      if (routeHit) setSelection({ kind: "route", id: routeHit });
       else setSelection(null);
     };
+    // right-drag from a pin draws a route (ghost-blue until confirmed)
+    const onMouseUp = (e: MouseEvent) => {
+      const draft = routeDraftRef.current;
+      if (!draft || e.button !== 2) return;
+      const st = useStore.getState();
+      const rect = map.getContainer().getBoundingClientRect();
+      const pt = L.point(e.clientX - rect.left, e.clientY - rect.top);
+      let target: string | null = null;
+      for (const f of Object.values(st.plan.factories)) {
+        const fp = map.latLngToContainerPoint(toLatLng(f.position));
+        if (f.id !== draft.from && Math.hypot(fp.x - pt.x, fp.y - pt.y) < 28) target = f.id;
+      }
+      setRouteDraft(null);
+      if (target) setRoutePopover({ from: draft.from, to: target });
+    };
+    const onCtx = (e: Event) => e.preventDefault();
+    map.getContainer().addEventListener("mouseup", onMouseUp);
+    map.getContainer().addEventListener("contextmenu", onCtx);
     map.on("mousemove", onMove);
     map.on("click", onClick);
     return () => {
       map.off("mousemove", onMove);
       map.off("click", onClick);
+      map.getContainer().removeEventListener("mouseup", onMouseUp);
+      map.getContainer().removeEventListener("contextmenu", onCtx);
     };
   }, [placing, world.regions, dispatch, setPlacing, setSelection]);
 
@@ -188,6 +288,12 @@ export default function MapView() {
         });
         marker.on("click", () => useStore.getState().setSelection({ kind: "factory", id: f.id }));
         marker.on("dblclick", () => useStore.getState().setView({ mode: "factory", factoryId: f.id }));
+        marker.on("mousedown", (ev: L.LeafletMouseEvent) => {
+          if ((ev.originalEvent as MouseEvent).button === 2) {
+            L.DomEvent.stop(ev);
+            setRouteDraft({ from: f.id, cursor: fromLatLng(ev.latlng) });
+          }
+        });
         marker.on("dragend", () => {
           const pos = fromLatLng(marker!.getLatLng());
           void useStore.getState().dispatch([{ type: "move_factory_pin", id: f.id, position: pos }]);
@@ -219,6 +325,7 @@ export default function MapView() {
         if (placing) setPlacing(false);
         else setSelection(null);
       } else if (e.key === "1") setOverlay("flows", !overlays.flows);
+      else if (e.key === "2") setOverlay("power", !overlays.power);
       else if (e.key === "4") setOverlay("nodes", !overlays.nodes);
       else if (e.key === "f" || e.key === "F") {
         const pts = Object.values(plan.factories).map((f) => toLatLng(f.position));
@@ -254,6 +361,13 @@ export default function MapView() {
             title="Item flow routes (1)"
           >
             FLOWS <span className="key-hint">1</span>
+          </button>
+          <button
+            className={`btn btn-ghost overlay-chip ${overlays.power ? "active" : ""}`}
+            onClick={() => setOverlay("power", !overlays.power)}
+            title="Power grid (2)"
+          >
+            POWER <span className="key-hint">2</span>
           </button>
           <button
             className={`btn btn-ghost overlay-chip ${overlays.nodes ? "active" : ""}`}
@@ -293,6 +407,17 @@ export default function MapView() {
 
       {selectedFactory && <SummaryDrawer factory={selectedFactory} />}
       {selectedNode && <NodeDrawer node={selectedNode} />}
+      {selection?.kind === "route" && plan.routes[selection.id] && (
+        <RouteDrawer route={plan.routes[selection.id]} />
+      )}
+      {routePopover && (
+        <RoutePopover
+          fromFactory={routePopover.from}
+          toFactory={routePopover.to}
+          onClose={() => setRoutePopover(null)}
+        />
+      )}
+      {routeDraft && <div className="map-placing-hint mono">RELEASE OVER A FACTORY TO BIND THE ROUTE</div>}
     </div>
   );
 }

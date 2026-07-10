@@ -56,8 +56,18 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
     <footer className="statusbar">
       <span className="sb-item mono" data-testid="sb-power">
         PWR {fmtPower(derived.totalPowerMw)}
+        {derived.totalGenerationMw > 0 && <span className="sb-gen"> / {fmtPower(derived.totalGenerationMw)}</span>}
         <span className="sb-powerbar" aria-hidden>
-          <span style={{ width: `${Math.min(100, derived.totalPowerMw / 5)}%` }} />
+          <span
+            style={{
+              width: `${Math.min(
+                100,
+                derived.totalGenerationMw > 0
+                  ? (derived.totalPowerMw / derived.totalGenerationMw) * 100
+                  : derived.totalPowerMw / 5,
+              )}%`,
+            }}
+          />
         </span>
       </span>
       {overlayMode ? (

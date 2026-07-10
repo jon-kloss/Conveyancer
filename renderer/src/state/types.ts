@@ -87,6 +87,24 @@ export interface BeltEdge {
   createdBy: CreatedBy;
 }
 
+export type RouteKind =
+  | { kind: "belt"; tier: number }
+  | { kind: "pipe"; tier: number }
+  | { kind: "power" }
+  | { kind: "rail"; spec: unknown }
+  | { kind: "truck"; spec: unknown }
+  | { kind: "drone"; spec: unknown };
+
+export interface Route {
+  id: Id;
+  kind: RouteKind;
+  path: MapPos[];
+  endpoints: [Id, Id];
+  manifest: [string, number][];
+  status: Status;
+  createdBy: CreatedBy;
+}
+
 export interface NodeClaim {
   id: Id;
   node: string;
@@ -110,7 +128,7 @@ export interface Plan {
   ports: Record<Id, Port>;
   edges: Record<Id, BeltEdge>;
   nodeClaims: Record<Id, NodeClaim>;
-  routes: Record<Id, unknown>;
+  routes: Record<Id, Route>;
   junctions: Record<Id, Junction>;
 }
 
@@ -174,9 +192,40 @@ export interface DerivedFactory {
   solveError: string | null;
 }
 
+export interface DerivedRoute {
+  flow: number;
+  supplied: number;
+  capacity: number;
+  saturation: number;
+  lengthM: number;
+  item: string | null;
+}
+
+export interface DeficitRow {
+  factory: Id;
+  port: Id;
+  route: Id | null;
+  item: string;
+  needed: number;
+  supplied: number;
+}
+
+export interface DerivedCircuit {
+  name: string;
+  members: Id[];
+  generationMw: number;
+  demandMw: number;
+}
+
 export interface Derived {
   factories: Record<Id, DerivedFactory>;
   nodes: Record<string, { claims: number; conflict: boolean }>;
+  routes: Record<Id, DerivedRoute>;
+  deficits: DeficitRow[];
+  circuits: DerivedCircuit[];
+  totalGenerationMw: number;
+  empireCycle: boolean;
+  recomputeUs: number;
   totalPowerMw: number;
 }
 
@@ -236,6 +285,9 @@ export type Command =
   | { type: "move_junction_card"; id: Id; graphPos: GraphPos }
   | { type: "set_junction_floor"; id: Id; floor: number }
   | { type: "delete_junction"; id: Id }
+  | { type: "add_route"; kind: RouteKind; from: Id; to: Id; path: MapPos[] }
+  | { type: "set_route_tier"; id: Id; tier: number }
+  | { type: "delete_route"; id: Id }
   | { type: "set_edge_tier"; id: Id; tier: number }
   | { type: "delete_edge"; id: Id }
   | { type: "claim_node"; factory: Id; node: string; extractor: string; clock: number }
@@ -244,3 +296,6 @@ export type Command =
 
 export const BELT_CAPACITY = [60, 120, 270, 480, 780, 1200];
 export const beltCapacity = (tier: number) => BELT_CAPACITY[Math.min(6, Math.max(1, tier)) - 1];
+
+/** Pseudo-item for generator output: 1 "item/min" = 1 MW (Addendum A2). */
+export const POWER_ITEM = "__PowerMW";

@@ -21,6 +21,7 @@ export type Selection =
   | { kind: "edge"; id: Id }
   | { kind: "port"; id: Id }
   | { kind: "junction"; id: Id }
+  | { kind: "route"; id: Id }
   | null;
 
 export type ViewMode = { mode: "map" } | { mode: "factory"; factoryId: Id };
@@ -36,7 +37,17 @@ const emptyPlan: Plan = {
   junctions: {},
 };
 
-const emptyDerived: Derived = { factories: {}, nodes: {}, totalPowerMw: 0 };
+const emptyDerived: Derived = {
+  factories: {},
+  nodes: {},
+  routes: {},
+  deficits: [],
+  circuits: [],
+  totalGenerationMw: 0,
+  empireCycle: false,
+  recomputeUs: 0,
+  totalPowerMw: 0,
+};
 
 export interface AppStore {
   ready: boolean;
@@ -50,7 +61,7 @@ export interface AppStore {
   undoLabel: string | null;
   view: ViewMode;
   selection: Selection;
-  overlays: { flows: boolean; nodes: boolean };
+  overlays: { flows: boolean; nodes: boolean; power: boolean };
   /** T0 projection during slider drag — rendered italic, replaced on settle. */
   projected: { factoryId: Id; result: DerivedFactory; targetRate: number } | null;
   /** ids whose numbers changed in the last authoritative patch (settle flash). */
@@ -64,7 +75,7 @@ export interface AppStore {
   redo(): Promise<void>;
   setSelection(sel: Selection): void;
   setView(view: ViewMode): void;
-  setOverlay(key: "flows" | "nodes", on: boolean): void;
+  setOverlay(key: "flows" | "nodes" | "power", on: boolean): void;
   setProjected(p: AppStore["projected"]): void;
   setPlacingFactory(on: boolean): void;
   saveViewState(patch: Partial<ViewState>): void;
@@ -82,7 +93,7 @@ export const useStore = create<AppStore>((set, get) => ({
   undoLabel: null,
   view: { mode: "map" },
   selection: null,
-  overlays: { flows: true, nodes: true },
+  overlays: { flows: true, nodes: true, power: true },
   projected: null,
   settled: new Set(),
   placingFactory: false,

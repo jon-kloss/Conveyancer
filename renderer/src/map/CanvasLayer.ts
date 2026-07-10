@@ -13,12 +13,32 @@ export interface NodeRenderState {
   claimed: boolean;
 }
 
+export interface RouteRender {
+  id: string;
+  path: { x: number; y: number }[];
+  planned: boolean;
+  saturation: number;
+  flow: number;
+  capacity: number;
+  tier: number;
+  itemName: string;
+  selected: boolean;
+}
+
 export interface CanvasLayerData {
   world: World;
   nodeStates: Record<string, NodeRenderState>;
   hoveredNode: string | null;
   selectedNode: string | null;
   showNodes: boolean;
+  routes: RouteRender[];
+  showRoutes: boolean;
+  /** power lines (pairs of factory positions) + grid chips at centroids */
+  powerLines: { from: { x: number; y: number }; to: { x: number; y: number }; selected: boolean; id: string }[];
+  circuitChips: { x: number; y: number; text: string; level: "ok" | "warn" | "crit" }[];
+  showPower: boolean;
+  /** right-drag route ghost (blueprint-dashed until confirmed) */
+  ghost: { from: { x: number; y: number }; to: { x: number; y: number } } | null;
 }
 
 const css = (name: string) =>
@@ -103,8 +123,133 @@ export class MapCanvasLayer extends L.Layer {
     this.drawRegionTints(ctx, map);
     this.drawGrid(ctx, map, size);
     this.drawRegionLabels(ctx, map);
+    if (this.data.showPower) this.drawPower(ctx, map);
+    if (this.data.showRoutes) this.drawRoutes(ctx, map);
     if (this.data.showNodes) this.drawNodes(ctx, map);
+    this.drawGhost(ctx, map);
   };
+
+  /** Flow/route encoding per mock 1e. Planned routes are always
+   *  blueprint-dashed; saturation rides the label chip (color + italic). */
+  private drawRoutes(ctx: CanvasRenderingContext2D, map: L.Map) {
+    for (const r of this.data.routes) {
+      const pts = r.path.map((p) => map.latLngToContainerPoint(toLatLng(p)));
+      if (pts.length < 2) continue;
+      const level = r.saturation >= 0.95 ? "crit" : r.saturation >= 0.7 ? "warn" : "ok";
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+      if (r.planned) {
+        ctx.strokeStyle = r.selected ? css("--signal-500") : css("--bp-400");
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 6]);
+      } else {
+        ctx.strokeStyle = r.selected
+          ? css("--signal-500")
+          : css(level === "crit" ? "--flow-crit" : level === "warn" ? "--flow-warn" : "--flow-ok");
+        ctx.lineWidth = level === "crit" ? 6 : level === "warn" ? 4 : 2;
+        ctx.setLineDash(level === "ok" ? [] : level === "warn" ? [10, 5] : [6, 4]);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // label chip at the midpoint — the always-present data channel
+      const mid = pts[Math.floor((pts.length - 1) / 2)];
+      const mid2 = pts[Math.min(pts.length - 1, Math.floor((pts.length - 1) / 2) + 1)];
+      const cx = (mid.x + mid2.x) / 2;
+      const cy = (mid.y + mid2.y) / 2;
+      const text = `${r.itemName} · ${Math.round(r.flow * 100) / 100}/${r.capacity} · ${Math.round(
+        r.saturation * 100,
+      )}%  MK.${r.tier}`;
+      ctx.font = `italic 500 9px ${css("--font-mono")}`;
+      const w = ctx.measureText(text).width + 10;
+      ctx.fillStyle = level === "crit" ? css("--flow-crit") : css("--steel-800");
+      ctx.strokeStyle = r.selected ? css("--signal-500") : css("--steel-600");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(cx - w / 2, cy - 8, w, 16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle =
+        level === "crit" ? css("--on-signal") : level === "warn" ? css("--flow-warn") : css("--bp-400");
+      ctx.textAlign = "center";
+      ctx.fillText(text, cx, cy + 3);
+      ctx.textAlign = "left";
+    }
+  }
+
+  /** Power lines: single 2px line; the chip carries the circuit margin, not
+   *  link load — power is a bus, not a belt (A2.1). */
+  private drawPower(ctx: CanvasRenderingContext2D, map: L.Map) {
+    for (const l of this.data.powerLines) {
+      const a = map.latLngToContainerPoint(toLatLng(l.from));
+      const b = map.latLngToContainerPoint(toLatLng(l.to));
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = l.selected ? css("--signal-500") : css("--bp-400");
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]); // planned grammar
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const c of this.data.circuitChips) {
+      const p = map.latLngToContainerPoint(toLatLng(c));
+      ctx.font = `700 10px ${css("--font-mono")}`;
+      const w = ctx.measureText(c.text).width + 12;
+      ctx.fillStyle = css("--steel-800");
+      ctx.strokeStyle = css(c.level === "crit" ? "--flow-crit" : c.level === "warn" ? "--flow-warn-dark" : "--steel-600");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(p.x - w / 2, p.y - 10, w, 20);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = css(c.level === "crit" ? "--flow-crit" : c.level === "warn" ? "--flow-warn" : "--flow-ok");
+      ctx.textAlign = "center";
+      ctx.fillText(c.text, p.x, p.y + 4);
+      ctx.textAlign = "left";
+    }
+  }
+
+  /** Nearest power line within 8px. */
+  hitTestPower(point: L.Point): string | null {
+    const map = this.mapRef;
+    if (!map || !this.data.showPower) return null;
+    for (const l of this.data.powerLines) {
+      const a = map.latLngToContainerPoint(toLatLng(l.from));
+      const b = map.latLngToContainerPoint(toLatLng(l.to));
+      if (distToSegment(point, a, b) < 8) return l.id;
+    }
+    return null;
+  }
+
+  private drawGhost(ctx: CanvasRenderingContext2D, map: L.Map) {
+    const g = this.data.ghost;
+    if (!g) return;
+    const a = map.latLngToContainerPoint(toLatLng(g.from));
+    const b = map.latLngToContainerPoint(toLatLng(g.to));
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = css("--bp-400");
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  /** Nearest route within 8px of a container point. */
+  hitTestRoute(point: L.Point): string | null {
+    const map = this.mapRef;
+    if (!map || !this.data.showRoutes) return null;
+    for (const r of this.data.routes) {
+      const pts = r.path.map((p) => map.latLngToContainerPoint(toLatLng(p)));
+      for (let i = 0; i < pts.length - 1; i++) {
+        if (distToSegment(point, pts[i], pts[i + 1]) < 8) return r.id;
+      }
+    }
+    return null;
+  }
 
   /** Faint elliptical tint per region — placeholder world-imagery treatment. */
   private drawRegionTints(ctx: CanvasRenderingContext2D, map: L.Map) {
@@ -223,4 +368,14 @@ export class MapCanvasLayer extends L.Layer {
       }
     }
   }
+}
+
+function distToSegment(p: L.Point, a: L.Point, b: L.Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  const px = a.x + t * dx;
+  const py = a.y + t * dy;
+  return Math.hypot(p.x - px, p.y - py);
 }

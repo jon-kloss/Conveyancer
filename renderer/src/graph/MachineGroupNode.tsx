@@ -6,7 +6,7 @@ import { Handle, Position } from "@xyflow/react";
 import { useStore } from "../state/store";
 import { fmtClock, fmtPower, fmtRate } from "../lib/format";
 import { footprintOf, FOOTPRINT_SCALE } from "./footprints";
-import type { MachineGroup } from "../state/types";
+import { POWER_ITEM, type MachineGroup } from "../state/types";
 
 export interface GroupNodeData {
   group: MachineGroup;
@@ -74,8 +74,14 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
         <div className="icon-ph s20" />
         <span>{recipe?.displayName ?? group.recipe}</span>
         <span className={`t-data-12 ${numCls}`} style={{ marginLeft: "auto" }}>
-          {fmtRate(outRate)}
-          <span className="unit">/min</span>
+          {recipe?.products?.[0]?.[0] === POWER_ITEM ? (
+            fmtPower(outRate) // generators: 1 pseudo-item/min ≡ 1 MW
+          ) : (
+            <>
+              {fmtRate(outRate)}
+              <span className="unit">/min</span>
+            </>
+          )}
         </span>
       </div>
       <FootprintStrip machine={group.machine} count={group.count} />

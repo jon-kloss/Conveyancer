@@ -118,6 +118,9 @@
 .sb-crit {
   color: var(--flow-crit);
 }
+.sb-gen {
+  color: var(--ink-500);
+}
 .sb-powerbar {
   display: inline-block;
   width: 44px;

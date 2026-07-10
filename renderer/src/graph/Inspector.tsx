@@ -6,8 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, solveChip } from "../state/store";
 import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
 import { footprintOf, footprintArea } from "./footprints";
-import { fmtClock, fmtRate } from "../lib/format";
-import { beltCapacity, type DerivedFactory, type Id } from "../state/types";
+import { fmtClock, fmtPower, fmtRate } from "../lib/format";
+import { beltCapacity, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
 
 const CLOCK_STEPS = [0.5, 0.75, 1.0, 1.5, 2.5];
 
@@ -106,8 +106,14 @@ export default function Inspector({
               className={`t-data-22 ${dragging || isProjected ? "projected" : ""}`}
               data-testid="target-value"
             >
-              {fmtRate(df?.ports[outPort.id] ?? rate)}
-              <span className="unit">/min</span>
+              {outPort.item === POWER_ITEM ? (
+                fmtPower(df?.ports[outPort.id] ?? rate)
+              ) : (
+                <>
+                  {fmtRate(df?.ports[outPort.id] ?? rate)}
+                  <span className="unit">/min</span>
+                </>
+              )}
             </span>
           </div>
           <div className="insp-slider-wrap">
@@ -246,8 +252,14 @@ export default function Inspector({
                 <div className="icon-ph s20" />
                 <span className="drawer-row-name">→ {gamedata.items[item]?.displayName ?? item}</span>
                 <span className={`t-data-12 ${isProjected || selectedGroup.status === "planned" ? "projected" : ""}`}>
-                  {fmtRate(dgSel?.outRates[item] ?? 0)}
-                  <span className="unit">/min</span>
+                  {item === POWER_ITEM ? (
+                    fmtPower(dgSel?.outRates[item] ?? 0)
+                  ) : (
+                    <>
+                      {fmtRate(dgSel?.outRates[item] ?? 0)}
+                      <span className="unit">/min</span>
+                    </>
+                  )}
                 </span>
               </div>
             ))}
