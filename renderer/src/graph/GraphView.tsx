@@ -19,7 +19,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useStore, solveChip } from "../state/store";
-import type { DerivedFactory, Id } from "../state/types";
+import type { Command, DerivedFactory, Id } from "../state/types";
 import MachineGroupNode, { type GroupNodeData } from "./MachineGroupNode";
 import BoundaryPortNode, { type PortNodeData } from "./BoundaryPortNode";
 import BeltEdgeView, { type BeltEdgeData } from "./BeltEdgeView";
@@ -50,7 +50,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const dispatch = useStore((s) => s.dispatch);
 
   const factory = plan.factories[factoryId];
-  const { fitView } = useReactFlow();
+  const { fitView, getNodes } = useReactFlow();
   const [flowOverlay, setFlowOverlay] = useState(true);
   // Floor filter: 'all' or a specific floor. Chips appear once floors exist.
   const [floorFilter, setFloorFilter] = useState<"all" | number>("all");
@@ -73,6 +73,49 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     },
     [setSelection],
   );
+
+  /** Cutaway elevation: stack each floor's cards into their own horizontal
+   *  band, highest floor on top, preserving intra-floor layout. One undo step. */
+  const stackFloors = useCallback(() => {
+    const state = useStore.getState();
+    const f = state.plan.factories[factoryId];
+    if (!f) return;
+    const groups = f.groups.map((gid) => state.plan.groups[gid]).filter(Boolean);
+    const byFloor = new Map<number, typeof groups>();
+    for (const g of groups) byFloor.set(g.floor, [...(byFloor.get(g.floor) ?? []), g]);
+    if (byFloor.size < 2) return;
+
+    const measured: Record<string, { y: number; h: number }> = {};
+    for (const n of getNodes()) {
+      const m = (n as { measured?: { height?: number } }).measured;
+      measured[n.id] = { y: n.position.y, h: m?.height ?? 150 };
+    }
+
+    const GAP = 96;
+    const snap16 = (v: number) => Math.round(v / 16) * 16;
+    const floorsDesc = [...byFloor.keys()].sort((a, b) => b - a);
+    // anchor the stack where the plan already lives
+    let cursorY = Math.min(...groups.map((g) => measured[g.id]?.y ?? g.graphPos.y));
+    const cmds: Command[] = [];
+    for (const floor of floorsDesc) {
+      const members = byFloor.get(floor)!;
+      const tops = members.map((g) => measured[g.id]?.y ?? g.graphPos.y);
+      const bottoms = members.map((g) => (measured[g.id]?.y ?? g.graphPos.y) + (measured[g.id]?.h ?? 150));
+      const minY = Math.min(...tops);
+      const bandH = Math.max(...bottoms) - minY;
+      for (const g of members) {
+        const newY = snap16(cursorY + ((measured[g.id]?.y ?? g.graphPos.y) - minY));
+        if (Math.abs(newY - g.graphPos.y) > 0.5) {
+          cmds.push({ type: "move_group_card", id: g.id, graphPos: { x: g.graphPos.x, y: newY } });
+        }
+      }
+      cursorY += bandH + GAP;
+    }
+    if (cmds.length === 0) return;
+    void dispatch(cmds).then(() => {
+      window.setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
+    });
+  }, [factoryId, getNodes, dispatch, fitView]);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; flowX: number; flowY: number } | null>(null);
   const [portMenu, setPortMenu] = useState<"in" | "out" | null>(null);
 
@@ -334,6 +377,16 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         <span className={`chip ${chip.over ? "warn" : ""}`}>{chip.text}</span>
         {df?.solveOnRelease && <span className="chip warn">LIVE → ON RELEASE</span>}
         <span className="ctx-spring" />
+        {floors.length > 1 && (
+          <button
+            className="btn btn-ghost overlay-chip"
+            onClick={stackFloors}
+            title="Arrange each floor into its own band — highest floor on top, one undo step"
+            data-testid="btn-stack-floors"
+          >
+            STACK FLOORS
+          </button>
+        )}
         {floors.length > 1 && (
           <div className="floor-chips" data-testid="floor-chips">
             <button

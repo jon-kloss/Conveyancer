@@ -157,6 +157,17 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await page.getByTestId("floor-chips").getByRole("button", { name: "F1" }).click();
   await expect(page.locator('.react-flow__node[style*="opacity: 0.22"]').first()).toBeVisible();
   await page.getByTestId("floor-chips").getByRole("button", { name: "ALL" }).click();
+
+  // ---- STACK FLOORS: cutaway elevation, one undo step ----
+  await page.getByTestId("btn-stack-floors").click();
+  await page.waitForTimeout(700);
+  const p0 = (await page.getByTestId("floor-plate-0").boundingBox())!;
+  const p1 = (await page.getByTestId("floor-plate-1").boundingBox())!;
+  expect(p1.y + p1.height).toBeLessThanOrEqual(p0.y + 1); // F1 band fully above F0
+  await page.keyboard.press("ControlOrMeta+z"); // single undo restores the layout
+  await page.waitForTimeout(400);
+  const p1b = (await page.getByTestId("floor-plate-1").boundingBox())!;
+  expect(p1b.y + p1b.height).toBeGreaterThan(p0.y + 1);
   // put it back on F0 (undoable command like any other)
   await page.getByTestId("floor-stepper").getByRole("button", { name: "−" }).click();
   await page.waitForTimeout(300);
