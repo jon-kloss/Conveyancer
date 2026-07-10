@@ -95,9 +95,47 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await belt(coalPlant, G(gens), P(mwOut), "__PowerMW");
   await edit(request, [{ type: "set_port_rate", id: mwOut, rate: 150 }]);
 
+  // exit criterion is a FIVE-factory empire: extend the chain two more hops
+  // (rods → screws → depot) through the same command surface the UI uses
+  const screwWorks = await mk("SCREW WORKS", -200, 2600);
+  const rodIn = await port(screwWorks, "in", "Desc_IronRod_C", null, 0);
+  const screwOut = await port(screwWorks, "out", "Desc_IronScrew_C", null, 600);
+  const screwCtors = await group(screwWorks, "Build_ConstructorMk1_C", "Recipe_Screw_C");
+  await belt(screwWorks, P(rodIn), G(screwCtors), "Desc_IronRod_C");
+  await belt(screwWorks, G(screwCtors), P(screwOut), "Desc_IronScrew_C");
+  await edit(request, [{ type: "set_port_rate", id: screwOut, rate: 60 }]);
+
+  const depot = await mk("DEPOT SOUTH", 600, 2600);
+  const screwIn = await port(depot, "in", "Desc_IronScrew_C", null, 0);
+
+  await edit(request, [
+    {
+      type: "add_route",
+      kind: { kind: "belt", tier: 3 },
+      from: rodOut,
+      to: rodIn,
+      path: [{ x: -1000, y: 2600 }, { x: -200, y: 2600 }],
+    },
+    {
+      type: "add_route",
+      kind: { kind: "belt", tier: 2 },
+      from: screwOut,
+      to: screwIn,
+      path: [{ x: -200, y: 2600 }, { x: 600, y: 2600 }],
+    },
+    {
+      type: "add_route",
+      kind: { kind: "power" },
+      from: coalPlant,
+      to: screwWorks,
+      path: [{ x: -1800, y: 1400 }, { x: -200, y: 2600 }],
+    },
+  ]);
+
   // ---- draw the belt route INGOT POINT → ROD CITY through the map UI ----
   await page.goto("/");
   await expect(page.getByTestId("map-root")).toBeVisible();
+  await expect(page.locator(".statusbar")).toContainText(/[5-9] FACTORIES/); // the 5-factory empire
   await page.keyboard.press("f"); // frame all factories
   await page.waitForTimeout(400);
 
@@ -134,15 +172,17 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   // status bar shows draw vs generation
   await expect(page.getByTestId("sb-power")).toContainText("/ 150 MW");
 
-  // ---- audit drawer (TAB): saturation rows + circuit margins ----
+  // ---- audit drawer (TAB): live saturation across the whole empire ----
   await page.keyboard.press("Tab");
   await expect(page.getByTestId("audit-drawer")).toBeVisible();
   await expect(page.getByTestId("audit-drawer")).toContainText("INGOT POINT ⟶ ROD CITY");
+  await expect(page.getByTestId("audit-drawer")).toContainText("ROD CITY ⟶ SCREW WORKS");
+  await expect(page.getByTestId("audit-drawer")).toContainText("SCREW WORKS ⟶ DEPOT SOUTH");
 
   await page.locator(".audit-tab", { hasText: "POWER" }).click();
   await expect(page.getByTestId("audit-drawer")).toContainText("GRID A");
   await expect(page.getByTestId("audit-drawer")).toContainText("COAL PLANT");
-  await expect(page.getByTestId("audit-drawer")).toContainText("ROD CITY");
+  await expect(page.getByTestId("audit-drawer")).toContainText("SCREW WORKS");
   await expect(page.getByTestId("audit-drawer")).toContainText("of 150 MW generated");
 
   // ---- an upstream dip surfaces as a deficit, never a silent re-target ----
