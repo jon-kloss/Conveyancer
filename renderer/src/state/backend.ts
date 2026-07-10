@@ -2,7 +2,16 @@
 // or the dev-bridge HTTP API (headless development). Rust owns canonical
 // state in both — the renderer only ever sees patches (SDD §4).
 
-import type { Command, EditResponse, InitPayload, ViewState } from "./types";
+import type {
+  Command,
+  EditResponse,
+  InitPayload,
+  JobProgress,
+  Proposal,
+  ProposalConsequence,
+  ViewState,
+  WizardGoal,
+} from "./types";
 
 export interface Backend {
   hydrate(): Promise<InitPayload>;
@@ -10,6 +19,12 @@ export interface Backend {
   undo(): Promise<EditResponse | null>;
   redo(): Promise<EditResponse | null>;
   setViewState(v: ViewState): Promise<void>;
+  wizardSolve(goal: WizardGoal): Promise<string>;
+  wizardProgress(jobId: string, after: number): Promise<JobProgress>;
+  wizardCancel(jobId: string): Promise<void>;
+  t2Optimize(factory: string): Promise<Proposal | null>;
+  proposalAccept(id: string): Promise<EditResponse>;
+  proposalEval(id: string): Promise<ProposalConsequence>;
 }
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -33,6 +48,26 @@ class TauriBackend implements Backend {
   }
   async setViewState(v: ViewState) {
     await this.invoke("set_view_state", { json: JSON.stringify(v) });
+  }
+  async wizardSolve(goal: WizardGoal) {
+    return this.invoke<string>("wizard_solve", { goal });
+  }
+  async wizardProgress(jobId: string, after: number) {
+    const p = await this.invoke<JobProgress | null>("wizard_progress", { jobId, after });
+    if (!p) throw new Error("unknown job");
+    return p;
+  }
+  async wizardCancel(jobId: string) {
+    await this.invoke("wizard_cancel", { jobId });
+  }
+  t2Optimize(factory: string) {
+    return this.invoke<Proposal | null>("t2_optimize", { factory });
+  }
+  proposalAccept(id: string) {
+    return this.invoke<EditResponse>("proposal_accept", { id });
+  }
+  proposalEval(id: string) {
+    return this.invoke<ProposalConsequence>("proposal_eval", { id });
   }
 }
 
@@ -59,6 +94,35 @@ class BridgeBackend implements Backend {
   }
   async setViewState(v: ViewState) {
     await this.call("view", { method: "POST", body: JSON.stringify(v) });
+  }
+  async wizardSolve(goal: WizardGoal) {
+    const r = await this.call<{ jobId: string }>("wizard/solve", {
+      method: "POST",
+      body: JSON.stringify(goal),
+    });
+    return r.jobId;
+  }
+  wizardProgress(jobId: string, after: number) {
+    return this.call<JobProgress>("wizard/progress", {
+      method: "POST",
+      body: JSON.stringify({ jobId, after }),
+    });
+  }
+  async wizardCancel(jobId: string) {
+    await this.call("wizard/cancel", { method: "POST", body: JSON.stringify({ jobId }) });
+  }
+  async t2Optimize(factory: string) {
+    const r = await this.call<{ proposal: Proposal | null }>("t2/optimize", {
+      method: "POST",
+      body: JSON.stringify({ factory }),
+    });
+    return r.proposal;
+  }
+  proposalAccept(id: string) {
+    return this.call<EditResponse>("proposal/accept", { method: "POST", body: JSON.stringify({ id }) });
+  }
+  proposalEval(id: string) {
+    return this.call<ProposalConsequence>("proposal/eval", { method: "POST", body: JSON.stringify({ id }) });
   }
 }
 

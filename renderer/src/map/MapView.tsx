@@ -65,6 +65,9 @@ export default function MapView() {
   const setOverlay = useStore((s) => s.setOverlay);
   const setPlacing = useStore((s) => s.setPlacingFactory);
   const dispatch = useStore((s) => s.dispatch);
+  const reviewing = useStore((s) => s.reviewing);
+  const setWizard = useStore((s) => s.setWizard);
+  const reviewingProposal = useStore((s) => (s.reviewing ? s.plan.proposals[s.reviewing] ?? null : null));
 
   const [hoveredNode, setHoveredNode] = useState<WorldNode | null>(null);
   const [zoomPct, setZoomPct] = useState(100);
@@ -121,6 +124,7 @@ export default function MapView() {
       circuitChips: [],
       showPower: true,
       ghost: null,
+      review: null,
     });
     layer.addTo(map);
     layerRef.current = layer;
@@ -183,6 +187,36 @@ export default function MapView() {
         };
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
+    // proposal review ghosts: parse included items' commands (mock 3a grammar)
+    let review: NonNullable<Parameters<MapCanvasLayer["setData"]>[0]["review"]> | null = null;
+    if (reviewingProposal) {
+      review = { pins: [], claimRings: [], modifyRings: [], lines: [] };
+      for (const item of reviewingProposal.items) {
+        if (!item.included) continue;
+        for (const cmd of item.commands) {
+          if (cmd.type === "create_factory") {
+            review.pins.push({ x: cmd.position.x, y: cmd.position.y, name: cmd.name });
+          } else if (cmd.type === "claim_node") {
+            const n = world.nodes.find((w) => w.id === cmd.node);
+            if (n) review.claimRings.push({ x: n.x, y: n.y });
+          } else if (cmd.type === "add_route" && cmd.path.length >= 2) {
+            review.lines.push({
+              from: cmd.path[0],
+              to: cmd.path[cmd.path.length - 1],
+              power: cmd.kind.kind === "power",
+            });
+          } else if (cmd.type === "set_port_rate" && !cmd.id.startsWith("$")) {
+            const port = plan.ports[cmd.id];
+            const f = port ? plan.factories[port.factory] : null;
+            if (f) review.modifyRings.push({ x: f.position.x, y: f.position.y });
+          } else if (cmd.type === "set_group_recipe" && !cmd.id.startsWith("$")) {
+            const g = plan.groups[cmd.id];
+            const f = g ? plan.factories[g.factory] : null;
+            if (f) review.modifyRings.push({ x: f.position.x, y: f.position.y });
+          }
+        }
+      }
+    }
     const src = routeDraft ? plan.factories[routeDraft.from] : null;
     layerRef.current?.setData({
       world,
@@ -196,8 +230,9 @@ export default function MapView() {
       circuitChips,
       showPower: overlays.power,
       ghost: src && routeDraft ? { from: src.position, to: routeDraft.cursor } : null,
+      review,
     });
-  }, [world, nodeStates, hoveredNode, selection, overlays, plan.routes, plan.factories, derived.routes, derived.circuits, gamedata.items, routeDraft]);
+  }, [world, nodeStates, hoveredNode, selection, overlays, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal]);
 
   // ---- pointer interactions (hover + click on canvas nodes, placement) ----
   useEffect(() => {
@@ -323,6 +358,7 @@ export default function MapView() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
       const map = mapRef.current;
       if (e.key === "n" || e.key === "N") setPlacing(!placing);
+      else if (e.key === "p" || e.key === "P") setWizard({ open: true });
       else if (e.key === "Escape") {
         if (placing) setPlacing(false);
         else setSelection(null);
@@ -338,7 +374,7 @@ export default function MapView() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [placing, overlays, plan.factories, selection, setOverlay, setPlacing, setSelection, setView]);
+  }, [placing, overlays, plan.factories, selection, setOverlay, setPlacing, setSelection, setView, setWizard]);
 
   const panTo = useCallback((pos: { x: number; y: number }) => {
     mapRef.current?.panTo(toLatLng(pos));
@@ -350,7 +386,7 @@ export default function MapView() {
   const selectedNode = selection?.kind === "node" ? world.nodes.find((n) => n.id === selection.id) : null;
 
   return (
-    <div className="map-root" data-testid="map-root">
+    <div className={`map-root ${reviewing ? "reviewing" : ""}`} data-testid="map-root">
       <div ref={containerRef} className="map-leaflet" />
 
       {/* top chrome */}
@@ -386,6 +422,9 @@ export default function MapView() {
             data-testid="btn-add-factory"
           >
             + FACTORY <span className="key-hint">N</span>
+          </button>
+          <button className="btn btn-primary" onClick={() => setWizard({ open: true })} data-testid="btn-wizard">
+            PLAN SUPPLY CHAIN <span className="key-hint">P</span>
           </button>
           <div className="zoom-ctl mono">
             <button onClick={() => zoomBy(-0.5)} aria-label="Zoom out">

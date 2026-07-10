@@ -5,6 +5,8 @@ import { useLayoutMode } from "./shell/useLayoutMode";
 import MapView from "./map/MapView";
 import GraphView from "./graph/GraphView";
 import AuditDrawer from "./audit/AuditDrawer";
+import WizardModal from "./wizard/WizardModal";
+import ProposalReview from "./proposal/ProposalReview";
 import { useStore } from "./state/store";
 import "./shell/shell.css";
 
@@ -14,6 +16,8 @@ export default function App() {
   const ready = useStore((s) => s.ready);
   const error = useStore((s) => s.error);
   const view = useStore((s) => s.view);
+  const reviewing = useStore((s) => s.reviewing);
+  const reviewingProposal = useStore((s) => (s.reviewing ? s.plan.proposals[s.reviewing] ?? null : null));
   const hydrate = useStore((s) => s.hydrate);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -77,8 +81,14 @@ export default function App() {
     <div className="app-frame" data-layout={mode}>
       <Titlebar overlayMode={mode === "overlay"} />
       <main className="app-canvas">
-        {view.mode === "map" ? <MapView /> : <GraphView key={view.factoryId} factoryId={view.factoryId} />}
-        <AuditDrawer open={auditOpen} onToggle={() => setAuditOpen((o) => !o)} />
+        {view.mode === "map" || reviewing ? (
+          <MapView />
+        ) : (
+          <GraphView key={view.factoryId} factoryId={view.factoryId} />
+        )}
+        {!reviewing && <AuditDrawer open={auditOpen} onToggle={() => setAuditOpen((o) => !o)} />}
+        {reviewingProposal && <ProposalReview proposal={reviewingProposal} />}
+        <WizardModal />
       </main>
       <StatusBar overlayMode={mode === "overlay"} />
     </div>

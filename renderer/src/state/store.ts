@@ -35,6 +35,7 @@ const emptyPlan: Plan = {
   nodeClaims: {},
   routes: {},
   junctions: {},
+  proposals: {},
 };
 
 const emptyDerived: Derived = {
@@ -68,6 +69,12 @@ export interface AppStore {
   settled: Set<string>;
   placingFactory: boolean;
   viewState: ViewState;
+  /** plan-content hash — compare a proposal's inputHash for the STALE badge */
+  planHash: string;
+  /** proposal id currently open in the review surface */
+  reviewing: Id | null;
+  /** wizard modal: closed | open (optionally pre-filled from FIX WITH SOLVER) */
+  wizard: { open: boolean; prefill?: { item: string; rate: number } };
 
   hydrate(): Promise<void>;
   dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[]>;
@@ -79,6 +86,9 @@ export interface AppStore {
   setProjected(p: AppStore["projected"]): void;
   setPlacingFactory(on: boolean): void;
   saveViewState(patch: Partial<ViewState>): void;
+  setReviewing(id: Id | null): void;
+  setWizard(w: AppStore["wizard"]): void;
+  acceptProposal(id: Id): Promise<void>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -98,6 +108,9 @@ export const useStore = create<AppStore>((set, get) => ({
   settled: new Set(),
   placingFactory: false,
   viewState: {},
+  planHash: "",
+  reviewing: null,
+  wizard: { open: false },
 
   async hydrate() {
     try {
@@ -112,6 +125,7 @@ export const useStore = create<AppStore>((set, get) => ({
         canUndo: init.canUndo,
         canRedo: init.canRedo,
         undoLabel: init.undoLabel,
+        planHash: init.planHash,
         viewState: init.viewState ?? {},
         view:
           openFactory && init.plan.factories[openFactory]
@@ -134,6 +148,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canUndo: resp.canUndo,
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
+      planHash: resp.planHash,
       projected: null,
       settled,
     }));
@@ -156,6 +171,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canUndo: resp.canUndo,
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
+      planHash: resp.planHash,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
     }));
@@ -170,6 +186,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canUndo: resp.canUndo,
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
+      planHash: resp.planHash,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
     }));
@@ -187,6 +204,29 @@ export const useStore = create<AppStore>((set, get) => ({
     const next = { ...get().viewState, ...patch };
     set({ viewState: next });
     void backend.setViewState(next);
+  },
+
+  setReviewing(id) {
+    set({ reviewing: id, selection: null });
+  },
+
+  setWizard(w) {
+    set({ wizard: w });
+  },
+
+  // Accept = one backend transaction, one undo entry, ◇ entities only.
+  async acceptProposal(id) {
+    const resp = await backend.proposalAccept(id);
+    set((s) => ({
+      plan: applyPatches(s.plan, resp.patches),
+      derived: resp.derived,
+      canUndo: resp.canUndo,
+      canRedo: resp.canRedo,
+      undoLabel: resp.undoLabel,
+      planHash: resp.planHash,
+      reviewing: null,
+      settled: new Set(resp.patches.map((p) => p.path)),
+    }));
   },
 }));
 

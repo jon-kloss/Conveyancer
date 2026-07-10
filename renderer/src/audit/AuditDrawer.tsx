@@ -28,6 +28,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
   const setSelection = useStore((s) => s.setSelection);
   const setView = useStore((s) => s.setView);
   const dispatch = useStore((s) => s.dispatch);
+  const setWizard = useStore((s) => s.setWizard);
   const [tab, setTab] = useState<Tab>("saturation");
   const [pinned, setPinned] = useState(false);
 
@@ -198,6 +199,14 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
                 </span>
                 <span className="mono audit-trend">—</span>
                 <span className="audit-actions">
+                  <button
+                    className="chip warn"
+                    onClick={() =>
+                      setWizard({ open: true, prefill: { item: d.item, rate: Math.ceil(d.needed - d.supplied) } })
+                    }
+                  >
+                    FIX WITH SOLVER
+                  </button>
                   <button
                     className="chip"
                     onClick={() => {

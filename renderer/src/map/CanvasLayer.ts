@@ -39,6 +39,13 @@ export interface CanvasLayerData {
   showPower: boolean;
   /** right-drag route ghost (blueprint-dashed until confirmed) */
   ghost: { from: { x: number; y: number }; to: { x: number; y: number } } | null;
+  /** proposal review (mock 3a): world dims, ghosts render in status grammar */
+  review: {
+    pins: { x: number; y: number; name: string }[];
+    claimRings: { x: number; y: number }[];
+    modifyRings: { x: number; y: number }[];
+    lines: { from: { x: number; y: number }; to: { x: number; y: number }; power: boolean }[];
+  } | null;
 }
 
 const css = (name: string) =>
@@ -127,7 +134,78 @@ export class MapCanvasLayer extends L.Layer {
     if (this.data.showRoutes) this.drawRoutes(ctx, map);
     if (this.data.showNodes) this.drawNodes(ctx, map);
     this.drawGhost(ctx, map);
+    if (this.data.review) this.drawReview(ctx, map, size);
   };
+
+  /** Review mode: dim the world to 42%, then draw the proposal's ghosts at
+   *  full strength — new sites as blueprint pins, claims/modifies as rings,
+   *  routes blueprint-dashed. DOM pins dim via CSS (.reviewing). */
+  private drawReview(ctx: CanvasRenderingContext2D, map: L.Map, size: L.Point) {
+    const review = this.data.review!;
+    ctx.fillStyle = "rgba(10, 12, 14, 0.58)";
+    ctx.fillRect(0, 0, size.x, size.y);
+
+    for (const l of review.lines) {
+      const a = map.latLngToContainerPoint(toLatLng(l.from));
+      const b = map.latLngToContainerPoint(toLatLng(l.to));
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = css("--bp-400");
+      ctx.lineWidth = 2;
+      ctx.setLineDash(l.power ? [3, 5] : [8, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const r of review.claimRings) {
+      const p = map.latLngToContainerPoint(toLatLng(r));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+      ctx.strokeStyle = css("--bp-400");
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const r of review.modifyRings) {
+      const p = map.latLngToContainerPoint(toLatLng(r));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
+      ctx.strokeStyle = css("--flow-warn");
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = `700 11px ${css("--font-mono")}`;
+      ctx.fillStyle = css("--flow-warn");
+      ctx.fillText("Δ", p.x + 24, p.y + 4);
+    }
+    for (const pin of review.pins) {
+      const p = map.latLngToContainerPoint(toLatLng(pin));
+      // blueprint ghost diamond
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.strokeStyle = css("--bp-400");
+      ctx.fillStyle = "rgba(86, 168, 255, .12)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(-8, -8, 16, 16);
+      ctx.fillRect(-8, -8, 16, 16);
+      ctx.restore();
+      ctx.setLineDash([]);
+      // inverted blue chip: + NAME — NEW
+      const text = `+ ${pin.name.toUpperCase()} — NEW`;
+      ctx.font = `700 10px ${css("--font-mono")}`;
+      const w = ctx.measureText(text).width + 12;
+      ctx.fillStyle = css("--bp-400");
+      ctx.fillRect(p.x - w / 2, p.y + 14, w, 16);
+      ctx.fillStyle = css("--steel-950");
+      ctx.textAlign = "center";
+      ctx.fillText(text, p.x, p.y + 25);
+      ctx.textAlign = "left";
+    }
+  }
 
   /** Flow/route encoding per mock 1e. Planned routes are always
    *  blueprint-dashed; saturation rides the label chip (color + italic). */

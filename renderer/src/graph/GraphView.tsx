@@ -49,6 +49,31 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const setSelection = useStore((s) => s.setSelection);
   const setView = useStore((s) => s.setView);
   const dispatch = useStore((s) => s.dispatch);
+  const setReviewing = useStore((s) => s.setReviewing);
+  const [t2Busy, setT2Busy] = useState(false);
+  const [t2Note, setT2Note] = useState<string | null>(null);
+
+  // T2 (SDD §5.3): factory-scoped recipe optimization → mini-proposal.
+  const runT2 = async () => {
+    setT2Busy(true);
+    setT2Note(null);
+    try {
+      const { backend } = await import("../state/backend");
+      const proposal = await backend.t2Optimize(factoryId);
+      if (!proposal) {
+        setT2Note("NO CHEAPER RECIPES FOUND");
+        setTimeout(() => setT2Note(null), 3000);
+        return;
+      }
+      const created = await dispatch([{ type: "create_proposal", proposal }]);
+      if (created[0]) {
+        setView({ mode: "map" });
+        setReviewing(created[0]);
+      }
+    } finally {
+      setT2Busy(false);
+    }
+  };
 
   const factory = plan.factories[factoryId];
   const { fitView, getNodes, screenToFlowPosition: screenToFlow } = useReactFlow();
@@ -529,6 +554,15 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           data-testid="btn-auto-floor"
         >
           AUTO-FLOOR
+        </button>
+        <button
+          className="btn btn-ghost overlay-chip"
+          onClick={() => void runT2()}
+          disabled={t2Busy}
+          title="T2 — recipe optimization: alternates diffed into a mini-proposal, never applied directly"
+          data-testid="btn-t2"
+        >
+          {t2Busy ? "OPTIMIZING…" : t2Note ?? "OPTIMIZE (T2)"}
         </button>
         {floors.length > 1 && (
           <button

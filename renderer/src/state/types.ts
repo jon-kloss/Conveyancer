@@ -131,6 +131,7 @@ export interface Plan {
   nodeClaims: Record<Id, NodeClaim>;
   routes: Record<Id, Route>;
   junctions: Record<Id, Junction>;
+  proposals: Record<Id, Proposal>;
 }
 
 // ---- gamedata ----
@@ -252,6 +253,80 @@ export type PatchOp =
   | { op: "replace"; path: string; value: unknown }
   | { op: "remove"; path: string };
 
+// ---- proposals (Phase 3): reviewable, partially-acceptable change sets ----
+
+export type ProposalStatus = "draft" | "reviewing" | "accepted" | "rejected";
+export type ProposalSource = "global_solver" | "t2_optimize" | "advisor" | "chat" | "save_reimport";
+export type ProposalItemKind = "create" | "modify" | "claim" | "route_add";
+
+export interface ProposalItem {
+  id: Id;
+  kind: ProposalItemKind;
+  included: boolean;
+  label: string;
+  detail: string;
+  impact: string;
+  /** commands this item materializes to; ids may be $alias placeholders */
+  commands: Command[];
+  aliases: (string | null)[];
+  dependsOn: Id[];
+}
+
+export interface Proposal {
+  id: Id;
+  source: ProposalSource;
+  title: string;
+  goal: [string, number][];
+  status: ProposalStatus;
+  number: number;
+  snapshotTime: string;
+  /** compare with planHash — mismatch renders the STALE badge */
+  inputHash: string;
+  provenance: string;
+  items: ProposalItem[];
+}
+
+export interface GoalCheck { item: string; requested: number; achieved: number }
+
+export interface ProposalConsequence {
+  goal: GoalCheck[];
+  goalMet: boolean;
+  deltaPowerMw: number;
+  deltaGenerationMw: number;
+  machines: number;
+  warnings: string[];
+}
+
+export interface WizardConstraints {
+  surplusFirst: boolean;
+  maxNewSites: number;
+  nodeBudget: number;
+  purityFloor: "impure" | "normal" | "pure";
+  powerMarginCap: number;
+  expandPreference: number;
+  includeAlternates: boolean;
+}
+
+export interface WizardGoal {
+  items: [string, number][];
+  constraints: WizardConstraints;
+}
+
+export interface WizardLogLine { phase: string; line: string }
+
+export interface WizardInfeasible { bestRate: number; binding: string; relaxations: string[] }
+
+export type WizardOutcome =
+  | { outcome: "proposal"; proposal: Proposal }
+  | ({ outcome: "infeasible" } & WizardInfeasible)
+  | { outcome: "cancelled" };
+
+export interface JobProgress {
+  log: WizardLogLine[];
+  done: boolean;
+  outcome: WizardOutcome | null;
+}
+
 export interface EditResponse {
   patches: PatchOp[];
   derived: Derived;
@@ -259,6 +334,7 @@ export interface EditResponse {
   canRedo: boolean;
   undoLabel: string | null;
   created: Id[];
+  planHash: string;
 }
 
 export interface InitPayload {
@@ -266,6 +342,7 @@ export interface InitPayload {
   derived: Derived;
   gamedata: GameData;
   world: World;
+  planHash: string;
   canUndo: boolean;
   canRedo: boolean;
   undoLabel: string | null;
@@ -308,7 +385,11 @@ export type Command =
   | { type: "delete_edge"; id: Id }
   | { type: "claim_node"; factory: Id; node: string; extractor: string; clock: number }
   | { type: "release_node"; id: Id }
-  | { type: "rename_plan"; name: string };
+  | { type: "rename_plan"; name: string }
+  | { type: "create_proposal"; proposal: Proposal }
+  | { type: "toggle_proposal_item"; proposal: Id; item: Id; included: boolean }
+  | { type: "set_proposal_status"; id: Id; status: ProposalStatus }
+  | { type: "delete_proposal"; id: Id };
 
 export const BELT_CAPACITY = [60, 120, 270, 480, 780, 1200];
 export const beltCapacity = (tier: number) => BELT_CAPACITY[Math.min(6, Math.max(1, tier)) - 1];
