@@ -86,6 +86,9 @@ pub struct DerivedRoute {
     pub capacity: f64,
     pub saturation: f64,
     pub length_m: f64,
+    /// Total meters climbed / descended along the path (0 on flat plans).
+    pub climb_up_m: f64,
+    pub climb_down_m: f64,
     pub item: Option<String>,
 }
 
@@ -624,6 +627,8 @@ impl Session {
                     capacity,
                     saturation: if capacity > 0.0 { flow / capacity } else { 0.0 },
                     length_m: polyline_length(&r.path),
+                    climb_up_m: polyline_climb(&r.path).0,
+                    climb_down_m: polyline_climb(&r.path).1,
                     item,
                 },
             );
@@ -835,8 +840,24 @@ fn to_derived(r: &SolveResult, solve_on_release: bool) -> DerivedFactory {
 
 fn polyline_length(path: &[MapPos]) -> f64 {
     path.windows(2)
-        .map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt())
+        .map(|w| {
+            ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2) + (w[1].z - w[0].z).powi(2))
+                .sqrt()
+        })
         .sum()
+}
+
+/// Total climb along a path: (meters up, meters down). Zero on flat plans —
+/// elevation is planner-entered until a licensed heightmap exists.
+fn polyline_climb(path: &[MapPos]) -> (f64, f64) {
+    path.windows(2).fold((0.0, 0.0), |(up, down), w| {
+        let dz = w[1].z - w[0].z;
+        if dz > 0.0 {
+            (up + dz, down)
+        } else {
+            (up, down - dz)
+        }
+    })
 }
 
 fn item_or(manifest: &[(String, f64)], src_port: &Id, state: &PlanState) -> String {

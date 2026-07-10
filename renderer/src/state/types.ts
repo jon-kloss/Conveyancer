@@ -5,7 +5,8 @@ export type Id = string;
 export type Status = "planned" | "under_construction" | "built";
 export type CreatedBy = { kind: "manual" } | { kind: "proposal"; id: Id } | { kind: "import"; id: Id };
 
-export interface MapPos { x: number; y: number }
+/** z = elevation in meters, planner-entered (defaults 0; no bundled heightmap). */
+export interface MapPos { x: number; y: number; z?: number }
 export interface GraphPos { x: number; y: number }
 
 export interface Factory {
@@ -160,7 +161,19 @@ export interface GameData {
 
 // ---- world snapshot ----
 
-export interface WorldNode { id: string; item: string; purity: "pure" | "normal" | "impure"; x: number; y: number; region: string }
+export interface WorldNode {
+  id: string;
+  item: string;
+  purity: "pure" | "normal" | "impure";
+  x: number;
+  y: number;
+  /** elevation in meters */
+  z: number;
+  /** cave nodes are reached via their entrance, not their overhead x/y */
+  zone: "surface" | "cave";
+  entrance?: { x: number; y: number; z: number };
+  region: string;
+}
 export interface WorldRegion { id: string; name: string; labelX: number; labelY: number }
 export interface World {
   version: number;
@@ -198,6 +211,9 @@ export interface DerivedRoute {
   capacity: number;
   saturation: number;
   lengthM: number;
+  /** meters climbed / descended along the path (0 on flat plans) */
+  climbUpM: number;
+  climbDownM: number;
   item: string | null;
 }
 

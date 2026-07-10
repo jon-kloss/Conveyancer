@@ -49,13 +49,26 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
         <div className="drawer-title-block">
           <div className="t-title">{item.toUpperCase()}</div>
           <div className="mono drawer-sub">
-            {region.toUpperCase()} · {node.purity.toUpperCase()} NODE
+            {region.toUpperCase()} · {node.purity.toUpperCase()} NODE · {Math.round(node.z)}M
+            {node.zone === "cave" ? " · ▾CAVE" : ""}
           </div>
         </div>
         <button className="drawer-close" onClick={() => setSelection(null)} aria-label="Close">
           ×
         </button>
       </header>
+
+      {node.zone === "cave" && node.entrance && (
+        <section className="drawer-section">
+          <h3 className="t-label">CAVE ACCESS</h3>
+          <div className="insp-note">
+            Underground node — belts reach it via the surface entrance{" "}
+            {Math.round(Math.hypot(node.entrance.x - node.x, node.entrance.y - node.y))} m away,{" "}
+            {Math.round(node.entrance.z - node.z)} m above. Route to the entrance (□ on the map), not the
+            overhead position.
+          </div>
+        </section>
+      )}
 
       <section className="drawer-section">
         <h3 className="t-label">CLAIMS</h3>

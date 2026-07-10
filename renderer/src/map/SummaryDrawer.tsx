@@ -63,6 +63,37 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
       </header>
 
       <section className="drawer-section">
+        <h3 className="t-label">SITE</h3>
+        <div className="drawer-row">
+          <span className="drawer-row-name">Elevation</span>
+          <input
+            type="number"
+            className="mono"
+            style={{ width: 72, height: 24, textAlign: "right" }}
+            key={factory.id}
+            defaultValue={Math.round(factory.position.z ?? 0)}
+            disabled={factory.status !== "planned"}
+            data-testid="factory-elevation"
+            onBlur={(e) => {
+              const z = Number(e.currentTarget.value);
+              if (!Number.isFinite(z) || z === (factory.position.z ?? 0)) return;
+              void dispatch([
+                {
+                  type: "move_factory_pin",
+                  id: factory.id,
+                  position: { x: factory.position.x, y: factory.position.y, z },
+                },
+              ]);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+          <span className="unit mono">m</span>
+        </div>
+      </section>
+
+      <section className="drawer-section">
         <h3 className="t-label">OUTPUTS</h3>
         {outputs.length === 0 && <div className="drawer-empty">No output ports yet — open the factory to add them.</div>}
         {outputs.map((p) => (

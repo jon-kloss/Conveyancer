@@ -297,6 +297,34 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             require_planned(f.status, id, "move")?;
             f.position = *position;
             tx.record(state.upsert(Entity::Factory(f)));
+            // Route paths store endpoint positions — refresh the waypoint that
+            // sits on this factory (belt endpoints are its ports; power lines
+            // reference the factory directly) so lines and 3D lengths track
+            // pin moves and elevation edits.
+            let routes: Vec<Route> = state.routes.values().cloned().collect();
+            for mut r in routes {
+                let owns = |end: &Id| {
+                    end == id
+                        || state
+                            .ports
+                            .get(end)
+                            .map(|p| &p.factory == id)
+                            .unwrap_or(false)
+                };
+                let mut touched = false;
+                if owns(&r.endpoints.0) && !r.path.is_empty() {
+                    r.path[0] = *position;
+                    touched = true;
+                }
+                if owns(&r.endpoints.1) && !r.path.is_empty() {
+                    let last = r.path.len() - 1;
+                    r.path[last] = *position;
+                    touched = true;
+                }
+                if touched {
+                    tx.record(state.upsert(Entity::Route(r)));
+                }
+            }
         }
         Command::DeleteFactory { id } => {
             let f = state

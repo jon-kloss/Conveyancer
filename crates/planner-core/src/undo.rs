@@ -114,7 +114,11 @@ mod tests {
             state,
             &Command::CreateFactory {
                 name: "NORTHERN FORGE".into(),
-                position: MapPos { x: 100.0, y: 200.0 },
+                position: MapPos {
+                    x: 100.0,
+                    y: 200.0,
+                    z: 0.0,
+                },
                 region: "GRASS FIELDS".into(),
             },
         )
@@ -225,7 +229,11 @@ mod tests {
             &mut state,
             &Command::MoveFactoryPin {
                 id: fid.clone(),
-                position: MapPos { x: 0.0, y: 0.0 },
+                position: MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
             },
         );
         assert!(matches!(
@@ -249,7 +257,11 @@ mod tests {
             &mut state,
             &Command::CreateFactory {
                 name: "X".into(),
-                position: MapPos { x: 1.0, y: 2.0 },
+                position: MapPos {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 0.0,
+                },
                 region: "DUNE DESERT".into(),
             },
         )

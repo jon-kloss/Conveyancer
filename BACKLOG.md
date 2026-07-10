@@ -21,3 +21,6 @@ Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), 
 - v1: Supplemental generator fluids (water for coal/nuclear) — lands with pipes.
 - v1.1: Route waypoint editing (paths are multi-point in the model; UI draws straight pin-to-pin).
 - v1.1: Persisted Circuit entities: user naming, breakers, priority switches (grids are derived-only today).
+- v1: Pipe head-lift math from route climb (z groundwork landed; needs pipes).
+- v1: Rail grade warnings from per-segment slope (z groundwork landed; needs Phase 4 rail).
+- v1.1: Elevation from a licensed heightmap (auto-fill pin z + climb along interior waypoints) — replaces planner-entered z.

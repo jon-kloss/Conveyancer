@@ -295,7 +295,9 @@ export default function MapView() {
           }
         });
         marker.on("dragend", () => {
-          const pos = fromLatLng(marker!.getLatLng());
+          // keep the planner-entered elevation — dragging only moves x/y
+          const z = useStore.getState().plan.factories[f.id]?.position.z ?? 0;
+          const pos = { ...fromLatLng(marker!.getLatLng()), z };
           void useStore.getState().dispatch([{ type: "move_factory_pin", id: f.id, position: pos }]);
         });
         marker.addTo(map);
@@ -428,6 +430,7 @@ function NodeTooltip({ node }: { node: WorldNode }) {
   return (
     <div className="node-tooltip chip">
       {name.toUpperCase()} · {node.purity.toUpperCase()}
+      {node.zone === "cave" ? " · ▾CAVE" : ""}
     </div>
   );
 }

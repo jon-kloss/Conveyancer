@@ -101,7 +101,7 @@ export class MapCanvasLayer extends L.Layer {
       { Desc_OreIron_C: "FE", Desc_OreCopper_C: "CU", Desc_Stone_C: "LIME", Desc_Coal_C: "COAL" }[node.item] ??
       node.item.replace("Desc_", "").replace("_C", "").slice(0, 4).toUpperCase();
     const purity = node.purity === "normal" ? "NORM" : node.purity.toUpperCase();
-    return `${code} ${purity}`;
+    return node.zone === "cave" ? `${code} ${purity} ▾CAVE` : `${code} ${purity}`;
   }
 
   redraw = () => {
@@ -337,6 +337,32 @@ export class MapCanvasLayer extends L.Layer {
       else ctx.setLineDash([]);
       ctx.stroke();
       ctx.setLineDash([]);
+
+      // cave nodes: an under-arc below the ring (underground), plus the
+      // surface entrance — a small square (infrastructure, A2.3) linked by a
+      // dotted line while hovered/selected so routing via it reads naturally
+      if (node.zone === "cave") {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 3.5, Math.PI * 0.15, Math.PI * 0.85);
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = hovered || selected ? css("--ink-100") : inkMuted;
+        ctx.stroke();
+        if (node.entrance && (hovered || selected)) {
+          const e = map.latLngToContainerPoint(toLatLng(node.entrance));
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(e.x, e.y);
+          ctx.setLineDash([2, 4]);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = inkMuted;
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeRect(e.x - 3.5, e.y - 3.5, 7, 7);
+          ctx.font = `500 9px ${css("--font-mono")}`;
+          ctx.fillStyle = inkMuted;
+          ctx.fillText("ENTRANCE", e.x + 7, e.y + 3);
+        }
+      }
 
       // claimed = orange center dot; free = hollow
       if (state.claimed) {

@@ -93,6 +93,16 @@ export default function RouteDrawer({ route }: { route: Route }) {
             ))}
           </select>
         </div>
+        {dr && dr.climbUpM + dr.climbDownM > 0.5 && (
+          <div className="drawer-row">
+            <span className="drawer-row-name">Climb</span>
+            <span className="t-data-12 projected">
+              ↑{Math.round(dr.climbUpM)}
+              <span className="unit">m</span> ↓{Math.round(dr.climbDownM)}
+              <span className="unit">m</span>
+            </span>
+          </div>
+        )}
         <div className="drawer-row">
           <span className="drawer-row-name">Throughput</span>
           <span className="minibar">

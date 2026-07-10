@@ -45,6 +45,7 @@ fn build_modular_frame_factory(s: &mut Session) -> (Id, Id, Id) {
             position: MapPos {
                 x: -1400.0,
                 y: 2400.0,
+                z: 0.0,
             },
             region: "GRASS FIELDS".into(),
         }])
@@ -421,7 +422,11 @@ fn empire_routes_propagate_supply_and_deficits() {
     let rod_fid = s
         .edit(vec![Command::CreateFactory {
             name: "ROD WORKS".into(),
-            position: MapPos { x: 0.0, y: 0.0 },
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             region: "GRASS FIELDS".into(),
         }])
         .unwrap()
@@ -495,7 +500,11 @@ fn empire_routes_propagate_supply_and_deficits() {
     let screw_fid = s
         .edit(vec![Command::CreateFactory {
             name: "SCREW WORKS".into(),
-            position: MapPos { x: 500.0, y: 0.0 },
+            position: MapPos {
+                x: 500.0,
+                y: 0.0,
+                z: 0.0,
+            },
             region: "GRASS FIELDS".into(),
         }])
         .unwrap()
@@ -555,7 +564,18 @@ fn empire_routes_propagate_supply_and_deficits() {
             kind: RouteKind::Belt { tier: 1 },
             from: rod_out.clone(),
             to: screw_in.clone(),
-            path: vec![MapPos { x: 0.0, y: 0.0 }, MapPos { x: 300.0, y: 400.0 }],
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 300.0,
+                    y: 400.0,
+                    z: 0.0,
+                },
+            ],
         }])
         .unwrap();
     let route = r.created[0].clone();
@@ -674,7 +694,11 @@ fn generator_factories_and_circuits() {
     let plant = s
         .edit(vec![Command::CreateFactory {
             name: "COASTAL COAL".into(),
-            position: MapPos { x: 0.0, y: 0.0 },
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             region: "GRASS FIELDS".into(),
         }])
         .unwrap()
@@ -754,7 +778,11 @@ fn generator_factories_and_circuits() {
     let consumer = s
         .edit(vec![Command::CreateFactory {
             name: "IRON WORKS".into(),
-            position: MapPos { x: 800.0, y: 0.0 },
+            position: MapPos {
+                x: 800.0,
+                y: 0.0,
+                z: 0.0,
+            },
             region: "GRASS FIELDS".into(),
         }])
         .unwrap()
@@ -817,7 +845,18 @@ fn generator_factories_and_circuits() {
             kind: RouteKind::Power,
             from: plant.clone(),
             to: consumer.clone(),
-            path: vec![MapPos { x: 0.0, y: 0.0 }, MapPos { x: 800.0, y: 0.0 }],
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 800.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
         }])
         .unwrap();
     let d = &resp.derived;
@@ -862,7 +901,11 @@ fn failed_multi_command_edit_rolls_back() {
     let r = s
         .edit(vec![Command::CreateFactory {
             name: "X".into(),
-            position: MapPos { x: 0.0, y: 0.0 },
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             region: "".into(),
         }])
         .unwrap();
@@ -880,4 +923,107 @@ fn failed_multi_command_edit_rolls_back() {
     ]);
     assert!(err.is_err());
     assert_eq!(s.state, before, "partial edit must leave no trace");
+}
+
+#[test]
+fn elevation_flows_into_route_length_and_climb() {
+    let mut s = Session::in_memory(None).unwrap();
+
+    // Two pins 300/400 apart on the map, 120m apart vertically → 3-4-(5·1.3)
+    let a = s
+        .edit(vec![Command::CreateFactory {
+            name: "LOWLANDS".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 30.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let b = s
+        .edit(vec![Command::CreateFactory {
+            name: "PLATEAU".into(),
+            position: MapPos {
+                x: 300.0,
+                y: 0.0,
+                z: 430.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let out = s
+        .edit(vec![Command::AddPort {
+            factory: a.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 0.0, y: 0.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let inp = s
+        .edit(vec![Command::AddPort {
+            factory: b.clone(),
+            direction: PortDirection::In,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 0.0, y: 0.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let resp = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Belt { tier: 3 },
+            from: out,
+            to: inp,
+            path: vec![
+                s.state.factories[&a].position,
+                s.state.factories[&b].position,
+            ],
+        }])
+        .unwrap();
+    let route = resp.created[0].clone();
+    let dr = &resp.derived.routes[&route];
+    // 2D distance 300, Δz 400 → 3D length 500; one 400m climb, no descent.
+    assert!(
+        (dr.length_m - 500.0).abs() < 1e-6,
+        "3D length: {}",
+        dr.length_m
+    );
+    assert!((dr.climb_up_m - 400.0).abs() < 1e-6);
+    assert!(dr.climb_down_m.abs() < 1e-6);
+
+    // Re-siting the pin (elevation edit = move with new z) refreshes the
+    // route's endpoint waypoint — length/climb re-derive from the new site.
+    let resp = s
+        .edit(vec![Command::MoveFactoryPin {
+            id: b.clone(),
+            position: MapPos {
+                x: 300.0,
+                y: 0.0,
+                z: 30.0,
+            },
+        }])
+        .unwrap();
+    let dr = &resp.derived.routes[&route];
+    assert!(
+        (dr.length_m - 300.0).abs() < 1e-6,
+        "flattened: {}",
+        dr.length_m
+    );
+    assert!(dr.climb_up_m.abs() < 1e-6);
+
+    // Undo restores both the pin and the route waypoint (one entry).
+    let resp = s.undo().unwrap().unwrap();
+    let dr = &resp.derived.routes[&route];
+    assert!((dr.length_m - 500.0).abs() < 1e-6, "undo: {}", dr.length_m);
 }

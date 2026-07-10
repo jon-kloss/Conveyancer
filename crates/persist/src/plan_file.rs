@@ -223,7 +223,11 @@ mod tests {
     fn cmd_create(name: &str) -> Command {
         Command::CreateFactory {
             name: name.into(),
-            position: MapPos { x: 1.0, y: 2.0 },
+            position: MapPos {
+                x: 1.0,
+                y: 2.0,
+                z: 0.0,
+            },
             region: "GRASS FIELDS".into(),
         }
     }

@@ -31,6 +31,11 @@ pub enum CreatedBy {
 pub struct MapPos {
     pub x: f64,
     pub y: f64,
+    /// Elevation in meters. Planner-entered (no heightmap is bundled); defaults
+    /// to 0 so pre-elevation plan files load unchanged. Drives 3D route length,
+    /// climb readouts, and later pipe head-lift / rail grade checks.
+    #[serde(default)]
+    pub z: f64,
 }
 
 /// Graph-canvas position for factory-view cards (CSS px in React Flow space).
