@@ -1,14 +1,16 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Titlebar from "./shell/Titlebar";
 import StatusBar from "./shell/StatusBar";
 import { useLayoutMode } from "./shell/useLayoutMode";
 import MapView from "./map/MapView";
 import GraphView from "./graph/GraphView";
+import AuditDrawer from "./audit/AuditDrawer";
 import { useStore } from "./state/store";
 import "./shell/shell.css";
 
 export default function App() {
   const { mode, width, height } = useLayoutMode();
+  const [auditOpen, setAuditOpen] = useState(false);
   const ready = useStore((s) => s.ready);
   const error = useStore((s) => s.error);
   const view = useStore((s) => s.view);
@@ -26,6 +28,10 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         void (e.shiftKey ? redo() : undo());
+      } else if (e.key === "Tab" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLSelectElement)) {
+        // TAB toggles the audit HUD (mock 1i)
+        e.preventDefault();
+        setAuditOpen((o) => !o);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -72,6 +78,7 @@ export default function App() {
       <Titlebar overlayMode={mode === "overlay"} />
       <main className="app-canvas">
         {view.mode === "map" ? <MapView /> : <GraphView key={view.factoryId} factoryId={view.factoryId} />}
+        <AuditDrawer open={auditOpen} onToggle={() => setAuditOpen((o) => !o)} />
       </main>
       <StatusBar overlayMode={mode === "overlay"} />
     </div>
