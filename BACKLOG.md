@@ -1,0 +1,13 @@
+# BACKLOG
+
+Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), v1.1, v2.
+
+- v1: Full community world-node snapshot (all nodes, all purities, geysers) replacing the Phase 1 subset — pending tile/data licensing review.
+- v1: Community map tile set (3 zoom levels) once licensing is verified (SDD §7).
+- v1: Inter-factory routes + empire recompute + audit drawer (Phase 2).
+- v1: Circuits, generator factories, priority switches (Phase 2, A2).
+- v1: Proposal system, global solver, wizard, T2 mini-proposals (Phase 3).
+- v1: Rail/truck/drone inspectors + save import (Phase 4, fixtures already in `fixtures/saves/`).
+- v1: AI layer — advisor gate, chat, proposal_intent, style guides (Phase 5).
+- v1.1: Batteries/storage in circuit math (`⚡ +BUFFER` slot reserved, A2.2).
+- v2: Signal-block rail capacity modeling (A3.1); direct .pak icon/tile extraction (SDD §7).
