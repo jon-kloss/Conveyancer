@@ -82,12 +82,14 @@ export default function Inspector({
   const bindingText = useMemo(() => {
     if (!ceiling) return null;
     const b = ceiling.binding;
+    const itemName = gamedata.items[b.item]?.displayName ?? b.item;
     if (b.kind === "belt_capacity") {
-      const itemName = gamedata.items[b.item]?.displayName ?? b.item;
       return { text: `${itemName.toUpperCase()} BELT AT ${fmtRate(b.capacity)}/MIN`, fix: "UPGRADE BELT TIER" };
     }
-    const itemName = gamedata.items[b.item]?.displayName ?? b.item;
-    return { text: `${itemName.toUpperCase()} INPUT CEILING ${fmtRate(b.ceiling)}/MIN`, fix: "RAISE EXTRACTION" };
+    if (b.kind === "input_ceiling") {
+      return { text: `${itemName.toUpperCase()} INPUT CEILING ${fmtRate(b.ceiling)}/MIN`, fix: "RAISE EXTRACTION" };
+    }
+    return { text: `${itemName.toUpperCase()} NOT WIRED`, fix: "CONNECT THE MISSING BELT" };
   }, [ceiling, gamedata.items]);
 
   const dgSel = selectedGroup ? df?.groups[selectedGroup.id] : null;

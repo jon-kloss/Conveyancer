@@ -64,6 +64,9 @@ pub struct DerivedFactory {
     pub groups: BTreeMap<String, DerivedGroup>,
     pub edges: BTreeMap<String, DerivedEdge>,
     pub ports: BTreeMap<String, f64>,
+    /// Unmet output targets (SDD §5.2 degraded solve) — `ports` holds the
+    /// achieved rates; the canonical targets are never rewritten for these.
+    pub shortfalls: BTreeMap<String, solver::model::Shortfall>,
     pub total_power_mw: f64,
     pub target_ceiling: Option<TargetCeiling>,
     pub solve_us: u64,
@@ -947,23 +950,27 @@ impl Session {
                 }
             };
 
-            // write-backs (only on the edit path)
+            // write-backs (only on the edit path). A degraded solve (any
+            // shortfall) is advisory: never rewrite planned counts/clocks to
+            // the starved values — they spring back once the gap is wired.
             if let Some(tx) = tx.as_deref_mut() {
-                for (gid, gr) in &result.groups {
-                    if let Some(g) = self.state.groups.get(gid) {
-                        // ◆ built groups are game ground truth: the solver may
-                        // read them but never resize them — only import sync
-                        // (the documented exception) writes the built layer.
-                        if g.status == Status::Built {
-                            continue;
-                        }
-                        if g.count != gr.count || (g.clock - gr.clock).abs() > 1e-9 {
-                            let mut g = g.clone();
-                            g.count = gr.count;
-                            g.clock = gr.clock;
-                            let ops = self.state.upsert(Entity::Group(g));
-                            tx.forward.push(ops.0);
-                            tx.inverse.push(ops.1);
+                if result.shortfalls.is_empty() {
+                    for (gid, gr) in &result.groups {
+                        if let Some(g) = self.state.groups.get(gid) {
+                            // ◆ built groups are game ground truth: the solver may
+                            // read them but never resize them — only import sync
+                            // (the documented exception) writes the built layer.
+                            if g.status == Status::Built {
+                                continue;
+                            }
+                            if g.count != gr.count || (g.clock - gr.clock).abs() > 1e-9 {
+                                let mut g = g.clone();
+                                g.count = gr.count;
+                                g.clock = gr.clock;
+                                let ops = self.state.upsert(Entity::Group(g));
+                                tx.forward.push(ops.0);
+                                tx.inverse.push(ops.1);
+                            }
                         }
                     }
                 }
@@ -1284,6 +1291,7 @@ impl Session {
             groups: BTreeMap::new(),
             edges: BTreeMap::new(),
             ports: BTreeMap::new(),
+            shortfalls: BTreeMap::new(),
             total_power_mw: 0.0,
             target_ceiling: None,
             solve_us: 0,
@@ -1339,6 +1347,7 @@ fn to_derived(r: &SolveResult, solve_on_release: bool) -> DerivedFactory {
             })
             .collect(),
         ports: r.ports.clone(),
+        shortfalls: r.shortfalls.clone(),
         total_power_mw: r.total_power_mw,
         target_ceiling: r.target_ceiling.clone(),
         solve_us: r.solve_us,

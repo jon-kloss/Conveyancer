@@ -249,9 +249,13 @@ export interface World {
 
 export type Constraint =
   | { kind: "belt_capacity"; edge: Id; item: string; capacity: number }
-  | { kind: "input_ceiling"; port: Id; item: string; ceiling: number };
+  | { kind: "input_ceiling"; port: Id; item: string; ceiling: number }
+  | { kind: "disconnected"; node: Id; item: string };
 
 export interface TargetCeiling { maxRate: number; binding: Constraint }
+
+/** Unmet output target on a degraded solve (SDD §5.2 — never a dead end). */
+export interface Shortfall { requested: number; missing: number; binding: Constraint | null }
 
 export interface DerivedGroup { inRates: Record<string, number>; outRates: Record<string, number>; powerMw: number }
 export interface DerivedEdge { flow: number; saturation: number }
@@ -260,6 +264,8 @@ export interface DerivedFactory {
   groups: Record<Id, DerivedGroup>;
   edges: Record<Id, DerivedEdge>;
   ports: Record<Id, number>;
+  /** Unmet output targets — ports carry the achieved rates when present. */
+  shortfalls?: Record<Id, Shortfall>;
   totalPowerMw: number;
   targetCeiling: TargetCeiling | null;
   solveUs: number;

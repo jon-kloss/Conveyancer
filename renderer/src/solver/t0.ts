@@ -97,6 +97,8 @@ export function t0SetTarget(
       ),
       edges: r.edges,
       ports: r.ports,
+      // T0 drag preview never reports shortfalls; T1 settle owns that contract.
+      shortfalls: {},
       totalPowerMw: r.totalPowerMw,
       targetCeiling: r.targetCeiling,
       solveUs,

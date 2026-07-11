@@ -376,6 +376,8 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         groups,
         edges,
         ports,
+        // T0's demand-pull never reports shortfalls; T1 owns that contract.
+        shortfalls: BTreeMap::new(),
         total_power_mw: total_power,
         target_ceiling,
         clamped,

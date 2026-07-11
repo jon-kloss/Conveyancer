@@ -412,6 +412,53 @@ fn infeasible_target_clamps_and_names_constraint() {
 }
 
 #[test]
+fn partially_wired_factory_degrades_without_error_or_write_back() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (fid, out_port, smelt) = build_modular_frame_factory(&mut s);
+    // Sever the ore feed — the routine mid-construction state (SDD §5.2).
+    let ore_edge = s
+        .state
+        .edges
+        .values()
+        .find(|e| e.item == "Desc_OreIron_C")
+        .unwrap()
+        .id
+        .clone();
+    s.edit(vec![Command::DeleteEdge { id: ore_edge }]).unwrap();
+    let r = s
+        .edit(vec![Command::SetPortRate {
+            id: out_port.clone(),
+            rate: 2.0,
+        }])
+        .unwrap();
+    let df = &r.derived.factories[&fid];
+    assert!(
+        df.solve_error.is_none(),
+        "must degrade, not dead-end: {:?}",
+        df.solve_error
+    );
+    assert!((df.ports[&out_port] - 0.0).abs() < 1e-6, "achieved rate 0");
+    let sf = df.shortfalls.get(&out_port).expect("shortfall reported");
+    assert!((sf.requested - 2.0).abs() < 1e-6);
+    assert!((sf.missing - 2.0).abs() < 1e-6);
+    match &sf.binding {
+        Some(solver::model::Constraint::Disconnected { node, item }) => {
+            assert_eq!(node, &smelt);
+            assert_eq!(item, "Desc_OreIron_C");
+        }
+        other => panic!("expected disconnected binding, got {other:?}"),
+    }
+    // Degraded solves are advisory: the user's target is NOT clamped away and
+    // group counts are NOT rewritten to the starved values.
+    assert!(
+        (s.state.ports[&out_port].rate - 2.0).abs() < 1e-9,
+        "target untouched: {}",
+        s.state.ports[&out_port].rate
+    );
+    assert_eq!(s.state.groups[&smelt].count, 1, "counts not rewritten");
+}
+
+#[test]
 fn junctions_split_and_enforce_port_caps() {
     let mut s = Session::in_memory(None).unwrap();
     let (fid, out_port, _) = build_modular_frame_factory(&mut s);

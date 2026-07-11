@@ -388,6 +388,213 @@ fn junctions_are_conservation_only() {
     }
 }
 
+/// Two independent chains: in-a → ga → out-x and in-b → gb → out-y. Each
+/// recipe converts 1:1 at 30/min per machine. Used for multi-output shortfall
+/// cases — the chains share nothing, so shortfall allocation is unambiguous.
+fn dual_chain_snapshot(rate_x: f64, rate_y: f64, b_ceiling: Option<f64>) -> FactorySnapshot {
+    FactorySnapshot {
+        groups: vec![
+            group(
+                "ga",
+                recipe(
+                    "Recipe_A_C",
+                    "constructor",
+                    2.0,
+                    &[("a", 1.0)],
+                    &[("x", 1.0)],
+                    4.0,
+                ),
+            ),
+            group(
+                "gb",
+                recipe(
+                    "Recipe_B_C",
+                    "constructor",
+                    2.0,
+                    &[("b", 1.0)],
+                    &[("y", 1.0)],
+                    4.0,
+                ),
+            ),
+        ],
+        edges: vec![
+            edge("e-a", NodeRef::Input("in-a".into()), g("ga"), "a", 780.0),
+            edge("e-x", g("ga"), NodeRef::Output("out-x".into()), "x", 780.0),
+            edge("e-b", NodeRef::Input("in-b".into()), g("gb"), "b", 780.0),
+            edge("e-y", g("gb"), NodeRef::Output("out-y".into()), "y", 780.0),
+        ],
+        inputs: vec![
+            InputPortSpec {
+                id: "in-a".into(),
+                item: "a".into(),
+                ceiling: None,
+            },
+            InputPortSpec {
+                id: "in-b".into(),
+                item: "b".into(),
+                ceiling: b_ceiling,
+            },
+        ],
+        junctions: vec![],
+        outputs: vec![
+            OutputPortSpec {
+                id: "out-x".into(),
+                item: "x".into(),
+                rate: rate_x,
+            },
+            OutputPortSpec {
+                id: "out-y".into(),
+                item: "y".into(),
+                rate: rate_y,
+            },
+        ],
+    }
+}
+
+#[test]
+fn t1_unwired_output_degrades_not_errors() {
+    // SDD §5.2 'no dead ends': an output port with no inbound edge is the
+    // routine mid-construction state — degrade, never hard-error.
+    let mut snap = modular_frame_snapshot(0.0, None, 780.0);
+    snap.edges.retain(|e| e.id != "e-mf-out");
+    let r = solver::t1::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-mf".into(),
+            rate: 30.0,
+        },
+    )
+    .unwrap();
+    // No named capacity ceiling → no clamp: the user's target stays canonical.
+    assert!(!r.clamped, "structural shortfall must not clamp");
+    assert!(r.target_ceiling.is_none());
+    assert_close(r.ports["out-mf"], 0.0, "achieved rate");
+    let sf = &r.shortfalls["out-mf"];
+    assert_close(sf.requested, 30.0, "requested");
+    assert_close(sf.missing, 30.0, "missing");
+    match &sf.binding {
+        Some(Constraint::Disconnected { node, item }) => {
+            assert_eq!(node, "out-mf");
+            assert_eq!(item, "mf");
+        }
+        other => panic!("expected disconnected binding, got {other:?}"),
+    }
+    // The rest of the chain idles rather than erroring away.
+    assert_close(r.groups["mf"].out_rates["mf"], 0.0, "idle assembler");
+}
+
+#[test]
+fn t1_unwired_group_input_degrades() {
+    // Mid-construction case: the smelter's ore feed isn't wired yet, so the
+    // whole chain pins to zero — report the gap and name the unwired group.
+    let mut snap = modular_frame_snapshot(2.0, None, 780.0);
+    snap.edges.retain(|e| e.id != "e-ore");
+    let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
+    assert!(!r.clamped);
+    assert_close(r.ports["out-mf"], 0.0, "achieved rate");
+    let sf = &r.shortfalls["out-mf"];
+    assert_close(sf.requested, 2.0, "requested");
+    assert_close(sf.missing, 2.0, "missing");
+    match &sf.binding {
+        Some(Constraint::Disconnected { node, item }) => {
+            assert_eq!(node, "smelt");
+            assert_eq!(item, "ore");
+        }
+        other => panic!("expected disconnected binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn t1_multi_output_partial_shortfall_names_ceiling() {
+    // Recompute on a two-output factory (no ceiling-pass fallback): the tight
+    // input ceiling starves out-y only — out-x stays whole, the shortfall
+    // carries the named InputCeiling, and nothing dead-ends.
+    let snap = dual_chain_snapshot(30.0, 30.0, Some(10.0));
+    let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
+    assert_close(r.ports["out-x"], 30.0, "reachable port stays whole");
+    assert_close(r.ports["out-y"], 10.0, "starved port at best achievable");
+    assert_eq!(r.shortfalls.len(), 1);
+    let sf = &r.shortfalls["out-y"];
+    assert_close(sf.requested, 30.0, "requested");
+    assert_close(sf.missing, 20.0, "missing");
+    match &sf.binding {
+        Some(Constraint::InputCeiling { port, ceiling, .. }) => {
+            assert_eq!(port, "in-b");
+            assert_close(*ceiling, 10.0, "ceiling");
+        }
+        other => panic!("expected input-ceiling binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn t1_feasible_solves_have_empty_shortfalls() {
+    // Regression lock: the shortfall channel stays silent whenever the solve
+    // is feasible — including after a clamp settles at the named ceiling.
+    let snap = modular_frame_snapshot(0.0, Some(48.0), 780.0);
+    let r = solver::t1::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-mf".into(),
+            rate: 1.0,
+        },
+    )
+    .unwrap();
+    assert!(!r.clamped);
+    assert!(
+        r.shortfalls.is_empty(),
+        "feasible solve: {:?}",
+        r.shortfalls
+    );
+    let r = solver::t1::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-mf".into(),
+            rate: 3.0,
+        },
+    )
+    .unwrap();
+    assert!(r.clamped, "beyond the ore ceiling");
+    assert!(r.shortfalls.is_empty(), "clamped solve: {:?}", r.shortfalls);
+}
+
+#[test]
+fn t1_shortfall_never_taken_to_save_machines() {
+    // Lexicographic guard: at T=20 the chain costs hundreds of machine
+    // equivalents; zeroing the target would save all of them, but the
+    // shortfall penalty must dominate the machines term.
+    let snap = modular_frame_snapshot(20.0, None, 780.0);
+    let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
+    assert!(
+        r.shortfalls.is_empty(),
+        "shortfall taken: {:?}",
+        r.shortfalls
+    );
+    assert_golden_rates(&r, 20.0);
+}
+
+#[test]
+fn t1_degraded_solve_stays_in_budget() {
+    // Three outputs, two degraded (one starved by a ceiling, one unwired):
+    // the elastic formulation must stay inside the 50ms T1 budget.
+    let mut snap = dual_chain_snapshot(30.0, 30.0, Some(10.0));
+    snap.outputs.push(OutputPortSpec {
+        id: "out-z".into(),
+        item: "z".into(),
+        rate: 15.0,
+    });
+    let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
+    assert_eq!(r.shortfalls.len(), 2);
+    match &r.shortfalls["out-z"].binding {
+        Some(Constraint::Disconnected { node, .. }) => assert_eq!(node, "out-z"),
+        other => panic!("expected disconnected binding, got {other:?}"),
+    }
+    assert!(
+        r.solve_us < 50_000,
+        "degraded solve blew the budget: {}us",
+        r.solve_us
+    );
+}
+
 #[test]
 fn clock_edit_rederives_count() {
     let snap = modular_frame_snapshot(2.0, None, 780.0);
