@@ -118,6 +118,17 @@
 .sb-crit {
   color: var(--flow-crit);
 }
+.sb-error {
+  color: var(--flow-crit);
+  max-width: 40ch;
+  cursor: pointer;
+}
+.sb-error .sb-error-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sb-gen {
   color: var(--ink-500);
 }

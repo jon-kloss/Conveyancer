@@ -40,6 +40,11 @@ pub struct Recipe {
     pub produced_in: Vec<String>,
     /// True for alternate recipes (unlocked via hard drives).
     pub alternate: bool,
+    /// Average sustained draw override for recipes run in variable-power
+    /// machines (Particle Accelerator etc.): constant + factor/2, the
+    /// midpoint of the per-cycle power ramp. None for fixed-power recipes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable_power_mw: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,6 +207,12 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         ..Default::default()
     };
     let mut generator_fuels: Vec<(String, f64, Vec<String>)> = Vec::new();
+    // Machines whose draw varies by recipe, and every recipe's raw
+    // (constant, factor) pair — joined in a post-pass below, so section
+    // ordering in Docs.json never matters.
+    let mut variable_power_machines: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut recipe_variable_power: BTreeMap<String, (f64, f64)> = BTreeMap::new();
 
     for section in sections {
         let native = section
@@ -264,21 +275,49 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         ingredients: parse_item_amounts(&s(c, "mIngredients")),
                         products: parse_item_amounts(&s(c, "mProduct")),
                         produced_in,
+                        variable_power_mw: None, // filled by the post-pass below
                     };
                     if !recipe.class_name.is_empty() && !recipe.products.is_empty() {
+                        recipe_variable_power.insert(
+                            class_name.clone(),
+                            (
+                                f(c, "mVariablePowerConsumptionConstant"),
+                                f(c, "mVariablePowerConsumptionFactor"),
+                            ),
+                        );
                         gd.recipes.insert(class_name, recipe);
                     }
                 }
             }
             "FGBuildableManufacturer" | "FGBuildableManufacturerVariablePower" => {
+                let variable = fg == "FGBuildableManufacturerVariablePower";
                 for c in &classes {
+                    // Variable-power machines (Particle Accelerator, Converter,
+                    // Quantum Encoder) ship mPowerConsumption ≈ 0; the honest
+                    // planning number is the average of the estimated min/max.
+                    // "Mininum" is a genuine Docs.json typo — parse it as-is.
+                    let power_mw = if variable {
+                        let est = (f(c, "mEstimatedMininumPowerConsumption")
+                            + f(c, "mEstimatedMaximumPowerConsumption"))
+                            / 2.0;
+                        if est > 0.0 {
+                            est
+                        } else {
+                            f(c, "mPowerConsumption")
+                        }
+                    } else {
+                        f(c, "mPowerConsumption")
+                    };
                     let m = Machine {
                         class_name: s(c, "ClassName"),
                         display_name: s(c, "mDisplayName"),
-                        power_mw: f(c, "mPowerConsumption"),
+                        power_mw,
                         kind: MachineKind::Manufacturer,
                     };
                     if !m.class_name.is_empty() {
+                        if variable {
+                            variable_power_machines.insert(m.class_name.clone());
+                        }
                         gd.machines.insert(m.class_name.clone(), m);
                     }
                 }
@@ -354,9 +393,49 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         }
     }
 
+    // Liquids/gases: Docs amounts are liters; normalize authored recipe
+    // amounts to m³ (game rates are m³/min). Ordering invariant: this MUST
+    // run before burn-recipe synthesis below — fluid mEnergyValue is MJ per
+    // m³, so synthesized burn amounts are born in m³/min and must never be
+    // divided by 1000.
+    let liquid_forms = ["RF_LIQUID", "RF_GAS"];
+    let is_fluid: std::collections::BTreeSet<String> = gd
+        .items
+        .values()
+        .filter(|i| liquid_forms.contains(&i.form.as_str()))
+        .map(|i| i.class_name.clone())
+        .collect();
+    for r in gd.recipes.values_mut() {
+        for (item, amount) in r.ingredients.iter_mut().chain(r.products.iter_mut()) {
+            if is_fluid.contains(item) {
+                *amount /= 1000.0;
+            }
+        }
+    }
+
+    // Variable-power recipes: draw varies by recipe, not machine, so store the
+    // average sustained draw (constant + factor/2 — the ramp midpoint the
+    // in-game UI reports) as a per-recipe override. The machine-class gate is
+    // load-bearing: ordinary recipes also carry these keys with Docs.json
+    // defaults (constant 0, factor 1) and must stay None.
+    for r in gd.recipes.values_mut() {
+        let Some(&(constant, factor)) = recipe_variable_power.get(&r.class_name) else {
+            continue;
+        };
+        if constant + factor > 0.0
+            && r.produced_in
+                .iter()
+                .any(|m| variable_power_machines.contains(m))
+        {
+            r.variable_power_mw = Some(constant + factor / 2.0);
+        }
+    }
+
     // Synthesize fuel-burn recipes: MW·60 MJ/min ÷ fuel MJ = fuel/min.
-    // Supplemental fluids (water) wait for the pipe network model — noted in
-    // DECISIONS.md; the fuel math itself is exact.
+    // Runs after fluid normalization (see above) so these recipes keep their
+    // already-correct m³/min amounts. Supplemental fluids (water) wait for
+    // the pipe network model — noted in DECISIONS.md; the fuel math itself
+    // is exact.
     for (gen_class, mw, fuels) in generator_fuels {
         for fuel in fuels {
             let Some(fuel_item) = gd.items.get(&fuel) else {
@@ -384,6 +463,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     ingredients: vec![(fuel, per_min)],
                     products: vec![(POWER_ITEM.to_string(), mw)],
                     produced_in: vec![gen_class.clone()],
+                    variable_power_mw: None,
                 },
             );
         }
@@ -399,22 +479,6 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             energy_mj: 0.0,
         },
     );
-
-    // Liquids/gases: Docs amounts are liters; normalize to m³ (game rates are m³/min).
-    let liquid_forms = ["RF_LIQUID", "RF_GAS"];
-    let is_fluid: std::collections::BTreeSet<String> = gd
-        .items
-        .values()
-        .filter(|i| liquid_forms.contains(&i.form.as_str()))
-        .map(|i| i.class_name.clone())
-        .collect();
-    for r in gd.recipes.values_mut() {
-        for (item, amount) in r.ingredients.iter_mut().chain(r.products.iter_mut()) {
-            if is_fluid.contains(item) {
-                *amount /= 1000.0;
-            }
-        }
-    }
 
     Ok(gd)
 }
@@ -518,5 +582,55 @@ mod tests {
         assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
         assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
         assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
+    }
+
+    #[test]
+    fn variable_power_machines_get_average_draw() {
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        // Machine-level estimate: (250 + 750) / 2, not the ~0 mPowerConsumption.
+        let pa = &gd.machines["Build_HadronCollider_C"];
+        assert_eq!(pa.power_mw, 500.0);
+        assert!(matches!(pa.kind, MachineKind::Manufacturer));
+        // Recipe-level average override: constant + factor/2.
+        assert_eq!(
+            gd.recipes["Recipe_Diamond_C"].variable_power_mw,
+            Some(500.0)
+        );
+        // A hungrier recipe on the same machine beats the machine estimate.
+        assert_eq!(
+            gd.recipes["Recipe_DarkMatter_C"].variable_power_mw,
+            Some(1000.0)
+        );
+        // Ordinary recipes carry the Docs.json default keys (constant 0,
+        // factor 1) but are NOT produced in a variable-power machine — the
+        // machine-class gate keeps them at None.
+        assert_eq!(gd.recipes["Recipe_IngotIron_C"].variable_power_mw, None);
+        // Fixed-power machines are untouched.
+        assert_eq!(gd.machines["Build_SmelterMk1_C"].power_mw, 4.0);
+    }
+
+    #[test]
+    fn liquid_fuel_burn_recipe_is_m3_per_min() {
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        // Authored fluid recipes: Docs stores liters; parse normalizes to m³.
+        let fuel = &gd.recipes["Recipe_LiquidFuel_C"];
+        assert_eq!(
+            fuel.ingredients,
+            vec![("Desc_LiquidOil_C".to_string(), 6.0)]
+        );
+        assert_eq!(fuel.products, vec![("Desc_LiquidFuel_C".to_string(), 4.0)]);
+        // Synthesized burn recipes are computed from mEnergyValue, which for
+        // fluids is MJ per m³ — so they are born in m³/min and must NOT go
+        // through the liter→m³ division: 250 MW · 60 ÷ 750 MJ/m³ = 20 m³/min.
+        let burn = gd
+            .recipes
+            .values()
+            .find(|r| r.produced_in.contains(&"Build_GeneratorFuel_C".to_string()))
+            .expect("synthesized fuel-generator burn recipe");
+        assert_eq!(
+            burn.ingredients,
+            vec![("Desc_LiquidFuel_C".to_string(), 20.0)]
+        );
+        assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 250.0)]);
     }
 }

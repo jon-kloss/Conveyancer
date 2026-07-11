@@ -1,8 +1,16 @@
 //! T1 — local per-factory LP (SDD §5.2), 50ms budget. Fixed recipe set.
-//! Variables: group cycle rates + edge flows. Constraints: belt capacities,
-//! input ceilings, conservation. Objective: meet targets, minimize machines
-//! then power. Infeasible → clamp to best achievable and name the binding
-//! constraint (no dead ends).
+//! Variables: group cycle rates + edge flows + one shortfall slack per output
+//! target. Constraints: belt capacities, input ceilings, conservation; output
+//! targets are ELASTIC (`inflow + shortfall == rate`), so the LP is feasible
+//! for every structurally valid snapshot. Objective (weighted lexicographic):
+//! minimize shortfall first (heavy penalty), then machines, then power.
+//!
+//! No dead ends: an unmeetable target DEGRADES — `ports` reports the achieved
+//! rate and `SolveResult::shortfalls` carries the per-port gap with a named
+//! binding when one is attributable (`Disconnected` for unwired ports/groups,
+//! belt/ceiling via `find_binding`, else `None`). The ceiling pass still
+//! hard-stops and clamps an explicitly edited target at a named capacity
+//! ceiling; structural shortfalls never rewrite the user's target.
 
 use std::collections::BTreeMap;
 
@@ -13,6 +21,12 @@ use good_lp::{
 use crate::model::*;
 
 const EPS: f64 = 1e-6;
+
+/// Objective weight per item/min of unmet target. Three orders above the
+/// ceiling pass's `1000·t` maximize term (so maximizing the edited port never
+/// cannibalizes another port) and far above any realistic machines term (so
+/// shortfall is never taken to save machines).
+const SHORTFALL_PENALTY: f64 = 1e6;
 
 struct Lp {
     group_vars: Vec<Variable>,
@@ -43,14 +57,27 @@ fn edges_out_of<'a>(
         .map(|(i, _)| i)
 }
 
+/// One LP pass's solution.
+struct LpSolution {
+    /// Group cycle rates (machine-equivalents at 100% clock).
+    cycles: Vec<f64>,
+    /// Edge flows, indexed like `snapshot.edges`.
+    flows: Vec<f64>,
+    /// Achieved rate of the maximized port (0.0 on fixed-target passes).
+    max_rate: f64,
+    /// Unmet target per fixed-target output port (items/min).
+    shortfalls: BTreeMap<String, f64>,
+}
+
 /// Solve the LP with the edited output's target either fixed (feasibility pass)
-/// or free-and-maximized (ceiling pass). Returns (group cycles, edge flows,
-/// achieved target) on success.
+/// or free-and-maximized (ceiling pass). Fixed targets are elastic — a per-port
+/// shortfall slack keeps the LP feasible (the all-zero flow point always
+/// satisfies it).
 fn run_lp(
     snapshot: &FactorySnapshot,
     targets: &BTreeMap<String, f64>,
     maximize_port: Option<&str>,
-) -> Result<(Vec<f64>, Vec<f64>, f64), SolveError> {
+) -> Result<LpSolution, SolveError> {
     let mut vars = variables!();
     let group_vars: Vec<Variable> = snapshot
         .groups
@@ -63,14 +90,24 @@ fn run_lp(
         .map(|e| vars.add(variable().min(0.0).max(e.capacity)))
         .collect();
     let target_var = maximize_port.map(|_| vars.add(variable().min(0.0)));
+    // One shortfall slack per output whose target is held fixed.
+    let shortfall_vars: Vec<Option<Variable>> = snapshot
+        .outputs
+        .iter()
+        .map(|p| match maximize_port {
+            Some(mp) if mp == p.id => None,
+            _ => Some(vars.add(variable().min(0.0))),
+        })
+        .collect();
 
     let lp = Lp {
         group_vars,
         edge_vars,
     };
 
-    // Objective: machines (∝ Σ m_g·duration) with a tiny power tiebreak; or
-    // maximize the free target (machines as negative tiebreak).
+    // Objective (weighted lexicographic): unmet targets first (heavy penalty),
+    // then machines (∝ Σ m_g·duration) with a tiny power tiebreak; the ceiling
+    // pass also maximizes the free target (dominated by the shortfall term).
     // Group variables are machine-equivalents at 100% clock, so Σv is machines.
     let machines: Expression = lp.group_vars.iter().map(|&v| v * 1.0).sum();
     let power_tiebreak: Expression = snapshot
@@ -79,9 +116,14 @@ fn run_lp(
         .zip(&lp.group_vars)
         .map(|(g, &v)| v * (g.recipe.power_mw * 1e-4))
         .sum();
+    let shortfall_penalty: Expression = shortfall_vars
+        .iter()
+        .flatten()
+        .map(|&v| v * SHORTFALL_PENALTY)
+        .sum();
     let objective: Expression = match target_var {
-        Some(t) => -1000.0 * t + machines.clone() + power_tiebreak,
-        None => machines.clone() + power_tiebreak,
+        Some(t) => shortfall_penalty - 1000.0 * t + machines.clone() + power_tiebreak,
+        None => shortfall_penalty + machines.clone() + power_tiebreak,
     };
 
     let mut model = vars.minimise(objective).using(microlp);
@@ -130,7 +172,7 @@ fn run_lp(
             model = model.with(constraint!(inflow == outflow));
         }
     }
-    for p in &snapshot.outputs {
+    for (pi, p) in snapshot.outputs.iter().enumerate() {
         let node = NodeRef::Output(p.id.clone());
         let inflow: Expression = edges_into(snapshot, &node, None)
             .map(|ei| lp.edge_vars[ei])
@@ -140,25 +182,35 @@ fn run_lp(
                 model = model.with(constraint!(inflow == t));
             }
             _ => {
-                let rate = targets.get(&p.id).copied().unwrap_or(p.rate);
-                model = model.with(constraint!(inflow == rate));
+                let rate = targets.get(&p.id).copied().unwrap_or(p.rate).max(0.0);
+                let s = shortfall_vars[pi].expect("fixed-target output has a shortfall slack");
+                model = model.with(constraint!(inflow + s == rate));
             }
         }
     }
 
+    // Elastic targets make the model feasible by construction — an Infeasible
+    // here is a genuine solver bug, not a planning state.
     let solution = model.solve().map_err(|e| match e {
         good_lp::ResolutionError::Infeasible => SolveError::Internal {
-            message: "infeasible".into(),
+            message: "infeasible (bug: elastic targets make the T1 model always feasible)".into(),
         },
         other => SolveError::Internal {
             message: other.to_string(),
         },
     })?;
 
-    let cycles: Vec<f64> = lp.group_vars.iter().map(|&v| solution.value(v)).collect();
-    let flows: Vec<f64> = lp.edge_vars.iter().map(|&v| solution.value(v)).collect();
-    let achieved = target_var.map(|t| solution.value(t)).unwrap_or(0.0);
-    Ok((cycles, flows, achieved))
+    Ok(LpSolution {
+        cycles: lp.group_vars.iter().map(|&v| solution.value(v)).collect(),
+        flows: lp.edge_vars.iter().map(|&v| solution.value(v)).collect(),
+        max_rate: target_var.map(|t| solution.value(t)).unwrap_or(0.0),
+        shortfalls: snapshot
+            .outputs
+            .iter()
+            .zip(&shortfall_vars)
+            .filter_map(|(p, v)| v.map(|v| (p.id.clone(), solution.value(v))))
+            .collect(),
+    })
 }
 
 /// Identify the constraint that binds at the ceiling solution.
@@ -190,6 +242,36 @@ fn find_binding(snapshot: &FactorySnapshot, flows: &[f64]) -> Option<Constraint>
     None
 }
 
+/// Name what limits an output port that carries a shortfall: structural
+/// unwiring first (an unwired port or group input forces the whole chain to
+/// zero), then a saturated belt/ceiling at the achieved optimum, else `None`
+/// (unmet with no single named constraint — e.g. competing pinned targets).
+fn attribute_shortfall(
+    snapshot: &FactorySnapshot,
+    port: &OutputPortSpec,
+    flows: &[f64],
+) -> Option<Constraint> {
+    let node = NodeRef::Output(port.id.clone());
+    if edges_into(snapshot, &node, None).next().is_none() {
+        return Some(Constraint::Disconnected {
+            node: port.id.clone(),
+            item: port.item.clone(),
+        });
+    }
+    for g in &snapshot.groups {
+        let gnode = NodeRef::Group(g.id.clone());
+        for (item, _) in &g.recipe.inputs {
+            if edges_into(snapshot, &gnode, Some(item)).next().is_none() {
+                return Some(Constraint::Disconnected {
+                    node: g.id.clone(),
+                    item: item.clone(),
+                });
+            }
+        }
+    }
+    find_binding(snapshot, flows)
+}
+
 pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, SolveError> {
     let start = std::time::Instant::now();
 
@@ -216,8 +298,9 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
     let mut target_ceiling = None;
     let mut clamped = false;
     if let Some(port) = &edited_port {
-        if let Ok((_, flows, max_rate)) = run_lp(snapshot, &targets, Some(port)) {
-            if let Some(binding) = find_binding(snapshot, &flows) {
+        if let Ok(ceiling_pass) = run_lp(snapshot, &targets, Some(port)) {
+            let max_rate = ceiling_pass.max_rate;
+            if let Some(binding) = find_binding(snapshot, &ceiling_pass.flows) {
                 if targets[port] > max_rate + EPS * (1.0 + max_rate) {
                     targets.insert(port.clone(), max_rate);
                     clamped = true;
@@ -227,7 +310,12 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         }
     }
 
-    let (cycles, flows, _) = run_lp(snapshot, &targets, None)?;
+    let LpSolution {
+        cycles,
+        flows,
+        shortfalls: port_shortfalls,
+        ..
+    } = run_lp(snapshot, &targets, None)?;
 
     let mut groups = BTreeMap::new();
     let mut total_power = 0.0;
@@ -298,14 +386,31 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
             .sum();
         ports.insert(p.id.clone(), used);
     }
+    let mut shortfalls = BTreeMap::new();
     for p in &snapshot.outputs {
-        ports.insert(p.id.clone(), targets[&p.id]);
+        let requested = targets[&p.id].max(0.0);
+        let missing = port_shortfalls.get(&p.id).copied().unwrap_or(0.0);
+        if missing > EPS * (1.0 + requested) {
+            // Degraded: report the achieved rate; the canonical target stays.
+            ports.insert(p.id.clone(), (requested - missing).max(0.0));
+            shortfalls.insert(
+                p.id.clone(),
+                Shortfall {
+                    requested,
+                    missing,
+                    binding: attribute_shortfall(snapshot, p, &flows),
+                },
+            );
+        } else {
+            ports.insert(p.id.clone(), targets[&p.id]);
+        }
     }
 
     Ok(SolveResult {
         groups,
         edges,
         ports,
+        shortfalls,
         total_power_mw: total_power,
         target_ceiling,
         clamped,

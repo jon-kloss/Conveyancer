@@ -48,7 +48,10 @@ All entities carry `id: Ulid`, `status: Planned | UnderConstruction | Built`, `c
 Factory        { name, position: MapPos, region, node_claims: Vec<NodeClaimId>,
                  groups: Vec<MachineGroupId>, ports: Vec<PortId>, style_guide: Option<StyleGuideId> }
 MachineGroup   { factory, machine: MachineClass, recipe: RecipeId, count: u32,
-                 clock: f32, somersloops: u8, planned_delta: Option<DeltaRef> }
+                 clock: f32, somersloops: u8,
+                 planned_delta: Option<GroupDelta { count: Option<u32>, clock: Option<f32> }> }
+                 // ◇ overlay of planned EFFECTIVE values on a ◆ built baseline;
+                 // None per component = track the baseline (see DECISIONS.md)
 Port           { factory, direction: In|Out, item: ItemId, rate: RatePerMin, bound_route: Option<RouteId> }
 Route          { kind: Belt(Tier) | Pipe(Tier) | Rail(RailSpec) | Truck(TruckSpec)
                        | Drone(DroneSpec) | Power, path: Polyline, endpoints: (PortRef, PortRef),

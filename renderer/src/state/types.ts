@@ -22,6 +22,13 @@ export interface Factory {
   createdBy: CreatedBy;
 }
 
+/** Planned overlay on a ◆ built group (SDD §3.1.1): each component is the
+ *  planned effective value; null/absent means "track the built baseline". */
+export interface GroupDelta {
+  count?: number | null;
+  clock?: number | null;
+}
+
 export interface MachineGroup {
   id: Id;
   factory: Id;
@@ -30,13 +37,19 @@ export interface MachineGroup {
   count: number;
   clock: number;
   somersloops: number;
-  plannedDelta: Id | null;
+  /** Baseline count/clock stay game ground truth; edits on ◆ land here. */
+  plannedDelta: GroupDelta | null;
   graphPos: GraphPos;
   /** Vertical factory floor (0 = ground). */
   floor: number;
   status: Status;
   createdBy: CreatedBy;
 }
+
+/** Count the solver plans with: delta overlay if present, else baseline. */
+export const effCount = (g: MachineGroup): number => g.plannedDelta?.count ?? g.count;
+/** Clock the solver plans with: delta overlay if present, else baseline. */
+export const effClock = (g: MachineGroup): number => g.plannedDelta?.clock ?? g.clock;
 
 export type PortDirection = "in" | "out";
 
@@ -193,6 +206,8 @@ export interface GameRecipe {
   products: [string, number][];
   producedIn: string[];
   alternate: boolean;
+  /** Average sustained draw override for variable-power machines (absent for fixed-power recipes). */
+  variablePowerMw?: number | null;
 }
 export interface GameMachine { className: string; displayName: string; powerMw: number; kind: string }
 export interface GameBelt { className: string; displayName: string; capacityPerMin: number; tier: number }
@@ -236,9 +251,13 @@ export interface World {
 
 export type Constraint =
   | { kind: "belt_capacity"; edge: Id; item: string; capacity: number }
-  | { kind: "input_ceiling"; port: Id; item: string; ceiling: number };
+  | { kind: "input_ceiling"; port: Id; item: string; ceiling: number }
+  | { kind: "disconnected"; node: Id; item: string };
 
 export interface TargetCeiling { maxRate: number; binding: Constraint }
+
+/** Unmet output target on a degraded solve (SDD §5.2 — never a dead end). */
+export interface Shortfall { requested: number; missing: number; binding: Constraint | null }
 
 export interface DerivedGroup { inRates: Record<string, number>; outRates: Record<string, number>; powerMw: number }
 export interface DerivedEdge { flow: number; saturation: number }
@@ -247,6 +266,8 @@ export interface DerivedFactory {
   groups: Record<Id, DerivedGroup>;
   edges: Record<Id, DerivedEdge>;
   ports: Record<Id, number>;
+  /** Unmet output targets — ports carry the achieved rates when present. */
+  shortfalls?: Record<Id, Shortfall>;
   totalPowerMw: number;
   targetCeiling: TargetCeiling | null;
   solveUs: number;
@@ -447,6 +468,7 @@ export type Command =
   | { type: "set_group_clock"; id: Id; clock: number }
   | { type: "set_group_floor"; id: Id; floor: number }
   | { type: "move_group_card"; id: Id; graphPos: GraphPos }
+  | { type: "tidy_layout"; factory: Id }
   | { type: "delete_group"; id: Id }
   | { type: "add_port"; factory: Id; direction: PortDirection; item: string; rate: number; rateCeiling: number | null; graphPos: GraphPos }
   | { type: "set_port_rate"; id: Id; rate: number }

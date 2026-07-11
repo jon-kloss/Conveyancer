@@ -275,6 +275,121 @@ fn exit_criterion_flow() {
 }
 
 #[test]
+fn built_group_delta_feeds_the_solver_and_survives_write_back() {
+    let mut s = Session::in_memory(None).unwrap();
+    // built layer via import: 2 smelters (60 ingot/min) feeding 1 rod constructor
+    let mach = |class: &str, recipe: &str, x: f64| app::import::ImportMachine {
+        class: class.into(),
+        recipe: Some(recipe.into()),
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+    };
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "TEST-01".into(),
+        machines: vec![
+            mach("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0),
+            mach("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0),
+            mach("Build_ConstructorMk1_C", "Recipe_IronRod_C", 100.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let fid = s.state.factories.keys().next().unwrap().clone();
+    let gid = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_SmelterMk1_C")
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(s.state.groups[&gid].status, Status::Built);
+    assert_eq!(s.state.groups[&gid].count, 2);
+
+    // A count edit on ◆ succeeds as a ◇ delta; the baseline stays ground truth.
+    let r = s
+        .edit(vec![Command::SetGroupCount {
+            id: gid.clone(),
+            count: 4,
+        }])
+        .unwrap();
+    let g = &s.state.groups[&gid];
+    assert_eq!(g.count, 2, "baseline untouched");
+    assert_eq!(
+        g.planned_delta,
+        Some(GroupDelta {
+            count: Some(4),
+            clock: None,
+        })
+    );
+    // The solve ran inside the same edit — its write-back must not squash the
+    // delta or the baseline (◆ groups are skipped).
+    let base_power = r.derived.factories[&fid].groups[&gid].power_mw;
+    assert!(base_power > 0.0);
+
+    // The solver snapshot plans with the effective values.
+    let snap = s.snapshot(&fid).unwrap();
+    let gs = snap.groups.iter().find(|g| g.id == gid).unwrap();
+    assert_eq!(gs.count, 4, "snapshot reads the delta count");
+
+    // A clock delta participates in the solve it triggers: underclocking the
+    // bank spreads the same throughput at the sub-linear power law.
+    let r = s
+        .edit(vec![Command::SetGroupClock {
+            id: gid.clone(),
+            clock: 0.5,
+        }])
+        .unwrap();
+    let g = &s.state.groups[&gid];
+    assert!((g.clock - 1.0).abs() < 1e-9, "baseline clock untouched");
+    assert_eq!(g.planned_delta.unwrap().clock, Some(0.5));
+    let under_power = r.derived.factories[&fid].groups[&gid].power_mw;
+    assert!(
+        under_power < base_power,
+        "underclock delta lowers derived power: {under_power} vs {base_power}"
+    );
+
+    // An unrelated solve-inducing edit leaves the delta alone.
+    let out_port = s
+        .state
+        .ports
+        .values()
+        .find(|p| p.direction == PortDirection::Out && p.item == "Desc_IronRod_C")
+        .unwrap()
+        .id
+        .clone();
+    s.edit(vec![Command::SetPortRate {
+        id: out_port,
+        rate: 10.0,
+    }])
+    .unwrap();
+    assert_eq!(
+        s.state.groups[&gid].planned_delta,
+        Some(GroupDelta {
+            count: Some(4),
+            clock: Some(0.5),
+        })
+    );
+    assert_eq!(s.state.groups[&gid].count, 2);
+
+    // Each delta edit is one undo step: unwind to the pristine built layer.
+    s.undo().unwrap().unwrap(); // rate
+    s.undo().unwrap().unwrap(); // clock delta
+    assert_eq!(
+        s.state.groups[&gid].planned_delta,
+        Some(GroupDelta {
+            count: Some(4),
+            clock: None,
+        })
+    );
+    s.undo().unwrap().unwrap(); // count delta
+    assert_eq!(s.state.groups[&gid].planned_delta, None);
+    assert_eq!(s.state.groups[&gid].count, 2);
+}
+
+#[test]
 fn infeasible_target_clamps_and_names_constraint() {
     let mut s = Session::in_memory(None).unwrap();
     let (fid, out_port, _) = build_modular_frame_factory(&mut s);
@@ -294,6 +409,53 @@ fn infeasible_target_clamps_and_names_constraint() {
         solver::model::Constraint::InputCeiling { item, .. } => assert_eq!(item, "Desc_OreIron_C"),
         other => panic!("expected input ceiling, got {other:?}"),
     }
+}
+
+#[test]
+fn partially_wired_factory_degrades_without_error_or_write_back() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (fid, out_port, smelt) = build_modular_frame_factory(&mut s);
+    // Sever the ore feed — the routine mid-construction state (SDD §5.2).
+    let ore_edge = s
+        .state
+        .edges
+        .values()
+        .find(|e| e.item == "Desc_OreIron_C")
+        .unwrap()
+        .id
+        .clone();
+    s.edit(vec![Command::DeleteEdge { id: ore_edge }]).unwrap();
+    let r = s
+        .edit(vec![Command::SetPortRate {
+            id: out_port.clone(),
+            rate: 2.0,
+        }])
+        .unwrap();
+    let df = &r.derived.factories[&fid];
+    assert!(
+        df.solve_error.is_none(),
+        "must degrade, not dead-end: {:?}",
+        df.solve_error
+    );
+    assert!((df.ports[&out_port] - 0.0).abs() < 1e-6, "achieved rate 0");
+    let sf = df.shortfalls.get(&out_port).expect("shortfall reported");
+    assert!((sf.requested - 2.0).abs() < 1e-6);
+    assert!((sf.missing - 2.0).abs() < 1e-6);
+    match &sf.binding {
+        Some(solver::model::Constraint::Disconnected { node, item }) => {
+            assert_eq!(node, &smelt);
+            assert_eq!(item, "Desc_OreIron_C");
+        }
+        other => panic!("expected disconnected binding, got {other:?}"),
+    }
+    // Degraded solves are advisory: the user's target is NOT clamped away and
+    // group counts are NOT rewritten to the starved values.
+    assert!(
+        (s.state.ports[&out_port].rate - 2.0).abs() < 1e-9,
+        "target untouched: {}",
+        s.state.ports[&out_port].rate
+    );
+    assert_eq!(s.state.groups[&smelt].count, 1, "counts not rewritten");
 }
 
 #[test]
@@ -684,6 +846,363 @@ fn connect_in(s: &mut Session, fid: &str, from: EdgeEnd, to: EdgeEnd, item: &str
         tier,
     }])
     .unwrap();
+}
+
+// ---- deficit-honesty fixtures (rod → screw empire, small variants) ----
+
+fn mk_factory(s: &mut Session, name: &str, x: f64) -> Id {
+    s.edit(vec![Command::CreateFactory {
+        name: name.into(),
+        position: MapPos { x, y: 0.0, z: 0.0 },
+        region: "GRASS FIELDS".into(),
+    }])
+    .unwrap()
+    .created[0]
+        .clone()
+}
+
+fn mk_port(s: &mut Session, fid: &Id, dir: PortDirection, item: &str, ceiling: Option<f64>) -> Id {
+    s.edit(vec![Command::AddPort {
+        factory: fid.clone(),
+        direction: dir,
+        item: item.into(),
+        rate: 0.0,
+        rate_ceiling: ceiling,
+        graph_pos: GraphPos { x: 0.0, y: 100.0 },
+    }])
+    .unwrap()
+    .created[0]
+        .clone()
+}
+
+/// Upstream iron-rod factory (ore in @240 ceiling → smelter → constructor →
+/// rods out), same shape as `empire_routes_propagate_supply_and_deficits`.
+fn build_rod_factory(s: &mut Session) -> (Id, Id) {
+    let fid = mk_factory(s, "ROD WORKS", 0.0);
+    let rod_in = mk_port(s, &fid, PortDirection::In, "Desc_OreIron_C", Some(240.0));
+    let rod_out = mk_port(s, &fid, PortDirection::Out, "Desc_IronRod_C", None);
+    let smelt = add_group(
+        s,
+        &fid,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(200.0, 100.0),
+    );
+    let rods = add_group(
+        s,
+        &fid,
+        "Build_ConstructorMk1_C",
+        "Recipe_IronRod_C",
+        gp(400.0, 100.0),
+    );
+    let g = EdgeEnd::Group;
+    connect_in(
+        s,
+        &fid,
+        EdgeEnd::Port(rod_in),
+        g(smelt.clone()),
+        "Desc_OreIron_C",
+        3,
+    );
+    connect_in(s, &fid, g(smelt), g(rods.clone()), "Desc_IronIngot_C", 3);
+    connect_in(
+        s,
+        &fid,
+        g(rods),
+        EdgeEnd::Port(rod_out.clone()),
+        "Desc_IronRod_C",
+        3,
+    );
+    (fid, rod_out)
+}
+
+/// Downstream screw factory with `n_outs` screw Out ports fed by one group.
+fn build_screw_factory(s: &mut Session, n_outs: usize) -> (Id, Id, Vec<Id>, Id) {
+    let fid = mk_factory(s, "SCREW WORKS", 500.0);
+    let screw_in = mk_port(s, &fid, PortDirection::In, "Desc_IronRod_C", None);
+    let outs: Vec<Id> = (0..n_outs)
+        .map(|_| mk_port(s, &fid, PortDirection::Out, "Desc_IronScrew_C", None))
+        .collect();
+    let screws = add_group(
+        s,
+        &fid,
+        "Build_ConstructorMk1_C",
+        "Recipe_Screw_C",
+        gp(300.0, 100.0),
+    );
+    connect_in(
+        s,
+        &fid,
+        EdgeEnd::Port(screw_in.clone()),
+        EdgeEnd::Group(screws.clone()),
+        "Desc_IronRod_C",
+        3,
+    );
+    for out in &outs {
+        connect_in(
+            s,
+            &fid,
+            EdgeEnd::Group(screws.clone()),
+            EdgeEnd::Port(out.clone()),
+            "Desc_IronScrew_C",
+            3,
+        );
+    }
+    (fid, screw_in, outs, screws)
+}
+
+fn add_rod_route(s: &mut Session, rod_out: &Id, screw_in: &Id) -> Id {
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Belt { tier: 1 },
+        from: rod_out.clone(),
+        to: screw_in.clone(),
+        path: vec![
+            MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            MapPos {
+                x: 300.0,
+                y: 400.0,
+                z: 0.0,
+            },
+        ],
+    }])
+    .unwrap()
+    .created[0]
+        .clone()
+}
+
+/// M7: total starvation (supply ceiling exactly 0) must surface as a deficit
+/// row — the old `max_rate > 0.0` guard dropped the most severe case.
+#[test]
+fn empire_total_starvation_emits_deficit_row() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_rod_fid, rod_out) = build_rod_factory(&mut s);
+    let (screw_fid, screw_in, outs, _) = build_screw_factory(&mut s, 1);
+    let screw_out = outs[0].clone();
+    let route = add_rod_route(&mut s, &rod_out, &screw_in);
+
+    // Healthy first: 80 rods shipped, 200 screws (needs 50 rods) — no clamp.
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out.clone(),
+        rate: 80.0,
+    }])
+    .unwrap();
+    s.edit(vec![Command::SetPortRate {
+        id: screw_out.clone(),
+        rate: 200.0,
+    }])
+    .unwrap();
+    assert!((s.state.ports[&screw_out].rate - 200.0).abs() < 1e-4);
+
+    // Upstream target drops to exactly 0: supply ceiling 0, total starvation.
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: rod_out.clone(),
+            rate: 0.0,
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    assert_eq!(d.deficits.len(), 1, "zero supply is still a deficit");
+    let row = &d.deficits[0];
+    assert_eq!(row.factory, screw_fid);
+    assert_eq!(row.port, screw_in);
+    assert_eq!(row.route.as_deref(), Some(route.as_str()));
+    assert!(
+        row.needed.is_finite(),
+        "needed must be finite: {}",
+        row.needed
+    );
+    assert!(
+        (row.needed - 50.0).abs() < 1e-4,
+        "200 screws need 50 rods: {}",
+        row.needed
+    );
+    assert!(row.supplied.abs() < 1e-6, "supplied 0: {}", row.supplied);
+    assert!((d.routes[&route].supplied).abs() < 1e-6);
+    // The downstream target is never silently rewritten by an upstream dip.
+    assert!((s.state.ports[&screw_out].rate - 200.0).abs() < 1e-4);
+}
+
+/// M6: an upstream factory in an error state (ports but no groups) must
+/// propagate ZERO supply — downstream clamps to 0 and reports a deficit,
+/// instead of silently solving as fully supplied.
+#[test]
+fn empire_errored_upstream_starves_downstream() {
+    let mut s = Session::in_memory(None).unwrap();
+    // Downstream first, target set while unconstrained (no route yet).
+    let (screw_fid, screw_in, outs, _) = build_screw_factory(&mut s, 1);
+    let screw_out = outs[0].clone();
+    s.edit(vec![Command::SetPortRate {
+        id: screw_out.clone(),
+        rate: 200.0,
+    }])
+    .unwrap();
+    // Upstream shell: an Out port but no machine groups → error state.
+    let rod_fid = mk_factory(&mut s, "ROD SHELL", 0.0);
+    let rod_out = mk_port(&mut s, &rod_fid, PortDirection::Out, "Desc_IronRod_C", None);
+
+    let route = add_rod_route(&mut s, &rod_out, &screw_in);
+    let resp = s.edit(vec![Command::RenameFactory {
+        id: rod_fid.clone(),
+        name: "ROD SHELL (WIP)".into(),
+    }]);
+    let d = match &resp {
+        Ok(r) => &r.derived,
+        Err(e) => panic!("recompute failed: {e}"),
+    };
+    let up = &d.factories[&rod_fid];
+    assert!(up.solve_error.is_some(), "upstream is in an error state");
+    // Downstream honestly clamps to zero supply — not fully supplied.
+    let down = &d.factories[&screw_fid];
+    assert!(down.solve_error.is_none());
+    assert!(
+        down.ports[&screw_out].abs() < 1e-6,
+        "achieved screws ~0, got {}",
+        down.ports[&screw_out]
+    );
+    assert!((d.routes[&route].supplied).abs() < 1e-6, "route supplies 0");
+    assert_eq!(d.deficits.len(), 1, "starvation surfaces as a deficit row");
+    let row = &d.deficits[0];
+    assert_eq!(row.factory, screw_fid);
+    assert!((row.needed - 50.0).abs() < 1e-4, "needed: {}", row.needed);
+    assert!(row.supplied.abs() < 1e-6);
+    // The canonical target survives untouched.
+    assert!((s.state.ports[&screw_out].rate - 200.0).abs() < 1e-4);
+}
+
+/// M8 residue: a multi-Out factory under a supply dip degrades through the
+/// shortfall channel into exactly one deficit row — no solve_error, real
+/// power, and no group write-back of the starved values.
+#[test]
+fn empire_multi_out_dip_degrades_into_deficits() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_rod_fid, rod_out) = build_rod_factory(&mut s);
+    let (screw_fid, screw_in, outs, screws) = build_screw_factory(&mut s, 2);
+    let route = add_rod_route(&mut s, &rod_out, &screw_in);
+
+    // Healthy: 30 rods shipped; two screw targets of 60 need 30 rods total.
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out.clone(),
+        rate: 30.0,
+    }])
+    .unwrap();
+    for out in &outs {
+        s.edit(vec![Command::SetPortRate {
+            id: out.clone(),
+            rate: 60.0,
+        }])
+        .unwrap();
+    }
+    let count_before = s.state.groups[&screws].count;
+
+    // Upstream dips to 15 while the screw factory still wants 120 total.
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: rod_out.clone(),
+            rate: 15.0,
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    let df = &d.factories[&screw_fid];
+    assert!(
+        df.solve_error.is_none(),
+        "multi-Out dip must degrade, not dead-end: {:?}",
+        df.solve_error
+    );
+    assert!(df.total_power_mw > 0.0, "degraded solve keeps real power");
+    assert!(
+        df.shortfalls.values().any(|sf| matches!(
+            &sf.binding,
+            Some(solver::model::Constraint::InputCeiling { port, .. }) if port == &screw_in
+        )),
+        "shortfall names the starved In port: {:?}",
+        df.shortfalls
+    );
+    assert_eq!(d.deficits.len(), 1, "exactly one row for the route");
+    let row = &d.deficits[0];
+    assert_eq!(row.factory, screw_fid);
+    assert_eq!(row.port, screw_in);
+    assert_eq!(row.route.as_deref(), Some(route.as_str()));
+    assert!(
+        (row.needed - 30.0).abs() < 1e-4,
+        "120 screws need 30 rods: {}",
+        row.needed
+    );
+    assert!((row.supplied - 15.0).abs() < 1e-4);
+    // Degraded solves are advisory: counts are not rewritten to starved values.
+    assert_eq!(s.state.groups[&screws].count, count_before);
+    // Targets survive untouched.
+    for out in &outs {
+        assert!((s.state.ports[out].rate - 60.0).abs() < 1e-4);
+    }
+}
+
+/// Dedup: when the clamped channel (SetTarget on one Out) and the shortfall
+/// channel (the sibling Out) both name the same starved In port, the route
+/// still gets exactly ONE deficit row.
+#[test]
+fn empire_dedup_one_row_per_route_when_both_channels_fire() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_rod_fid, rod_out) = build_rod_factory(&mut s);
+    let (screw_fid, screw_in, outs, _) = build_screw_factory(&mut s, 2);
+    let _route = add_rod_route(&mut s, &rod_out, &screw_in);
+
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out.clone(),
+        rate: 30.0,
+    }])
+    .unwrap();
+    for out in &outs {
+        s.edit(vec![Command::SetPortRate {
+            id: out.clone(),
+            rate: 60.0,
+        }])
+        .unwrap();
+    }
+    // Deep dip (10 rods → 40 screws max), then re-assert the SECOND Out
+    // target during the dip: the edited port clamps at a target ceiling
+    // binding the In port, while the sibling (still 60) shortfalls on the
+    // same In port — both emitter channels are armed simultaneously.
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out.clone(),
+        rate: 10.0,
+    }])
+    .unwrap();
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: outs[1].clone(),
+            rate: 60.0,
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    let df = &d.factories[&screw_fid];
+    assert!(
+        matches!(
+            df.target_ceiling.as_ref().map(|c| &c.binding),
+            Some(solver::model::Constraint::InputCeiling { port, .. }) if port == &screw_in
+        ),
+        "clamped channel armed: {:?}",
+        df.target_ceiling
+    );
+    assert!(
+        df.shortfalls.values().any(|sf| matches!(
+            &sf.binding,
+            Some(solver::model::Constraint::InputCeiling { port, .. }) if port == &screw_in
+        )),
+        "shortfall channel armed: {:?}",
+        df.shortfalls
+    );
+    assert_eq!(
+        d.deficits.len(),
+        1,
+        "one decision per route — never two rows: {:?}",
+        d.deficits
+    );
+    assert_eq!(d.deficits[0].factory, screw_fid);
+    assert_eq!(d.deficits[0].port, screw_in);
 }
 
 #[test]
@@ -1322,4 +1841,331 @@ fn rail_routes_compute_throughput_and_respec() {
         s.state.routes[&route].kind,
         RouteKind::Rail { .. }
     ));
+}
+
+// ---- variable-power draw (Particle Accelerator etc.) ----
+
+/// Variable-power recipes carry an average sustained draw override; the
+/// session snapshot and the solve must plan with it, not the ~0 the machine
+/// would otherwise report from real Docs.json.
+#[test]
+fn variable_power_recipe_average_drives_group_power() {
+    let mut s = Session::in_memory(None).unwrap();
+    let r = s
+        .edit(vec![Command::CreateFactory {
+            name: "QUANTUM WORKS".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap();
+    let fid = r.created[0].clone();
+
+    let r = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Coal_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(600.0),
+            graph_pos: gp(0.0, 200.0),
+        }])
+        .unwrap();
+    let in_port = r.created[0].clone();
+    let r = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_Diamond_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(800.0, 200.0),
+        }])
+        .unwrap();
+    let out_port = r.created[0].clone();
+
+    let pa = add_group(
+        &mut s,
+        &fid,
+        "Build_HadronCollider_C",
+        "Recipe_Diamond_C",
+        gp(400.0, 200.0),
+    );
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Port(in_port),
+        EdgeEnd::Group(pa.clone()),
+        "Desc_Coal_C",
+        5,
+    );
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Group(pa.clone()),
+        EdgeEnd::Port(out_port.clone()),
+        "Desc_Diamond_C",
+        5,
+    );
+
+    // The snapshot's RecipeSpec carries the recipe average (constant +
+    // factor/2 = 500 MW), not the machine estimate path.
+    let snap = s.snapshot(&fid).unwrap();
+    let gs = snap.groups.iter().find(|g| g.id == pa).unwrap();
+    assert_eq!(gs.recipe.power_mw, 500.0);
+
+    // Solve at exactly one machine's worth of demand: 1 diamond / 2 s =
+    // 30/min per machine, so a 30/min target lands count 1 @ 100% clock and
+    // group power = 500 × 1 × 1.0^1.321928 = 500 MW.
+    let r = s
+        .edit(vec![Command::SetPortRate {
+            id: out_port,
+            rate: 30.0,
+        }])
+        .unwrap();
+    let df = &r.derived.factories[&fid];
+    let gp_mw = df.groups[&pa].power_mw;
+    assert!(
+        (gp_mw - 500.0).abs() < 1e-6,
+        "variable-power draw reaches group power: {gp_mw}"
+    );
+    assert!(
+        (df.total_power_mw - 500.0).abs() < 1e-6,
+        "and the factory total: {}",
+        df.total_power_mw
+    );
+}
+
+// ---- M9: persist failure can never diverge memory from disk ----
+// The fault seam (`s.file.faults`, persist's `fault-injection` feature) fails
+// the next N commits/checkpoints before their SQLite transaction opens —
+// observationally identical to a rolled-back mid-write failure.
+
+fn create_named_factory(s: &mut Session, name: &str) -> Id {
+    s.edit(vec![Command::CreateFactory {
+        name: name.into(),
+        position: MapPos {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        region: "GRASS FIELDS".into(),
+    }])
+    .unwrap()
+    .created[0]
+        .clone()
+}
+
+/// Disk and memory agree entity-for-entity right now.
+fn assert_disk_matches_memory(s: &Session) {
+    let (disk, entries, cursor) = s.file.load().unwrap();
+    assert_eq!(disk.project(), s.state.project(), "disk == memory");
+    assert_eq!(cursor, s.undo.entries().len(), "cursor == applied depth");
+    assert!(entries.len() >= cursor);
+}
+
+#[test]
+fn edit_persist_failure_leaves_no_trace() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.ficsit");
+    let fid;
+    {
+        let mut s = Session::open(&path, None, "fixture").unwrap();
+        fid = create_named_factory(&mut s, "NORTHERN FORGE");
+        let hash_before = s.plan_hash();
+        let depth_before = s.undo.entries().len();
+        let label_before = s.undo.undo_label().map(String::from);
+
+        // E1 hits a transient persist failure: the error surfaces and the
+        // edit leaves no trace anywhere.
+        s.file.faults.fail_commits = 1;
+        let err = s.edit(vec![Command::RenameFactory {
+            id: fid.clone(),
+            name: "GHOST".into(),
+        }]);
+        assert!(err.is_err(), "persist failure must surface");
+        assert_eq!(s.state.factories[&fid].name, "NORTHERN FORGE");
+        assert_eq!(s.plan_hash(), hash_before, "plan hash unchanged");
+        assert_eq!(s.undo.entries().len(), depth_before, "undo depth unchanged");
+        assert_eq!(s.undo.undo_label().map(String::from), label_before);
+        assert_disk_matches_memory(&s);
+
+        // E2 (the fault was one-shot) succeeds on top of the clean state.
+        s.edit(vec![Command::RenameFactory {
+            id: fid.clone(),
+            name: "IRON WORKS".into(),
+        }])
+        .unwrap();
+        assert_eq!(s.state.factories[&fid].name, "IRON WORKS");
+        assert_disk_matches_memory(&s);
+    }
+    // Reopen: E2 present, E1 absent, and undo applies cleanly — the M9
+    // silent-loss + journal-skew scenario is impossible.
+    let mut s = Session::open(&path, None, "fixture").unwrap();
+    assert_eq!(s.state.factories[&fid].name, "IRON WORKS");
+    assert_eq!(s.undo.entries().len(), 2, "create + E2, no ghost entry");
+    let r = s.undo().unwrap().unwrap();
+    assert!(!r.patches.is_empty());
+    assert_eq!(s.state.factories[&fid].name, "NORTHERN FORGE");
+}
+
+#[test]
+fn edit_persist_failure_preserves_redo_tail() {
+    let mut s = Session::in_memory(None).unwrap();
+    let fid = create_named_factory(&mut s, "BASE");
+    s.edit(vec![Command::RenameFactory {
+        id: fid.clone(),
+        name: "SECOND".into(),
+    }])
+    .unwrap();
+    s.undo().unwrap().unwrap();
+    assert!(s.undo.can_redo(), "redo tail exists");
+
+    // A failed edit must not truncate the redo tail (commit-then-rollback
+    // would have destroyed it before the persist error).
+    s.file.faults.fail_commits = 1;
+    assert!(s
+        .edit(vec![Command::RenameFactory {
+            id: fid.clone(),
+            name: "THIRD".into(),
+        }])
+        .is_err());
+    assert!(s.undo.can_redo(), "redo tail survives in memory");
+    let (_, entries, cursor) = s.file.load().unwrap();
+    assert_eq!(entries.len(), 2, "redo tail survives on disk");
+    assert_eq!(cursor, 1);
+    let r = s.redo().unwrap().unwrap();
+    assert!(!r.patches.is_empty());
+    assert_eq!(s.state.factories[&fid].name, "SECOND");
+}
+
+#[test]
+fn undo_redo_persist_failure_restores_position() {
+    let mut s = Session::in_memory(None).unwrap();
+    let fid = create_named_factory(&mut s, "FIRST");
+    s.edit(vec![Command::RenameFactory {
+        id: fid.clone(),
+        name: "SECOND".into(),
+    }])
+    .unwrap();
+
+    // undo: checkpoint fails → the just-undone entry is re-applied.
+    s.file.faults.fail_checkpoints = 1;
+    assert!(s.undo().is_err(), "failed checkpoint must surface");
+    assert_eq!(s.state.factories[&fid].name, "SECOND", "position restored");
+    assert!(!s.undo.can_redo(), "cursor restored");
+    assert_eq!(s.undo.entries().len(), 2);
+    assert_disk_matches_memory(&s);
+
+    // The fault was one-shot: the same undo now succeeds.
+    s.undo().unwrap().unwrap();
+    assert_eq!(s.state.factories[&fid].name, "FIRST");
+    assert_disk_matches_memory(&s);
+
+    // redo mirror: checkpoint fails → the just-redone entry is un-applied.
+    s.file.faults.fail_checkpoints = 1;
+    assert!(s.redo().is_err());
+    assert_eq!(s.state.factories[&fid].name, "FIRST", "position restored");
+    assert!(s.undo.can_redo());
+    assert_disk_matches_memory(&s);
+
+    s.redo().unwrap().unwrap();
+    assert_eq!(s.state.factories[&fid].name, "SECOND");
+    assert_disk_matches_memory(&s);
+}
+
+#[test]
+fn accept_proposal_persist_failure_rolls_back() {
+    use planner_core::proposals::*;
+    let mut s = Session::in_memory(None).unwrap();
+    let proposal = Proposal {
+        id: String::new(),
+        source: ProposalSource::GlobalSolver,
+        title: "TEST SITE".into(),
+        goal: vec![],
+        status: ProposalStatus::Draft,
+        number: 0,
+        snapshot_time: "2026-01-01T00:00:00Z".into(),
+        input_hash: s.plan_hash(),
+        provenance: "TEST".into(),
+        items: vec![ProposalItem {
+            id: "item-1".into(),
+            kind: ProposalItemKind::Create,
+            included: true,
+            label: "+ PROPOSED SITE — NEW".into(),
+            detail: String::new(),
+            impact: String::new(),
+            commands: vec![Command::CreateFactory {
+                name: "PROPOSED SITE".into(),
+                position: MapPos {
+                    x: 100.0,
+                    y: 100.0,
+                    z: 0.0,
+                },
+                region: "GRASS FIELDS".into(),
+            }],
+            aliases: vec![None],
+            depends_on: vec![],
+            sync: None,
+        }],
+    };
+    let pid = s
+        .edit(vec![Command::CreateProposal { proposal }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let factories_before = s.state.factories.len();
+
+    s.file.faults.fail_commits = 1;
+    assert!(s.accept_proposal(&pid).is_err());
+    assert_eq!(
+        s.state.proposals[&pid].status,
+        ProposalStatus::Draft,
+        "proposal still Draft after rollback"
+    );
+    assert_eq!(
+        s.state.factories.len(),
+        factories_before,
+        "no materialized entities"
+    );
+    assert_disk_matches_memory(&s);
+
+    // A clean accept then succeeds.
+    s.accept_proposal(&pid).unwrap();
+    assert_eq!(s.state.proposals[&pid].status, ProposalStatus::Accepted);
+    assert_eq!(s.state.factories.len(), factories_before + 1);
+    assert_disk_matches_memory(&s);
+}
+
+#[test]
+fn solver_write_backs_roll_back_with_failed_edit() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_fid, out_port, smelt) = build_modular_frame_factory(&mut s);
+    assert_eq!(s.state.groups[&smelt].count, 1);
+    let rate_before = s.state.ports[&out_port].rate;
+
+    // The failing edit's tx also carries solver write-backs (counts/clocks,
+    // route manifests) — they must ride the same rollback.
+    s.file.faults.fail_commits = 1;
+    assert!(s
+        .edit(vec![Command::SetPortRate {
+            id: out_port.clone(),
+            rate: 2.0,
+        }])
+        .is_err());
+    assert_eq!(s.state.groups[&smelt].count, 1, "write-back reverted");
+    assert!((s.state.ports[&out_port].rate - rate_before).abs() < 1e-9);
+    assert_disk_matches_memory(&s);
+
+    // Retried, the same edit lands write-backs normally.
+    s.edit(vec![Command::SetPortRate {
+        id: out_port,
+        rate: 2.0,
+    }])
+    .unwrap();
+    assert_eq!(s.state.groups[&smelt].count, 2);
+    assert_disk_matches_memory(&s);
 }

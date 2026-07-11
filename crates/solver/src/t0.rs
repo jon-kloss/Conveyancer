@@ -2,9 +2,16 @@
 //! topological walk scaling counts/clocks/rates linearly from the changed
 //! target. Pure function; compiled to WASM for the renderer's drag frames.
 //!
-//! Linearity is the load-bearing property: with distribution fractions frozen
-//! at snapshot weights, every flow is affine in the target (f = f₀ + T·f₁),
-//! which makes the hard-stop ceiling exact: T_max = min (cap − f₀)/f₁.
+//! With distribution fractions frozen at snapshot weights, every flow is a
+//! convex, nondecreasing, PIECEWISE-linear function of the edited target —
+//! globally affine only when no recipe has multiple outputs (a group's
+//! cycles are the max over its per-output demands, which is where the kinks
+//! come from). The hard-stop ceiling is therefore found by bracketing the
+//! feasibility boundary and bisecting — feasibility is monotone in the
+//! target because every flow is nondecreasing, and every belt cap and input
+//! ceiling is checked directly rather than extrapolated — then polished
+//! with one secant step on the binding constraint inside the final linear
+//! segment, which is exact to floating point.
 
 use std::collections::BTreeMap;
 
@@ -227,58 +234,178 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         T0Edit::Recompute => {}
     }
 
-    // Ceiling analysis for the edited target: flows are affine in T.
+    // ---- Cap bookkeeping, shared by the ceiling analysis and the post-solve
+    // defense check. Caps are scanned in T1's `find_binding` order (edges by
+    // index, then input ceilings) so tie-breaks name the same constraint in
+    // both tiers.
+    #[derive(Clone, Copy)]
+    enum CapKey {
+        Edge(usize),
+        Input(usize),
+    }
+    /// Relative tolerance of the ceiling search (bracket + bisection).
+    const REL_TOL: f64 = 1e-9;
+    let cap_keys: Vec<CapKey> = (0..snapshot.edges.len())
+        .map(CapKey::Edge)
+        .chain(
+            snapshot
+                .inputs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.ceiling.is_some())
+                .map(|(i, _)| CapKey::Input(i)),
+        )
+        .collect();
+    let cap_bound = |k: CapKey| -> f64 {
+        match k {
+            CapKey::Edge(i) => snapshot.edges[i].capacity,
+            CapKey::Input(i) => snapshot.inputs[i].ceiling.unwrap_or(f64::INFINITY),
+        }
+    };
+    let cap_flow = |k: CapKey, flows: &[f64]| -> f64 {
+        match k {
+            CapKey::Edge(i) => flows[i],
+            CapKey::Input(i) => {
+                let node = NodeRef::Input(snapshot.inputs[i].id.clone());
+                graph
+                    .out_edges
+                    .get(&node)
+                    .map(|v| v.iter().map(|&ei| flows[ei]).sum())
+                    .unwrap_or(0.0)
+            }
+        }
+    };
+    let cap_constraint = |k: CapKey| -> Constraint {
+        match k {
+            CapKey::Edge(i) => {
+                let e = &snapshot.edges[i];
+                Constraint::BeltCapacity {
+                    edge: e.id.clone(),
+                    item: e.item.clone(),
+                    capacity: e.capacity,
+                }
+            }
+            CapKey::Input(i) => {
+                let p = &snapshot.inputs[i];
+                Constraint::InputCeiling {
+                    port: p.id.clone(),
+                    item: p.item.clone(),
+                    ceiling: p.ceiling.unwrap_or(f64::INFINITY),
+                }
+            }
+        }
+    };
+    // Minimum normalized slack across all caps (negative = violated), with
+    // the constraint it occurs at; first-in-order wins ties.
+    let min_slack = |flows: &[f64]| -> Option<(CapKey, f64)> {
+        let mut best: Option<(CapKey, f64)> = None;
+        for &k in &cap_keys {
+            let cap = cap_bound(k);
+            let slack = (cap - cap_flow(k, flows)) / (1.0 + cap);
+            if best.is_none_or(|(_, s)| slack < s) {
+                best = Some((k, slack));
+            }
+        }
+        best
+    };
+    let feasible = |flows: &[f64]| min_slack(flows).is_none_or(|(_, s)| s >= -REL_TOL);
+
+    // Ceiling analysis for the edited target. Flows are convex nondecreasing
+    // piecewise-linear in the target (see module header), so a two-point
+    // extrapolation can both miss real ceilings (a cap whose [0,1] slope is
+    // zero) and invent low ones (a kink below T=1). Instead: bracket the
+    // feasibility boundary, bisect on monotone feasibility, and polish with
+    // one secant step on the binding constraint inside the final linear
+    // segment (exact there; keeps single-output ceilings exact too).
     let mut target_ceiling: Option<TargetCeiling> = None;
     let mut clamped = false;
+    // Whether every cap held with the edited target at 0. When true, the
+    // clamp below guarantees the final solve satisfies every cap (asserted
+    // after the solve); when false, the violation belongs to sibling fixed
+    // targets and T1 owns the shortfall story.
+    let mut base_feasible = true;
     if let Some(port) = &edited_port {
-        let mut t0 = targets.clone();
-        t0.insert(port.clone(), 0.0);
-        let mut t1 = targets.clone();
-        t1.insert(port.clone(), 1.0);
-        let (f0, _) = demand_pass(&graph, &order, &t0)?;
-        let (f1, _) = demand_pass(&graph, &order, &t1)?;
-        let mut max_t = f64::INFINITY;
-        let mut binding: Option<Constraint> = None;
-        for (i, e) in snapshot.edges.iter().enumerate() {
-            let per_unit = f1[i] - f0[i];
-            if per_unit > 1e-9 {
-                let t = (e.capacity - f0[i]) / per_unit;
-                if t < max_t {
-                    max_t = t;
-                    binding = Some(Constraint::BeltCapacity {
-                        edge: e.id.clone(),
-                        item: e.item.clone(),
-                        capacity: e.capacity,
-                    });
+        let requested = targets[port];
+        let base_targets = targets.clone();
+        let probe = |t: f64| -> Result<Vec<f64>, SolveError> {
+            let mut probe_targets = base_targets.clone();
+            probe_targets.insert(port.clone(), t);
+            demand_pass(&graph, &order, &probe_targets).map(|(flows, _)| flows)
+        };
+        let f0 = probe(0.0)?;
+        let ceiling: Option<(f64, CapKey)> = 'ceiling: {
+            let Some((worst0, slack0)) = min_slack(&f0) else {
+                break 'ceiling None; // no caps anywhere — unbounded
+            };
+            if slack0 < -REL_TOL {
+                // Sibling fixed targets alone violate a cap: the edited
+                // target has no feasible room. Ceiling 0, named at the most
+                // violated constraint.
+                base_feasible = false;
+                break 'ceiling Some((0.0, worst0));
+            }
+            // Seed the upper bracket from the [0,1] affine crossings — exact
+            // for single-output graphs, so the common case brackets with no
+            // extra doubling.
+            let f1 = probe(1.0)?;
+            let mut seed = f64::INFINITY;
+            for &k in &cap_keys {
+                let (a, b) = (cap_flow(k, &f0), cap_flow(k, &f1));
+                if b - a > 1e-9 {
+                    seed = seed.min((cap_bound(k) - a) / (b - a));
                 }
             }
-        }
-        for p in &snapshot.inputs {
-            if let Some(ceiling) = p.ceiling {
-                let node = NodeRef::Input(p.id.clone());
-                let flow_at = |flows: &Vec<f64>| -> f64 {
-                    graph
-                        .out_edges
-                        .get(&node)
-                        .map(|v| v.iter().map(|&ei| flows[ei]).sum())
-                        .unwrap_or(0.0)
-                };
-                let (p0, p1) = (flow_at(&f0), flow_at(&f1));
-                let per_unit = p1 - p0;
-                if per_unit > 1e-9 {
-                    let t = (ceiling - p0) / per_unit;
-                    if t < max_t {
-                        max_t = t;
-                        binding = Some(Constraint::InputCeiling {
-                            port: p.id.clone(),
-                            item: p.item.clone(),
-                            ceiling,
-                        });
-                    }
+            // Bracket: [lo feasible, hi infeasible], growing hi by doubling.
+            let mut lo = 0.0;
+            let mut f_lo = f0.clone();
+            let mut hi = requested.max(1.0);
+            if seed.is_finite() {
+                hi = hi.max(seed);
+            }
+            let mut f_hi = probe(hi)?;
+            let mut doublings = 0;
+            while feasible(&f_hi) {
+                if doublings >= 32 {
+                    break 'ceiling None; // no cap ever binds — no finite ceiling
+                }
+                lo = hi;
+                f_lo = f_hi;
+                hi *= 2.0;
+                f_hi = probe(hi)?;
+                doublings += 1;
+            }
+            // Bisect down to relative REL_TOL (~40 halvings always suffice).
+            for _ in 0..40 {
+                if hi - lo <= REL_TOL * (1.0 + hi) {
+                    break;
+                }
+                let mid = 0.5 * (lo + hi);
+                let f_mid = probe(mid)?;
+                if feasible(&f_mid) {
+                    lo = mid;
+                    f_lo = f_mid;
+                } else {
+                    hi = mid;
+                    f_hi = f_mid;
                 }
             }
-        }
-        if let Some(b) = binding {
+            // The binding is the minimum-slack cap at the feasible end.
+            let Some((key, _)) = min_slack(&f_lo) else {
+                break 'ceiling None;
+            };
+            // Secant polish: the final bracket lies inside a single linear
+            // segment of the binding flow, so its cap crossing is exact.
+            let (g_lo, g_hi) = (cap_flow(key, &f_lo), cap_flow(key, &f_hi));
+            let mut t_max = lo;
+            if g_hi - g_lo > 1e-12 {
+                let t = lo + (cap_bound(key) - g_lo) * (hi - lo) / (g_hi - g_lo);
+                if t.is_finite() {
+                    t_max = t.clamp(lo, hi);
+                }
+            }
+            Some((t_max, key))
+        };
+        if let Some((max_t, key)) = ceiling {
             let max_rate = max_t.max(0.0);
             if targets[port] > max_rate + 1e-9 {
                 targets.insert(port.clone(), max_rate);
@@ -286,12 +413,27 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
             }
             target_ceiling = Some(TargetCeiling {
                 max_rate,
-                binding: b,
+                binding: cap_constraint(key),
             });
         }
     }
 
     let (edge_flow, group_cycles) = demand_pass(&graph, &order, &targets)?;
+
+    // Defense in depth: when the graph satisfied every cap before the edit
+    // contributed (base_feasible), the ceiling clamp above guarantees the
+    // final solve does too — `clamped == false` alongside a violated cap is
+    // impossible by construction, and a failure here means the ceiling
+    // search returned an over-ceiling.
+    if cfg!(debug_assertions) && edited_port.is_some() && base_feasible {
+        if let Some((key, slack)) = min_slack(&edge_flow) {
+            debug_assert!(
+                slack >= -1e-6,
+                "T0 ceiling under-clamped: {:?} violated (normalized slack {slack})",
+                cap_constraint(key)
+            );
+        }
+    }
 
     // Materialize results.
     let mut groups = BTreeMap::new();
@@ -376,6 +518,8 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         groups,
         edges,
         ports,
+        // T0's demand-pull never reports shortfalls; T1 owns that contract.
+        shortfalls: BTreeMap::new(),
         total_power_mw: total_power,
         target_ceiling,
         clamped,

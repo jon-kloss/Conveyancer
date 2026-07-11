@@ -33,9 +33,25 @@ CREATE TABLE IF NOT EXISTS mutes (rule TEXT PRIMARY KEY, muted_at TEXT NOT NULL)
 CREATE TABLE IF NOT EXISTS style_guides (id TEXT PRIMARY KEY, json TEXT NOT NULL);
 ";
 
+/// Deterministic fault plan for tests (`fault-injection` feature only):
+/// count-down guards fail the next N `commit`/`checkpoint` calls with an
+/// injected I/O error BEFORE the SQLite transaction opens — observationally
+/// identical to a mid-write failure, whose transaction rolls back atomically.
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FaultPlan {
+    /// Fail the next N `commit()` calls, then succeed.
+    pub fail_commits: u32,
+    /// Fail the next N `checkpoint()` calls, then succeed.
+    pub fail_checkpoints: u32,
+}
+
 pub struct PlanFile {
     conn: Connection,
     pub path: PathBuf,
+    /// Injected-failure counters (tests only).
+    #[cfg(feature = "fault-injection")]
+    pub faults: FaultPlan,
 }
 
 impl PlanFile {
@@ -49,7 +65,12 @@ impl PlanFile {
         let conn = Connection::open(&path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn, path })
+        Ok(Self {
+            conn,
+            path,
+            #[cfg(feature = "fault-injection")]
+            faults: FaultPlan::default(),
+        })
     }
 
     pub fn in_memory() -> Result<Self, PersistError> {
@@ -58,6 +79,8 @@ impl PlanFile {
         Ok(Self {
             conn,
             path: PathBuf::from(":memory:"),
+            #[cfg(feature = "fault-injection")]
+            faults: FaultPlan::default(),
         })
     }
 
@@ -165,6 +188,13 @@ impl PlanFile {
         meta: &PlanMeta,
         applied: usize,
     ) -> Result<(), PersistError> {
+        #[cfg(feature = "fault-injection")]
+        if self.faults.fail_commits > 0 {
+            self.faults.fail_commits -= 1;
+            return Err(PersistError::Io(std::io::Error::other(
+                "injected persist fault (commit)",
+            )));
+        }
         let tx_guard = self.conn.unchecked_transaction()?;
         // A new commit truncates any redo tail: keep only the entries that were
         // applied before this one (applied - 1), drop the rest.
@@ -194,6 +224,13 @@ impl PlanFile {
         meta: &PlanMeta,
         applied: usize,
     ) -> Result<(), PersistError> {
+        #[cfg(feature = "fault-injection")]
+        if self.faults.fail_checkpoints > 0 {
+            self.faults.fail_checkpoints -= 1;
+            return Err(PersistError::Io(std::io::Error::other(
+                "injected persist fault (checkpoint)",
+            )));
+        }
         let tx_guard = self.conn.unchecked_transaction()?;
         self.apply_rows(batch)?;
         self.set_meta("plan_meta", &serde_json::to_string(meta)?)?;

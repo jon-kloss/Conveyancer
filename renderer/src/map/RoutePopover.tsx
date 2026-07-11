@@ -2,7 +2,7 @@
 // (auto-matched by item; can create the missing IN port on the target), plus
 // the belt tier. Nothing mutates until CONFIRM.
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import {
   beltCapacity,
@@ -47,14 +47,17 @@ export default function RoutePopover({
     return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
   })();
   const [transport, setTransport] = useState<"belt" | "rail" | "truck" | "drone">(dist >= 800 ? "rail" : "belt");
-  const kindFor = (): RouteKind =>
-    transport === "belt"
-      ? { kind: "belt", tier }
-      : transport === "rail"
-        ? { kind: "rail", spec: { ...DEFAULT_RAIL_SPEC } }
-        : transport === "truck"
-          ? { kind: "truck", spec: { ...DEFAULT_TRUCK_SPEC } }
-          : { kind: "drone", spec: { ...DEFAULT_DRONE_SPEC } };
+  const kindFor = useCallback(
+    (): RouteKind =>
+      transport === "belt"
+        ? { kind: "belt", tier }
+        : transport === "rail"
+          ? { kind: "rail", spec: { ...DEFAULT_RAIL_SPEC } }
+          : transport === "truck"
+            ? { kind: "truck", spec: { ...DEFAULT_TRUCK_SPEC } }
+            : { kind: "drone", spec: { ...DEFAULT_DRONE_SPEC } },
+    [transport, tier],
+  );
 
   const candidates: Candidate[] = useMemo(() => {
     const src = plan.factories[fromFactory];
@@ -96,50 +99,85 @@ export default function RoutePopover({
 
   const [picked, setPicked] = useState(0);
 
-  const confirm = async () => {
+  // Enter key-repeat (or a double click) must not dispatch add_route twice
+  // while the first await is in flight.
+  const busyRef = useRef(false);
+
+  const confirm = useCallback(async () => {
+    if (busyRef.current) return;
     const c = candidates[picked];
     if (!c) return;
+    busyRef.current = true;
     const src = plan.factories[fromFactory]!;
     const dst = plan.factories[toFactory]!;
     const path = [src.position, dst.position];
-    if (c.power) {
-      const created = await dispatch([
-        { type: "add_route", kind: { kind: "power" }, from: fromFactory, to: toFactory, path },
-      ]);
-      if (created[0]) setSelection({ kind: "route", id: created[0] });
-      onClose();
-      return;
-    }
-    if (c.inPort) {
-      const created = await dispatch([
-        { type: "add_route", kind: kindFor(), from: c.outPort, to: c.inPort, path },
-      ]);
-      if (created[0]) setSelection({ kind: "route", id: created[0] });
-    } else {
-      // create the IN port, then bind — two commands, one undo step
-      const inCount = dst.ports.filter((id) => plan.ports[id]?.direction === "in").length;
-      const cmds: Command[] = [
-        {
-          type: "add_port",
-          factory: toFactory,
-          direction: "in",
-          item: c.item,
-          rate: 0,
-          rateCeiling: null,
-          graphPos: { x: 0, y: 80 + inCount * 128 },
-        },
-      ];
-      const created = await dispatch(cmds);
-      const newPort = created[0];
-      if (newPort) {
-        const routeIds = await dispatch([
-          { type: "add_route", kind: kindFor(), from: c.outPort, to: newPort, path },
+    // a refused dispatch resolves null (surfaced in the status bar); the
+    // finally keeps the popover from sticking open no matter what happens
+    try {
+      if (c.power) {
+        const created = await dispatch([
+          { type: "add_route", kind: { kind: "power" }, from: fromFactory, to: toFactory, path },
         ]);
-        if (routeIds[0]) setSelection({ kind: "route", id: routeIds[0] });
+        const id = created?.[0];
+        if (id) setSelection({ kind: "route", id });
+        return;
       }
+      if (c.inPort) {
+        const created = await dispatch([
+          { type: "add_route", kind: kindFor(), from: c.outPort, to: c.inPort, path },
+        ]);
+        const id = created?.[0];
+        if (id) setSelection({ kind: "route", id });
+      } else {
+        // create the IN port, then bind — two commands, one undo step
+        const inCount = dst.ports.filter((id) => plan.ports[id]?.direction === "in").length;
+        const cmds: Command[] = [
+          {
+            type: "add_port",
+            factory: toFactory,
+            direction: "in",
+            item: c.item,
+            rate: 0,
+            rateCeiling: null,
+            graphPos: { x: 0, y: 80 + inCount * 128 },
+          },
+        ];
+        const created = await dispatch(cmds);
+        const newPort = created?.[0];
+        // a refused add_port must not attempt the add_route
+        if (newPort) {
+          const routeIds = await dispatch([
+            { type: "add_route", kind: kindFor(), from: c.outPort, to: newPort, path },
+          ]);
+          const id = routeIds?.[0];
+          if (id) setSelection({ kind: "route", id });
+        }
+      }
+    } finally {
+      busyRef.current = false;
+      onClose();
     }
-    onClose();
-  };
+  }, [candidates, picked, plan, fromFactory, toFactory, kindFor, dispatch, setSelection, onClose]);
+
+  // While the popover is open its Enter/Escape win over MapView's bubble-phase
+  // handler (capture + stopPropagation — same precedence pattern as WizardModal
+  // and ProposalReview). Deliberately no isEditableTarget guard here: Enter
+  // with the transport <select> or a candidate radio focused must confirm, and
+  // the popover has no free-text surfaces.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation(); // MapView's ⏎-dive must never fire while we're open
+        void confirm();
+      } else if (e.key === "Escape") {
+        e.stopPropagation(); // ...nor its ESC-deselect
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [confirm, onClose]);
 
   return (
     <div className="route-popover" data-testid="route-popover">

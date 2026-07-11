@@ -139,12 +139,38 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await page.keyboard.press("f"); // frame all factories
   await page.waitForTimeout(400);
 
-  await rightDrag(page, await pinCenter(page, "INGOT POINT"), await pinCenter(page, "ROD CITY"));
+  // ---- ESC cancels a right-drag draft mid-flight (no stuck ghost) ----
+  const src = await pinCenter(page, "INGOT POINT");
+  const dst = await pinCenter(page, "ROD CITY");
+  await page.mouse.move(src.x, src.y);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move((src.x + dst.x) / 2, (src.y + dst.y) / 2, { steps: 5 });
+  await expect(page.locator(".map-placing-hint")).toContainText("RELEASE OVER A FACTORY");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".map-placing-hint")).toHaveCount(0);
+  await page.mouse.up({ button: "right" });
+  await expect(page.getByTestId("route-popover")).not.toBeVisible();
+
+  // ---- releasing over a drawer (outside the map container) cancels, not sticks ----
+  await page.locator(`.pin-wrap:has(.pin-chip:has-text("INGOT POINT")) svg`).click(); // select → drawer opens
+  await expect(page.getByTestId("summary-drawer")).toBeVisible();
+  const drawer = (await page.getByTestId("summary-drawer").boundingBox())!;
+  await page.mouse.move(src.x, src.y);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move(drawer.x + drawer.width / 2, drawer.y + drawer.height / 2, { steps: 5 });
+  await page.mouse.up({ button: "right" });
+  await expect(page.locator(".map-placing-hint")).toHaveCount(0);
+  await expect(page.getByTestId("route-popover")).not.toBeVisible();
+
+  await rightDrag(page, src, dst);
   await expect(page.getByTestId("route-popover")).toBeVisible();
   await expect(page.locator(".route-cand").first()).toContainText("Iron Ingot");
   // 1.6 km apart: the picker suggests RAIL (A3.3) — this test wants a belt
   await page.selectOption('[data-testid="popover-transport"]', "belt");
-  await page.getByTestId("btn-route-confirm").click();
+  // M26: Enter confirms while the transport <select> is focused — and with a
+  // factory selected it must NOT dive into the factory view (map stays up)
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("map-root")).toBeVisible();
 
   // the created route selects itself → belt route inspector with live load
   await expect(page.getByTestId("route-drawer")).toBeVisible();

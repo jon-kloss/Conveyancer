@@ -252,3 +252,42 @@ fn chat_intent_drafts_a_reviewable_proposal() {
         ctx.bytes
     );
 }
+
+#[test]
+fn failed_edit_persists_no_advisor_cards() {
+    // M9 companion: advise() runs only after a durable commit, so an edit
+    // whose persist fails must not gate or persist cards for a state that
+    // never existed.
+    let mut s = Session::in_memory(None).unwrap();
+    let (_a, out) = build_starvable(&mut s);
+    assert!(s.advisor.cards.is_empty(), "healthy empire, no cards");
+    let disk_cards_before = s.file.load_advisor_cards().unwrap().len();
+
+    s.file.faults.fail_commits = 1;
+    assert!(s
+        .edit(vec![Command::SetPortRate {
+            id: out.clone(),
+            rate: 10.0,
+        }])
+        .is_err());
+    assert!(
+        s.advisor.cards.is_empty(),
+        "no phantom in-memory cards: {:?}",
+        s.advisor.cards
+    );
+    assert_eq!(
+        s.file.load_advisor_cards().unwrap().len(),
+        disk_cards_before,
+        "no phantom persisted cards"
+    );
+
+    // The same edit, persisted, produces the deficit card as usual.
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: out,
+            rate: 10.0,
+        }])
+        .unwrap();
+    assert!(resp.advisor.cards.iter().any(|c| c.rule == "new_deficit"));
+    assert!(s.file.load_advisor_cards().unwrap().len() > disk_cards_before);
+}

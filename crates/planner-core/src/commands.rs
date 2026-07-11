@@ -102,6 +102,12 @@ pub enum Command {
         id: Id,
         graph_pos: GraphPos,
     },
+    /// Recompute every card position in a factory via the layered auto-layout
+    /// (In ports → ranked groups/junctions → Out ports). Cosmetic: applies to
+    /// built cards too, one undoable step.
+    TidyLayout {
+        factory: Id,
+    },
     DeleteGroup {
         id: Id,
     },
@@ -249,6 +255,7 @@ impl Command {
             Command::SetGroupClock { .. } => "set clock",
             Command::SetGroupFloor { .. } => "set floor",
             Command::MoveGroupCard { .. } => "move card",
+            Command::TidyLayout { .. } => "tidy layout",
             Command::DeleteGroup { .. } => "delete group",
             Command::AddPort { .. } => "add port",
             Command::SetPortRate { .. } => "set target rate",
@@ -311,6 +318,123 @@ fn valid_tier(tier: u8) -> Result<u8, DomainError> {
         });
     }
     Ok(tier)
+}
+
+/// Remove a route and everything riding it, recording each op into `tx`:
+/// unbind any port still bound to the line, cascade the priority switches
+/// sitting on it (switches riding this line go with it), then remove the
+/// route. Every removal path (DeleteRoute, DeleteFactory, DeletePort) goes
+/// through here so no path can forget the cascade. Deliberately carries no
+/// status check — DeleteFactory bypasses `require_planned` for its children.
+fn remove_route_cascading(state: &mut PlanState, tx: &mut Transaction, route_id: &Id) {
+    if let Some(r) = state.routes.get(route_id).cloned() {
+        for pid in [&r.endpoints.0, &r.endpoints.1] {
+            if let Some(mut p) = state.ports.get(pid).cloned() {
+                if p.bound_route.as_deref() == Some(route_id.as_str()) {
+                    p.bound_route = None;
+                    tx.record(state.upsert(Entity::Port(p)));
+                }
+            }
+        }
+    }
+    let sw_ids: Vec<Id> = state
+        .switches
+        .values()
+        .filter(|s| &s.route == route_id)
+        .map(|s| s.id.clone())
+        .collect();
+    for sid in sw_ids {
+        if let Some(ops) = state.remove(COLL_SWITCHES, &sid) {
+            tx.record(ops);
+        }
+    }
+    if let Some(ops) = state.remove(COLL_ROUTES, route_id) {
+        tx.record(ops);
+    }
+}
+
+/// Remove a factory and everything belonging to it, recording each op into
+/// `tx`: routes touching its ports (each via `remove_route_cascading`), then
+/// edges, groups, ports, node claims, junctions, and finally the factory
+/// itself. Every factory-removal path (DeleteFactory, re-import drift sync)
+/// goes through here so no path can forget the cascade. Deliberately carries
+/// no status check — drift sync removes ◆ Built factories legally (the one
+/// documented exception); DeleteFactory checks `require_planned` first.
+pub fn remove_factory_cascading(state: &mut PlanState, tx: &mut Transaction, id: &Id) {
+    // Cascade: groups, ports, edges, claims belonging to this factory.
+    let group_ids: Vec<Id> = state
+        .groups
+        .values()
+        .filter(|g| &g.factory == id)
+        .map(|g| g.id.clone())
+        .collect();
+    let port_ids: Vec<Id> = state
+        .ports
+        .values()
+        .filter(|p| &p.factory == id)
+        .map(|p| p.id.clone())
+        .collect();
+    let edge_ids: Vec<Id> = state
+        .edges
+        .values()
+        .filter(|e| &e.factory == id)
+        .map(|e| e.id.clone())
+        .collect();
+    let claim_ids: Vec<Id> = state
+        .node_claims
+        .values()
+        .filter(|c| &c.factory == id)
+        .map(|c| c.id.clone())
+        .collect();
+    let junction_ids: Vec<Id> = state
+        .junctions
+        .values()
+        .filter(|j| &j.factory == id)
+        .map(|j| j.id.clone())
+        .collect();
+    let port_set: std::collections::BTreeSet<Id> = port_ids.iter().cloned().collect();
+    let route_ids: Vec<Id> = state
+        .routes
+        .values()
+        .filter(|r| {
+            port_set.contains(&r.endpoints.0)
+                || port_set.contains(&r.endpoints.1)
+                || r.endpoints.0 == *id
+                || r.endpoints.1 == *id
+        })
+        .map(|r| r.id.clone())
+        .collect();
+    for rid in route_ids {
+        remove_route_cascading(state, tx, &rid);
+    }
+    for eid in edge_ids {
+        if let Some(ops) = state.remove(COLL_EDGES, &eid) {
+            tx.record(ops);
+        }
+    }
+    for gid in group_ids {
+        if let Some(ops) = state.remove(COLL_GROUPS, &gid) {
+            tx.record(ops);
+        }
+    }
+    for pid in port_ids {
+        if let Some(ops) = state.remove(COLL_PORTS, &pid) {
+            tx.record(ops);
+        }
+    }
+    for cid in claim_ids {
+        if let Some(ops) = state.remove(COLL_NODE_CLAIMS, &cid) {
+            tx.record(ops);
+        }
+    }
+    for jid in junction_ids {
+        if let Some(ops) = state.remove(COLL_JUNCTIONS, &jid) {
+            tx.record(ops);
+        }
+    }
+    if let Some(ops) = state.remove(COLL_FACTORIES, id) {
+        tx.record(ops);
+    }
 }
 
 /// Apply a command to canonical state. Returns an open `Transaction`.
@@ -392,93 +516,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(f.status, id, "delete")?;
-            // Cascade: groups, ports, edges, claims belonging to this factory.
-            let group_ids: Vec<Id> = state
-                .groups
-                .values()
-                .filter(|g| &g.factory == id)
-                .map(|g| g.id.clone())
-                .collect();
-            let port_ids: Vec<Id> = state
-                .ports
-                .values()
-                .filter(|p| &p.factory == id)
-                .map(|p| p.id.clone())
-                .collect();
-            let edge_ids: Vec<Id> = state
-                .edges
-                .values()
-                .filter(|e| &e.factory == id)
-                .map(|e| e.id.clone())
-                .collect();
-            let claim_ids: Vec<Id> = state
-                .node_claims
-                .values()
-                .filter(|c| &c.factory == id)
-                .map(|c| c.id.clone())
-                .collect();
-            let junction_ids: Vec<Id> = state
-                .junctions
-                .values()
-                .filter(|j| &j.factory == id)
-                .map(|j| j.id.clone())
-                .collect();
-            let port_set: std::collections::BTreeSet<Id> = port_ids.iter().cloned().collect();
-            let route_ids: Vec<Id> = state
-                .routes
-                .values()
-                .filter(|r| {
-                    port_set.contains(&r.endpoints.0)
-                        || port_set.contains(&r.endpoints.1)
-                        || r.endpoints.0 == *id
-                        || r.endpoints.1 == *id
-                })
-                .map(|r| r.id.clone())
-                .collect();
-            for rid in route_ids {
-                if let Some(r) = state.routes.get(&rid).cloned() {
-                    // unbind the far port so it doesn't dangle
-                    for pid in [&r.endpoints.0, &r.endpoints.1] {
-                        if let Some(mut p) = state.ports.get(pid).cloned() {
-                            if p.bound_route.as_deref() == Some(rid.as_str()) {
-                                p.bound_route = None;
-                                tx.record(state.upsert(Entity::Port(p)));
-                            }
-                        }
-                    }
-                }
-                if let Some(ops) = state.remove(COLL_ROUTES, &rid) {
-                    tx.record(ops);
-                }
-            }
-            for eid in edge_ids {
-                if let Some(ops) = state.remove(COLL_EDGES, &eid) {
-                    tx.record(ops);
-                }
-            }
-            for gid in group_ids {
-                if let Some(ops) = state.remove(COLL_GROUPS, &gid) {
-                    tx.record(ops);
-                }
-            }
-            for pid in port_ids {
-                if let Some(ops) = state.remove(COLL_PORTS, &pid) {
-                    tx.record(ops);
-                }
-            }
-            for cid in claim_ids {
-                if let Some(ops) = state.remove(COLL_NODE_CLAIMS, &cid) {
-                    tx.record(ops);
-                }
-            }
-            for jid in junction_ids {
-                if let Some(ops) = state.remove(COLL_JUNCTIONS, &jid) {
-                    tx.record(ops);
-                }
-            }
-            if let Some(ops) = state.remove(COLL_FACTORIES, id) {
-                tx.record(ops);
-            }
+            remove_factory_cascading(state, &mut tx, id);
         }
         Command::AddGroup {
             factory,
@@ -536,8 +574,17 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
-            require_planned(g.status, id, "set count")?;
-            g.count = (*count).max(1);
+            let count = (*count).max(1);
+            if g.status == Status::Built {
+                // §3.1.1: the edit materializes as a planned delta — the built
+                // baseline is game ground truth (only import sync writes it).
+                // Setting the built value back clears that component.
+                let mut delta = g.planned_delta.unwrap_or_default();
+                delta.count = (count != g.count).then_some(count);
+                g.planned_delta = (!delta.is_empty()).then_some(delta);
+            } else {
+                g.count = count;
+            }
             tx.record(state.upsert(Entity::Group(g)));
         }
         Command::SetGroupClock { id, clock } => {
@@ -546,8 +593,15 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
-            require_planned(g.status, id, "set clock")?;
-            g.clock = clamp_clock(*clock)?;
+            let clock = clamp_clock(*clock)?;
+            if g.status == Status::Built {
+                // §3.1.1: see SetGroupCount — same delta materialization rule.
+                let mut delta = g.planned_delta.unwrap_or_default();
+                delta.clock = ((clock - g.clock).abs() > 1e-9).then_some(clock);
+                g.planned_delta = (!delta.is_empty()).then_some(delta);
+            } else {
+                g.clock = clock;
+            }
             tx.record(state.upsert(Entity::Group(g)));
         }
         Command::SetGroupFloor { id, floor } => {
@@ -568,6 +622,87 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             g.graph_pos = *graph_pos;
             tx.record(state.upsert(Entity::Group(g)));
+        }
+        Command::TidyLayout { factory } => {
+            use crate::layout::{layered_layout, LKind, LNode};
+            let f = state
+                .factories
+                .get(factory)
+                .cloned()
+                .ok_or(DomainError::NotFound {
+                    id: factory.clone(),
+                })?;
+            let mut nodes: Vec<LNode> = Vec::new();
+            for pid in &f.ports {
+                if let Some(p) = state.ports.get(pid) {
+                    nodes.push(LNode {
+                        id: p.id.clone(),
+                        kind: if p.direction == PortDirection::In {
+                            LKind::InPort
+                        } else {
+                            LKind::OutPort
+                        },
+                    });
+                }
+            }
+            for gid in &f.groups {
+                if state.groups.contains_key(gid) {
+                    nodes.push(LNode {
+                        id: gid.clone(),
+                        kind: LKind::Group,
+                    });
+                }
+            }
+            for j in state.junctions.values().filter(|j| &j.factory == factory) {
+                nodes.push(LNode {
+                    id: j.id.clone(),
+                    kind: LKind::Junction,
+                });
+            }
+            let end_id = |e: &EdgeEnd| match e {
+                EdgeEnd::Group(id) | EdgeEnd::Port(id) | EdgeEnd::Junction(id) => id.clone(),
+            };
+            let edge_pairs: Vec<(Id, Id)> = state
+                .edges
+                .values()
+                .filter(|e| &e.factory == factory)
+                .map(|e| (end_id(&e.from), end_id(&e.to)))
+                .collect();
+            let positions = layered_layout(&nodes, &edge_pairs);
+            for n in &nodes {
+                let Some(pos) = positions.get(&n.id) else {
+                    continue;
+                };
+                match n.kind {
+                    LKind::Group => {
+                        if let Some(g) = state.groups.get(&n.id) {
+                            if g.graph_pos != *pos {
+                                let mut g = g.clone();
+                                g.graph_pos = *pos;
+                                tx.record(state.upsert(Entity::Group(g)));
+                            }
+                        }
+                    }
+                    LKind::Junction => {
+                        if let Some(j) = state.junctions.get(&n.id) {
+                            if j.graph_pos != *pos {
+                                let mut j = j.clone();
+                                j.graph_pos = *pos;
+                                tx.record(state.upsert(Entity::Junction(j)));
+                            }
+                        }
+                    }
+                    LKind::InPort | LKind::OutPort => {
+                        if let Some(p) = state.ports.get(&n.id) {
+                            if p.graph_pos != *pos {
+                                let mut p = p.clone();
+                                p.graph_pos = *pos;
+                                tx.record(state.upsert(Entity::Port(p)));
+                            }
+                        }
+                    }
+                }
+            }
         }
         Command::DeleteGroup { id } => {
             let g = state
@@ -669,19 +804,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(p.status, id, "delete")?;
             if let Some(rid) = p.bound_route.clone() {
-                if let Some(r) = state.routes.get(&rid).cloned() {
-                    for pid in [&r.endpoints.0, &r.endpoints.1] {
-                        if pid != id {
-                            if let Some(mut far) = state.ports.get(pid).cloned() {
-                                far.bound_route = None;
-                                tx.record(state.upsert(Entity::Port(far)));
-                            }
-                        }
-                    }
-                }
-                if let Some(ops) = state.remove(COLL_ROUTES, &rid) {
-                    tx.record(ops);
-                }
+                remove_route_cascading(state, &mut tx, &rid);
             }
             let edge_ids: Vec<Id> = state
                 .edges
@@ -1015,38 +1138,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(r.status, id, "delete")?;
-            // unbind ports on belt routes
-            if matches!(
-                r.kind,
-                RouteKind::Belt { .. }
-                    | RouteKind::Rail { .. }
-                    | RouteKind::Truck { .. }
-                    | RouteKind::Drone { .. }
-            ) {
-                for pid in [&r.endpoints.0, &r.endpoints.1] {
-                    if let Some(mut p) = state.ports.get(pid).cloned() {
-                        if p.bound_route.as_deref() == Some(id.as_str()) {
-                            p.bound_route = None;
-                            tx.record(state.upsert(Entity::Port(p)));
-                        }
-                    }
-                }
-            }
-            // switches riding this line go with it
-            let sw_ids: Vec<Id> = state
-                .switches
-                .values()
-                .filter(|s| &s.route == id)
-                .map(|s| s.id.clone())
-                .collect();
-            for sid in sw_ids {
-                if let Some(ops) = state.remove(COLL_SWITCHES, &sid) {
-                    tx.record(ops);
-                }
-            }
-            if let Some(ops) = state.remove(COLL_ROUTES, id) {
-                tx.record(ops);
-            }
+            remove_route_cascading(state, &mut tx, id);
         }
         Command::ClaimNode {
             factory,

@@ -46,3 +46,6 @@ tauri-build = { version = "2", features = [], optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Enables the deterministic persist-failure seam for app's test targets only
+# (resolver = "2": dev-dependency features never reach production builds).
+persist = { path = "../persist", features = ["fault-injection"] }

@@ -5,7 +5,7 @@
 import init, { t0_solve } from "../wasm/pkg/solver_wasm.js";
 import wasmUrl from "../wasm/pkg/solver_wasm_bg.wasm?url";
 import type { DerivedFactory, GameData, Id, Plan, TargetCeiling } from "../state/types";
-import { beltCapacity } from "../state/types";
+import { beltCapacity, effClock, effCount } from "../state/types";
 
 let readyPromise: Promise<void> | null = null;
 export function ensureT0(): Promise<void> {
@@ -47,10 +47,10 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
         durationS: recipe.durationS,
         inputs: recipe.ingredients,
         outputs: recipe.products,
-        powerMw: gamedata.machines[g.machine]?.powerMw ?? 0,
+        powerMw: recipe.variablePowerMw ?? gamedata.machines[g.machine]?.powerMw ?? 0,
       },
-      count: g.count,
-      clock: g.clock,
+      count: effCount(g),
+      clock: effClock(g),
     });
   }
   const inputs = [];
@@ -97,6 +97,8 @@ export function t0SetTarget(
       ),
       edges: r.edges,
       ports: r.ports,
+      // T0 drag preview never reports shortfalls; T1 settle owns that contract.
+      shortfalls: {},
       totalPowerMw: r.totalPowerMw,
       targetCeiling: r.targetCeiling,
       solveUs,

@@ -149,6 +149,9 @@ pub enum Constraint {
         item: ItemId,
         ceiling: f64,
     },
+    /// Structural unwiring: `node` (an output port or group id) needs `item`
+    /// but has no inbound edge carrying it — the routine mid-construction state.
+    Disconnected { node: String, item: ItemId },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,13 +162,31 @@ pub struct TargetCeiling {
     pub binding: Constraint,
 }
 
+/// An output target the solver could not fully meet. The solve DEGRADES to
+/// the best achievable rates (SDD §5.2 'no dead ends') instead of erroring;
+/// the gap is reported here, with the binding constraint when one is named.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shortfall {
+    /// The requested target rate (items/min).
+    pub requested: f64,
+    /// requested − achieved (items/min).
+    pub missing: f64,
+    /// What limits the port, when attributable to a single named constraint.
+    pub binding: Option<Constraint>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SolveResult {
     pub groups: BTreeMap<String, GroupResult>,
     pub edges: BTreeMap<String, EdgeResult>,
-    /// Realized rate per port (inputs and outputs).
+    /// Realized rate per port (inputs and outputs). For output ports this is
+    /// the ACHIEVED rate — equal to the target unless the port has a shortfall.
     pub ports: BTreeMap<String, f64>,
+    /// Per output port: unmet target amounts. Empty when fully feasible.
+    #[serde(default)]
+    pub shortfalls: BTreeMap<String, Shortfall>,
     pub total_power_mw: f64,
     /// Present when the edit targets an output slider: where it hard-stops.
     pub target_ceiling: Option<TargetCeiling>,

@@ -8,12 +8,16 @@ import type {
   Command,
   Derived,
   DerivedFactory,
+  EditResponse,
   GameData,
   Id,
   Plan,
   ViewState,
   World,
 } from "./types";
+
+/** Human text for a rejected backend call (DomainError string or Error). */
+export const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export type Selection =
   | { kind: "factory"; id: Id }
@@ -57,6 +61,9 @@ const emptyDerived: Derived = {
 export interface AppStore {
   ready: boolean;
   error: string | null;
+  /** last refused backend command — status-bar chip, NOT the full-screen
+      BACKEND UNREACHABLE card (that is `error`, set only by hydrate). */
+  cmdError: { message: string; at: number } | null;
   plan: Plan;
   derived: Derived;
   gamedata: GameData;
@@ -84,7 +91,13 @@ export interface AppStore {
   advisorOpen: boolean;
 
   hydrate(): Promise<void>;
-  dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[]>;
+  /** Resolves with the created ids, or null when the backend refused the
+      commands (the refusal is recorded in `cmdError` — never a rejection). */
+  dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[] | null>;
+  reportCmdError(message: string): void;
+  /** `at` must match the current error — a stale auto-clear timer armed for
+      an older error must not dismiss a newer one. */
+  clearCmdError(at: number): void;
   undo(): Promise<void>;
   redo(): Promise<void>;
   setSelection(sel: Selection): void;
@@ -103,6 +116,7 @@ export interface AppStore {
 export const useStore = create<AppStore>((set, get) => ({
   ready: false,
   error: null,
+  cmdError: null,
   plan: emptyPlan,
   derived: emptyDerived,
   gamedata: { items: {}, recipes: {}, machines: {}, belts: {}, buildables: {}, buildVersion: "" },
@@ -150,7 +164,13 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   async dispatch(cmds, opts) {
-    const resp = await backend.edit(cmds);
+    let resp: EditResponse;
+    try {
+      resp = await backend.edit(cmds);
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return null;
+    }
     const settled = new Set<string>(
       resp.patches.map((p) => p.path).filter((p) => !p.startsWith("/meta")),
     );
@@ -164,6 +184,7 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       projected: null,
       settled,
+      cmdError: null,
     }));
     if (opts?.select && resp.created.length > 0) {
       const id = resp.created[0];
@@ -177,7 +198,13 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   async undo() {
-    const resp = await backend.undo();
+    let resp: EditResponse | null;
+    try {
+      resp = await backend.undo();
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return;
+    }
     if (!resp) return;
     set((s) => ({
       plan: applyPatches(s.plan, resp.patches),
@@ -189,11 +216,18 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
+      cmdError: null,
     }));
   },
 
   async redo() {
-    const resp = await backend.redo();
+    let resp: EditResponse | null;
+    try {
+      resp = await backend.redo();
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return;
+    }
     if (!resp) return;
     set((s) => ({
       plan: applyPatches(s.plan, resp.patches),
@@ -205,7 +239,16 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
+      cmdError: null,
     }));
+  },
+
+  reportCmdError(message) {
+    set({ cmdError: { message, at: Date.now() } });
+  },
+
+  clearCmdError(at) {
+    set((s) => (s.cmdError?.at === at ? { cmdError: null } : {}));
   },
 
   setSelection: (selection) => set({ selection }),
@@ -240,7 +283,14 @@ export const useStore = create<AppStore>((set, get) => ({
 
   // Accept = one backend transaction, one undo entry, ◇ entities only.
   async acceptProposal(id) {
-    const resp = await backend.proposalAccept(id);
+    let resp: EditResponse;
+    try {
+      resp = await backend.proposalAccept(id);
+    } catch (e) {
+      // review surface stays open — the user decides what to do with the draft
+      get().reportCmdError(errText(e));
+      return;
+    }
     set((s) => ({
       plan: applyPatches(s.plan, resp.patches),
       derived: resp.derived,
@@ -251,6 +301,7 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       reviewing: null,
       settled: new Set(resp.patches.map((p) => p.path)),
+      cmdError: null,
     }));
   },
 }));

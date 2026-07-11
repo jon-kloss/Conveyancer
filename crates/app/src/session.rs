@@ -1,6 +1,7 @@
 //! One open plan file + its canonical state, undo log, gamedata, and solver
 //! orchestration. Every mutation: apply commands → T1 re-solve → fold solve
-//! write-backs into the same transaction → commit (one undo entry) → persist.
+//! write-backs into the same transaction → persist → commit (one undo entry).
+//! Disk commits first — see [`Session::commit_mutation`] for the invariant.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -64,6 +65,9 @@ pub struct DerivedFactory {
     pub groups: BTreeMap<String, DerivedGroup>,
     pub edges: BTreeMap<String, DerivedEdge>,
     pub ports: BTreeMap<String, f64>,
+    /// Unmet output targets (SDD §5.2 degraded solve) — `ports` holds the
+    /// achieved rates; the canonical targets are never rewritten for these.
+    pub shortfalls: BTreeMap<String, solver::model::Shortfall>,
     pub total_power_mw: f64,
     pub target_ceiling: Option<TargetCeiling>,
     pub solve_us: u64,
@@ -324,13 +328,44 @@ impl Session {
         // manifests) fold into the same undo entry as the causing edit.
         let trigger = Self::solve_trigger(&cmds);
         let derived = self.empire_solve(&trigger, Some(&mut tx));
-        self.advise(&derived);
+        self.commit_mutation(tx, derived)
+    }
 
+    /// The ONLY path from an applied `Transaction` to a durable undo entry.
+    ///
+    /// Invariant: **disk commits first; the in-memory undo log advances only
+    /// after the plan file has durably committed the same entry.** A persist
+    /// failure therefore can never diverge memory from disk: the SQLite
+    /// transaction rolled back (disk holds the pre-edit state), so we roll
+    /// the applied transaction back out of canonical state and surface the
+    /// error — renderer, memory, and disk all agree on the pre-edit state,
+    /// and the redo tail (memory and disk) is untouched. Advisor cards are
+    /// gated and persisted only after the commit succeeds, so a rolled-back
+    /// edit never leaves phantom cards.
+    fn commit_mutation(
+        &mut self,
+        tx: Transaction,
+        derived: Derived,
+    ) -> Result<EditResponse, SessionError> {
         let created = tx.created.clone();
-        let entry = self.undo.commit(tx);
-        self.file
-            .commit(&entry, &self.state.meta, self.undo.entries().len())?;
-
+        let entry = UndoLog::stage(tx);
+        // `+ 1`: the log hasn't advanced yet, so the applied count after this
+        // commit is the current depth plus this entry. PlanFile::commit keeps
+        // `applied - 1` prior journal rows (its redo-tail DELETE) — exactly
+        // the entries applied before this one, same as the pre-staging code.
+        if let Err(e) = self
+            .file
+            .commit(&entry, &self.state.meta, self.undo.entries().len() + 1)
+        {
+            // entry.inverse is already in application order (stage reversed it).
+            if let Err(m) = self.state.apply_batch(&entry.inverse) {
+                // Compensation failed — self-heal from disk, which is intact.
+                self.rehydrate_from_disk(&m)?;
+            }
+            return Err(e.into());
+        }
+        self.undo.push(entry.clone());
+        self.advise(&derived);
         Ok(EditResponse {
             patches: entry.forward,
             derived,
@@ -343,12 +378,34 @@ impl Session {
         })
     }
 
+    /// Last-resort recovery when in-memory rollback itself fails: reload
+    /// canonical state + undo journal from the plan file, which is always a
+    /// valid restore point (every durable write is one atomic transaction).
+    fn rehydrate_from_disk(&mut self, cause: &str) -> Result<(), SessionError> {
+        let (state, entries, cursor) = self.file.load().map_err(|e| {
+            SessionError::Internal(format!(
+                "rollback after persist failure failed ({cause}) and reload failed: {e}"
+            ))
+        })?;
+        self.state = state;
+        self.undo = UndoLog::hydrate_with_cursor(entries, cursor);
+        Ok(())
+    }
+
     pub fn undo(&mut self) -> Result<Option<EditResponse>, SessionError> {
         let Some(batch) = self.undo.undo(&mut self.state) else {
             return Ok(None);
         };
-        self.file
-            .checkpoint(&batch, &self.state.meta, self.applied_count())?;
+        if let Err(e) = self
+            .file
+            .checkpoint(&batch, &self.state.meta, self.applied_count())
+        {
+            // Disk untouched (the checkpoint transaction rolled back) —
+            // compensate with the opposite move: re-applying the just-undone
+            // entry restores state and cursor in one call.
+            let _ = self.undo.redo(&mut self.state);
+            return Err(e.into());
+        }
         Ok(Some(self.nav_response(batch)))
     }
 
@@ -356,8 +413,14 @@ impl Session {
         let Some(batch) = self.undo.redo(&mut self.state) else {
             return Ok(None);
         };
-        self.file
-            .checkpoint(&batch, &self.state.meta, self.applied_count())?;
+        if let Err(e) = self
+            .file
+            .checkpoint(&batch, &self.state.meta, self.applied_count())
+        {
+            // Mirror of undo(): un-apply the just-redone entry.
+            let _ = self.undo.undo(&mut self.state);
+            return Err(e.into());
+        }
         Ok(Some(self.nav_response(batch)))
     }
 
@@ -395,7 +458,7 @@ impl Session {
                     if let Some(sync) = &item.sync {
                         let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
                             .map_err(|e| SessionError::Internal(e.to_string()))?;
-                        crate::import::apply_sync(state, tx, &op, &p.id);
+                        crate::import::apply_sync(state, tx, &op, &p.id, &self.gamedata);
                         continue;
                     }
                     for (idx, cmd) in item.commands.iter().enumerate() {
@@ -432,21 +495,7 @@ impl Session {
             return Err(e);
         }
         let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
-        self.advise(&derived);
-        let created = tx.created.clone();
-        let entry = self.undo.commit(tx);
-        self.file
-            .commit(&entry, &self.state.meta, self.undo.entries().len())?;
-        Ok(EditResponse {
-            patches: entry.forward,
-            derived,
-            can_undo: self.undo.can_undo(),
-            can_redo: self.undo.can_redo(),
-            undo_label: self.undo.undo_label().map(String::from),
-            created,
-            plan_hash: self.plan_hash(),
-            advisor: self.advisor.feed(self.ai_key.is_some()),
-        })
+        self.commit_mutation(tx, derived)
     }
 
     /// Live consequence of the CURRENT checkbox state (mock 3a partial
@@ -467,7 +516,13 @@ impl Session {
             if let Some(sync) = &item.sync {
                 if let Ok(op) = serde_json::from_value::<crate::import::SyncOp>(sync.clone()) {
                     let mut scratch = Transaction::new("eval");
-                    crate::import::apply_sync(&mut self.state, &mut scratch, &op, &p.id);
+                    crate::import::apply_sync(
+                        &mut self.state,
+                        &mut scratch,
+                        &op,
+                        &p.id,
+                        &self.gamedata,
+                    );
                 }
                 continue 'items;
             }
@@ -586,24 +641,17 @@ impl Session {
         if !has_built {
             let import_id = planner_core::entities::new_id();
             let mut tx = Transaction::new("import save");
-            crate::import::write_built_layer(&mut self.state, &mut tx, &clusters, &import_id);
+            crate::import::write_built_layer(
+                &mut self.state,
+                &mut tx,
+                &clusters,
+                &import_id,
+                &self.gamedata,
+            );
             let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
-            self.advise(&derived);
-            let created = tx.created.clone();
-            let entry = self.undo.commit(tx);
-            self.file
-                .commit(&entry, &self.state.meta, self.undo.entries().len())?;
+            let response = self.commit_mutation(tx, derived)?;
             return Ok(ImportOutcome::Imported {
-                response: EditResponse {
-                    patches: entry.forward,
-                    derived,
-                    can_undo: self.undo.can_undo(),
-                    can_redo: self.undo.can_redo(),
-                    undo_label: self.undo.undo_label().map(String::from),
-                    created,
-                    plan_hash: self.plan_hash(),
-                    advisor: self.advisor.feed(self.ai_key.is_some()),
-                },
+                response,
                 factories: clusters.len() as u32,
                 machines: snapshot.machines.len() as u32,
                 quarantined: snapshot.quarantined.values().sum(),
@@ -728,12 +776,7 @@ impl Session {
         for gid in &factory.groups {
             let g = self.state.groups.get(gid)?;
             let recipe = self.gamedata.recipes.get(&g.recipe)?;
-            let power = self
-                .gamedata
-                .machines
-                .get(&g.machine)
-                .map(|m| m.power_mw)
-                .unwrap_or(0.0);
+            let power = gamedata::db::recipe_power(&self.gamedata, recipe, &g.machine);
             groups.push(GroupSpec {
                 id: g.id.clone(),
                 recipe: RecipeSpec {
@@ -744,8 +787,10 @@ impl Session {
                     outputs: recipe.products.clone(),
                     power_mw: power,
                 },
-                count: g.count,
-                clock: g.clock,
+                // The solver plans with the effective values (built baseline
+                // overlaid by any planned delta) but never writes deltas back.
+                count: g.effective_count(),
+                clock: g.effective_clock(),
             });
         }
         let mut inputs = Vec::new();
@@ -880,6 +925,50 @@ impl Session {
         (order, false)
     }
 
+    /// Feed a factory's bound Out routes downstream: the achieved out rate
+    /// (absent from `ports` = 0) capped by the route's cargo capacity becomes
+    /// the downstream In port's supply ceiling. Error/skip paths call this
+    /// with EMPTY ports so a factory that couldn't solve honestly propagates
+    /// zero supply instead of leaving downstream fully supplied.
+    fn feed_downstream(
+        &self,
+        fid: &Id,
+        ports: &BTreeMap<String, f64>,
+        supplies: &mut BTreeMap<Id, f64>,
+        route_supply: &mut BTreeMap<Id, f64>,
+    ) {
+        let Some(factory) = self.state.factories.get(fid) else {
+            return;
+        };
+        for pid in &factory.ports {
+            let Some(port) = self.state.ports.get(pid) else {
+                continue;
+            };
+            if port.direction != PortDirection::Out {
+                continue;
+            }
+            let Some(rid) = &port.bound_route else {
+                continue;
+            };
+            let Some(route) = self.state.routes.get(rid) else {
+                continue;
+            };
+            let item = route.manifest.first().map(|(i, _)| i.as_str());
+            let Some((cap, _)) = cargo_capacity(
+                &self.gamedata,
+                &route.kind,
+                polyline_length(&route.path),
+                item,
+            ) else {
+                continue;
+            };
+            let out_rate = ports.get(pid).copied().unwrap_or(0.0);
+            let supply = out_rate.min(cap);
+            supplies.insert(route.endpoints.1.clone(), supply);
+            route_supply.insert(rid.clone(), supply);
+        }
+    }
+
     /// The empire pass: solve factories upstream-first, propagating supply
     /// ceilings through bound routes. With `tx`, solver-owned numbers write
     /// back into canonical state (counts/clocks, clamped edited target, route
@@ -900,6 +989,7 @@ impl Session {
                     fid.clone(),
                     Self::error_factory("missing recipe or machine data"),
                 );
+                self.feed_downstream(fid, &BTreeMap::new(), &mut supplies, &mut route_supply);
                 continue;
             };
             // effective ceilings: a bound In port can't intake more than its route supplies
@@ -915,10 +1005,15 @@ impl Session {
                     }
                 }
             }
-            if snapshot.groups.is_empty() {
+            // A wired group-less factory (e.g. the wizard's extraction-and-
+            // ship site: in port → out port) is a valid pass-through — T1
+            // solves it with edge vars, ceilings and elastic targets alone.
+            // Only a factory with neither groups nor edges keeps the error.
+            if snapshot.groups.is_empty() && snapshot.edges.is_empty() {
                 derived
                     .factories
                     .insert(fid.clone(), Self::error_factory("no machine groups yet"));
+                self.feed_downstream(fid, &BTreeMap::new(), &mut supplies, &mut route_supply);
                 continue;
             }
             let trig = self.trigger_for_factory(&snapshot, trigger);
@@ -929,21 +1024,32 @@ impl Session {
                     derived
                         .factories
                         .insert(fid.clone(), Self::error_factory(&e.to_string()));
+                    self.feed_downstream(fid, &BTreeMap::new(), &mut supplies, &mut route_supply);
                     continue;
                 }
             };
 
-            // write-backs (only on the edit path)
+            // write-backs (only on the edit path). A degraded solve (any
+            // shortfall) is advisory: never rewrite planned counts/clocks to
+            // the starved values — they spring back once the gap is wired.
             if let Some(tx) = tx.as_deref_mut() {
-                for (gid, gr) in &result.groups {
-                    if let Some(g) = self.state.groups.get(gid) {
-                        if g.count != gr.count || (g.clock - gr.clock).abs() > 1e-9 {
-                            let mut g = g.clone();
-                            g.count = gr.count;
-                            g.clock = gr.clock;
-                            let ops = self.state.upsert(Entity::Group(g));
-                            tx.forward.push(ops.0);
-                            tx.inverse.push(ops.1);
+                if result.shortfalls.is_empty() {
+                    for (gid, gr) in &result.groups {
+                        if let Some(g) = self.state.groups.get(gid) {
+                            // ◆ built groups are game ground truth: the solver may
+                            // read them but never resize them — only import sync
+                            // (the documented exception) writes the built layer.
+                            if g.status == Status::Built {
+                                continue;
+                            }
+                            if g.count != gr.count || (g.clock - gr.clock).abs() > 1e-9 {
+                                let mut g = g.clone();
+                                g.count = gr.count;
+                                g.clock = gr.clock;
+                                let ops = self.state.upsert(Entity::Group(g));
+                                tx.forward.push(ops.0);
+                                tx.inverse.push(ops.1);
+                            }
                         }
                     }
                 }
@@ -975,33 +1081,7 @@ impl Session {
             }
 
             // feed downstream: out port rate capped by the route's belt tier
-            for pid in &self.state.factories[fid].ports.clone() {
-                let Some(port) = self.state.ports.get(pid) else {
-                    continue;
-                };
-                if port.direction != PortDirection::Out {
-                    continue;
-                }
-                let Some(rid) = &port.bound_route else {
-                    continue;
-                };
-                let Some(route) = self.state.routes.get(rid) else {
-                    continue;
-                };
-                let item = route.manifest.first().map(|(i, _)| i.as_str());
-                let Some((cap, _)) = cargo_capacity(
-                    &self.gamedata,
-                    &route.kind,
-                    polyline_length(&route.path),
-                    item,
-                ) else {
-                    continue;
-                };
-                let out_rate = result.ports.get(pid).copied().unwrap_or(0.0);
-                let supply = out_rate.min(cap);
-                supplies.insert(route.endpoints.1.clone(), supply);
-                route_supply.insert(rid.clone(), supply);
-            }
+            self.feed_downstream(fid, &result.ports, &mut supplies, &mut route_supply);
 
             derived.total_power_mw += result.total_power_mw;
             derived
@@ -1010,6 +1090,10 @@ impl Session {
         }
 
         // Route flows (= downstream intake), deficits, manifests.
+        // Probe memo for DeficitRow::needed: canonical snapshot (no supply
+        // injection), elastic Recompute — the intake the factory would pull
+        // at its own targets. At most one probe solve per starved factory.
+        let mut probes: BTreeMap<Id, Option<BTreeMap<String, f64>>> = BTreeMap::new();
         let route_list: Vec<planner_core::entities::Route> =
             self.state.routes.values().cloned().collect();
         for r in &route_list {
@@ -1046,39 +1130,83 @@ impl Session {
                     transport,
                 },
             );
-            // Deficit: the downstream factory's own target is clamped by this port.
+            // Deficit contract — ONE decision, at most ONE row per route: the
+            // route is in deficit iff the downstream factory's solve was
+            // limited by this In port. T1 partitions unmet demand into two
+            // mutually exclusive channels and both feed this row:
+            //  - clamped channel: an edited/synthesized SetTarget hard-stopped
+            //    at `target_ceiling` binding InputCeiling on this port
+            //    (shortfalls are empty by construction on that path);
+            //  - degraded channel: a Recompute/multi-Out solve reporting
+            //    `shortfalls` whose binding names InputCeiling on this port.
+            // `needed` = the intake the factory's canonical targets require:
+            // the proportional flow·requested/max_rate when the clamped
+            // channel yields a usable max_rate, else a memoized probe solve
+            // (canonical snapshot, elastic Recompute). Total starvation
+            // (max_rate = 0) is a deficit like any other — never dropped.
             if let (Some(fid), Some(df)) = (
                 dst_factory.clone(),
                 dst_factory.as_ref().and_then(|f| derived.factories.get(f)),
             ) {
-                if let Some(ceiling) = &df.target_ceiling {
-                    if let solver::model::Constraint::InputCeiling { port, item, .. } =
-                        &ceiling.binding
-                    {
-                        if port == dst_port {
-                            let requested = self
-                                .state
-                                .factories
-                                .get(&fid)
-                                .and_then(|f| {
-                                    f.ports.iter().find_map(|pid| {
-                                        let p = self.state.ports.get(pid)?;
-                                        (p.direction == PortDirection::Out).then_some(p.rate)
-                                    })
-                                })
-                                .unwrap_or(0.0);
-                            if requested > ceiling.max_rate + 1e-6 && ceiling.max_rate > 0.0 {
-                                let needed = flow * requested / ceiling.max_rate;
-                                derived.deficits.push(DeficitRow {
-                                    factory: fid,
-                                    port: dst_port.clone(),
-                                    route: Some(r.id.clone()),
-                                    item: item.clone(),
-                                    needed,
-                                    supplied,
-                                });
-                            }
+                let requested = self
+                    .state
+                    .factories
+                    .get(&fid)
+                    .and_then(|f| {
+                        f.ports.iter().find_map(|pid| {
+                            let p = self.state.ports.get(pid)?;
+                            (p.direction == PortDirection::Out).then_some(p.rate)
+                        })
+                    })
+                    .unwrap_or(0.0);
+                let ceiling_max = df.target_ceiling.as_ref().and_then(|c| match &c.binding {
+                    solver::model::Constraint::InputCeiling { port, .. } if port == dst_port => {
+                        Some(c.max_rate)
+                    }
+                    _ => None,
+                });
+                let starved_by_ceiling =
+                    ceiling_max.is_some_and(|max_rate| requested > max_rate + 1e-6);
+                let starved_by_shortfall = df.shortfalls.values().any(|s| {
+                    matches!(
+                        &s.binding,
+                        Some(solver::model::Constraint::InputCeiling { port, .. })
+                            if port == dst_port
+                    )
+                });
+                if starved_by_ceiling || starved_by_shortfall {
+                    let needed = match ceiling_max {
+                        Some(max_rate) if starved_by_ceiling && max_rate > 0.0 => {
+                            Some(flow * requested / max_rate)
                         }
+                        _ => probes
+                            .entry(fid.clone())
+                            .or_insert_with(|| {
+                                self.snapshot(&fid).and_then(|snap| {
+                                    solver::t1::solve(&snap, &T0Edit::Recompute)
+                                        .ok()
+                                        .map(|res| res.ports)
+                                })
+                            })
+                            .as_ref()
+                            .and_then(|ports| ports.get(dst_port).copied()),
+                    };
+                    // Skip gracefully when no probe is available (the
+                    // canonical snapshot itself can't be built or solved).
+                    if let Some(needed) = needed {
+                        derived.deficits.push(DeficitRow {
+                            factory: fid,
+                            port: dst_port.clone(),
+                            route: Some(r.id.clone()),
+                            item: self
+                                .state
+                                .ports
+                                .get(dst_port)
+                                .map(|p| p.item.clone())
+                                .unwrap_or_default(),
+                            needed,
+                            supplied,
+                        });
                     }
                 }
             }
@@ -1264,6 +1392,7 @@ impl Session {
             groups: BTreeMap::new(),
             edges: BTreeMap::new(),
             ports: BTreeMap::new(),
+            shortfalls: BTreeMap::new(),
             total_power_mw: 0.0,
             target_ceiling: None,
             solve_us: 0,
@@ -1319,6 +1448,7 @@ fn to_derived(r: &SolveResult, solve_on_release: bool) -> DerivedFactory {
             })
             .collect(),
         ports: r.ports.clone(),
+        shortfalls: r.shortfalls.clone(),
         total_power_mw: r.total_power_mw,
         target_ceiling: r.target_ceiling.clone(),
         solve_us: r.solve_us,

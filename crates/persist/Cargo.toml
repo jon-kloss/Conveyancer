@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Deterministic persist-failure injection for tests. Never enabled by
+# production builds: app pulls it in via [dev-dependencies] only, and with
+# resolver = "2" dev-dependency features don't leak into normal builds.
+fault-injection = []
+
 [dependencies]
 planner-core = { path = "../planner-core" }
 serde.workspace = true

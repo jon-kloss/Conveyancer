@@ -7,9 +7,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { MapCanvasLayer } from "./CanvasLayer";
-import type { NodeRenderState } from "./CanvasLayer";
+import type { CanvasLayerData, NodeRenderState } from "./CanvasLayer";
 import { fromLatLng, toLatLng } from "./maputil";
 import { useStore } from "../state/store";
+import { isEditableTarget } from "../lib/keys";
 import type { WorldNode } from "../state/types";
 import SummaryDrawer from "./SummaryDrawer";
 import NodeDrawer from "./NodeDrawer";
@@ -21,6 +22,10 @@ import SearchBox from "./SearchBox";
 import ImportModal from "../import/ImportModal";
 import { fmtPower } from "../lib/format";
 import "./map.css";
+
+/** Cargo route kinds drawn with the saturation line grammar (A3.1). Pipe is
+ *  excluded: not creatable in the UI and it has no derived flow/capacity. */
+const CARGO_KINDS = new Set(["belt", "rail", "truck", "drone"]);
 
 /** Circuit margin level (SDD §12): headroom ≥20% OK, 5–20% WARN, <5% CRIT. */
 function circuitLevel(genMw: number, demandMw: number): "ok" | "warn" | "crit" {
@@ -79,6 +84,31 @@ export default function MapView() {
   const fileRef = useRef<HTMLInputElement>(null);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
+  // one-shot: swallow the contextmenu that follows a route-drag release
+  const suppressCtxRef = useRef(false);
+
+  const claimLinks = useMemo(() => {
+    const nodeById: Record<string, { x: number; y: number }> = {};
+    for (const n of world.nodes) nodeById[n.id] = { x: n.x, y: n.y };
+    const links: CanvasLayerData["claimLinks"] = [];
+    for (const c of Object.values(plan.nodeClaims)) {
+      const node = nodeById[c.node];
+      const f = plan.factories[c.factory];
+      if (!node || !f) continue;
+      links.push({
+        node,
+        factory: f.position,
+        factoryName: f.name,
+        planned: c.status === "planned",
+        conflict: derived.nodes[c.node]?.conflict ?? false,
+        highlight:
+          (selection?.kind === "factory" && selection.id === c.factory) ||
+          (selection?.kind === "node" && selection.id === c.node) ||
+          hoveredNode?.id === c.node,
+      });
+    }
+    return links;
+  }, [plan.nodeClaims, plan.factories, world.nodes, derived.nodes, selection, hoveredNode]);
 
   const nodeStates = useMemo(() => {
     const out: Record<string, NodeRenderState> = {};
@@ -119,6 +149,7 @@ export default function MapView() {
     const layer = new MapCanvasLayer({
       world: useStore.getState().world,
       nodeStates: {},
+      claimLinks: [],
       hoveredNode: null,
       selectedNode: null,
       showNodes: true,
@@ -155,7 +186,7 @@ export default function MapView() {
   // ---- canvas layer data sync ----
   useEffect(() => {
     const routes = Object.values(plan.routes)
-      .filter((r) => r.kind.kind === "belt")
+      .filter((r) => CARGO_KINDS.has(r.kind.kind))
       .map((r) => {
         const d = derived.routes[r.id];
         const itemClass = r.manifest[0]?.[0] ?? "";
@@ -166,7 +197,7 @@ export default function MapView() {
           saturation: d?.saturation ?? 0,
           flow: d?.flow ?? 0,
           capacity: d?.capacity ?? 0,
-          tier: r.kind.kind === "belt" ? r.kind.tier : 0,
+          tag: r.kind.kind === "belt" ? `MK.${r.kind.tier}` : r.kind.kind.toUpperCase(),
           itemName: (gamedata.items[itemClass]?.displayName ?? itemClass).toUpperCase(),
           selected: selection?.kind === "route" && selection.id === r.id,
         };
@@ -237,6 +268,7 @@ export default function MapView() {
     layerRef.current?.setData({
       world,
       nodeStates,
+      claimLinks,
       hoveredNode: hoveredNode?.id ?? null,
       selectedNode: selection?.kind === "node" ? selection.id : null,
       showNodes: overlays.nodes,
@@ -249,7 +281,7 @@ export default function MapView() {
       ghost: src && routeDraft ? { from: src.position, to: routeDraft.cursor } : null,
       review,
     });
-  }, [world, nodeStates, hoveredNode, selection, overlays, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal]);
+  }, [world, nodeStates, claimLinks, hoveredNode, selection, overlays, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal]);
 
   // ---- pointer interactions (hover + click on canvas nodes, placement) ----
   useEffect(() => {
@@ -298,10 +330,15 @@ export default function MapView() {
       if (routeHit) setSelection({ kind: "route", id: routeHit });
       else setSelection(null);
     };
-    // right-drag from a pin draws a route (ghost-blue until confirmed)
+    // right-drag from a pin draws a route (ghost-blue until confirmed).
+    // mouseup listens on window so releasing over a drawer or other chrome
+    // still ends the drag instead of leaving a stuck ghost line.
     const onMouseUp = (e: MouseEvent) => {
       const draft = routeDraftRef.current;
       if (!draft || e.button !== 2) return;
+      // Chromium fires contextmenu after the right-button release; suppress
+      // that one (and only that one) even when it lands outside the map.
+      suppressCtxRef.current = true;
       const st = useStore.getState();
       const rect = map.getContainer().getBoundingClientRect();
       const pt = L.point(e.clientX - rect.left, e.clientY - rect.top);
@@ -314,14 +351,22 @@ export default function MapView() {
       if (target) setRoutePopover({ from: draft.from, to: target });
     };
     const onCtx = (e: Event) => e.preventDefault();
-    map.getContainer().addEventListener("mouseup", onMouseUp);
+    const onWindowCtx = (e: Event) => {
+      if (suppressCtxRef.current) {
+        suppressCtxRef.current = false;
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("contextmenu", onWindowCtx);
     map.getContainer().addEventListener("contextmenu", onCtx);
     map.on("mousemove", onMove);
     map.on("click", onClick);
     return () => {
       map.off("mousemove", onMove);
       map.off("click", onClick);
-      map.getContainer().removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("contextmenu", onWindowCtx);
       map.getContainer().removeEventListener("contextmenu", onCtx);
     };
   }, [placing, world.regions, dispatch, setPlacing, setSelection]);
@@ -378,12 +423,14 @@ export default function MapView() {
   // ---- keys: N place, F frame, ESC deselect, 1/4 overlays, ⏎ dive ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (isEditableTarget(e)) return;
       const map = mapRef.current;
       if (e.key === "n" || e.key === "N") setPlacing(!placing);
       else if (e.key === "p" || e.key === "P") setWizard({ open: true });
       else if (e.key === "Escape") {
-        if (placing) setPlacing(false);
+        // an in-flight route draft cancels first (via the ref: no new deps)
+        if (routeDraftRef.current) setRouteDraft(null);
+        else if (placing) setPlacing(false);
         else setSelection(null);
       } else if (e.key === "1") setOverlay("flows", !overlays.flows);
       else if (e.key === "2") setOverlay("power", !overlays.power);
