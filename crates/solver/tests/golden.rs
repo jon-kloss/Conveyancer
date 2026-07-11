@@ -595,6 +595,242 @@ fn t1_degraded_solve_stays_in_budget() {
     );
 }
 
+/// One refinery-style group with a TWO-OUTPUT recipe: 3 crude → 2 plastic +
+/// 1 residue per 60s cycle (per machine-minute: 3 crude in, 2 plastic +
+/// 1 residue out). Group cycles are max(plastic/2, residue) — the piecewise-
+/// linear case the old two-point ceiling probe got wrong in both directions.
+/// Residue is a fixed sibling target; plastic is the edited port. The single
+/// crude input deliberately never mixes open and ceilinged sources on one
+/// item, keeping this fixture independent of `pull`'s demand-split weights.
+fn refinery_snapshot(
+    residue_target: f64,
+    crude_ceiling: Option<f64>,
+    crude_belt_cap: f64,
+) -> FactorySnapshot {
+    FactorySnapshot {
+        groups: vec![group(
+            "refinery",
+            recipe(
+                "Recipe_Plastic_C",
+                "refinery",
+                60.0,
+                &[("crude", 3.0)],
+                &[("plastic", 2.0), ("residue", 1.0)],
+                30.0,
+            ),
+        )],
+        edges: vec![
+            edge(
+                "e-crude",
+                NodeRef::Input("in-crude".into()),
+                g("refinery"),
+                "crude",
+                crude_belt_cap,
+            ),
+            edge(
+                "e-plastic",
+                g("refinery"),
+                NodeRef::Output("out-plastic".into()),
+                "plastic",
+                780.0,
+            ),
+            edge(
+                "e-residue",
+                g("refinery"),
+                NodeRef::Output("out-residue".into()),
+                "residue",
+                780.0,
+            ),
+        ],
+        inputs: vec![InputPortSpec {
+            id: "in-crude".into(),
+            item: "crude".into(),
+            ceiling: crude_ceiling,
+        }],
+        junctions: vec![],
+        outputs: vec![
+            OutputPortSpec {
+                id: "out-plastic".into(),
+                item: "plastic".into(),
+                rate: 0.0,
+            },
+            OutputPortSpec {
+                id: "out-residue".into(),
+                item: "residue".into(),
+                rate: residue_target,
+            },
+        ],
+    }
+}
+
+fn set_plastic(rate: f64) -> T0Edit {
+    T0Edit::SetTarget {
+        port: "out-plastic".into(),
+        rate,
+    }
+}
+
+#[test]
+fn t0_multi_output_clamps_at_true_ceiling_and_names_input() {
+    // Crude capped at 300/min, 3 crude per cycle → 100 cycles → 200 plastic.
+    // On [0,1] the residue target (8) drives cycles, so crude shows zero
+    // sensitivity to the plastic target: the old affine probe saw no crude
+    // ceiling at all, named the 780 plastic out-belt, and never clamped.
+    let snap = refinery_snapshot(8.0, Some(300.0), 780.0);
+    let r = solver::t0::solve(&snap, &set_plastic(500.0)).unwrap();
+    assert!(r.clamped, "target beyond the crude ceiling must clamp");
+    let ceiling = r.target_ceiling.clone().expect("ceiling must be reported");
+    assert_close(ceiling.max_rate, 200.0, "true multi-output ceiling");
+    match ceiling.binding {
+        Constraint::InputCeiling { ref port, .. } => assert_eq!(port, "in-crude"),
+        ref other => panic!("expected input-ceiling binding, got {other:?}"),
+    }
+    assert_close(r.ports["out-plastic"], 200.0, "clamped target");
+    assert_close(r.ports["in-crude"], 300.0, "crude saturated at the ceiling");
+    for (id, e) in &r.edges {
+        assert!(
+            e.saturation <= 1.0 + 1e-6,
+            "edge {id} over capacity: saturation {}",
+            e.saturation
+        );
+    }
+}
+
+#[test]
+fn t0_multi_output_belt_binding_beyond_kink() {
+    // Open crude input, 240/min crude belt: 3·max(T/2, 8) ≤ 240 → T = 160.
+    // The belt's [0,1] sensitivity is zero (residue drives cycles until
+    // T=16), so the old probe left a request of 500 unclamped at 312% belt
+    // saturation. The binding must name the mid-chain belt, not the ceiling.
+    let snap = refinery_snapshot(8.0, None, 240.0);
+    let r = solver::t0::solve(&snap, &set_plastic(500.0)).unwrap();
+    assert!(r.clamped, "target beyond the crude belt must clamp");
+    let ceiling = r.target_ceiling.clone().expect("ceiling must be reported");
+    assert_close(ceiling.max_rate, 160.0, "belt-bound ceiling");
+    match ceiling.binding {
+        Constraint::BeltCapacity { ref edge, .. } => assert_eq!(edge, "e-crude"),
+        ref other => panic!("expected belt binding, got {other:?}"),
+    }
+    assert_close(r.edges["e-crude"].saturation, 1.0, "binding belt saturated");
+}
+
+#[test]
+fn t0_multi_output_ceiling_reported_unclamped() {
+    // A request below the true ceiling must not clamp, but the slider tick
+    // still needs the honest hard-stop: max_rate 200 named at the crude
+    // ceiling (the old probe reported 780 at the plastic out-belt here).
+    let snap = refinery_snapshot(8.0, Some(300.0), 780.0);
+    let r = solver::t0::solve(&snap, &set_plastic(150.0)).unwrap();
+    assert!(!r.clamped, "request below the ceiling must not clamp");
+    assert_close(r.ports["out-plastic"], 150.0, "request honored");
+    let ceiling = r.target_ceiling.clone().expect("ceiling must be reported");
+    assert_close(ceiling.max_rate, 200.0, "unclamped ceiling still exact");
+    match ceiling.binding {
+        Constraint::InputCeiling { ref port, .. } => assert_eq!(port, "in-crude"),
+        ref other => panic!("expected input-ceiling binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn t0_kink_below_one_no_underestimate() {
+    // Residue target 0.25 puts the kink at T=0.5; crude ceiling 1.2 →
+    // 3·max(T/2, 0.25) ≤ 1.2 → T = 0.8. The old [0,1] chord mixed the flat
+    // and sloped segments (crude 0.75 → 1.5) and crossed at 0.6 — clamping
+    // 25% below the true ceiling. Guards the opposite error direction.
+    let snap = refinery_snapshot(0.25, Some(1.2), 780.0);
+    let r = solver::t0::solve(&snap, &set_plastic(5.0)).unwrap();
+    assert!(r.clamped);
+    let ceiling = r.target_ceiling.clone().expect("ceiling must be reported");
+    assert_close(ceiling.max_rate, 0.8, "kink-below-one ceiling");
+    match ceiling.binding {
+        Constraint::InputCeiling { ref port, .. } => assert_eq!(port, "in-crude"),
+        ref other => panic!("expected input-ceiling binding, got {other:?}"),
+    }
+    assert_close(r.ports["out-plastic"], 0.8, "clamped target");
+}
+
+#[test]
+fn t0_zero_slope_on_unit_interval_still_clamps() {
+    // Residue target 100 pins cycles at 100 until T=200: crude sits flat at
+    // 300/min across the whole [0,1] probe window (per-unit slope exactly
+    // zero — the "no candidate → no clamp" mechanism). True ceiling:
+    // 1.5T ≤ 400 → T = 800/3.
+    let snap = refinery_snapshot(100.0, Some(400.0), 780.0);
+    let r = solver::t0::solve(&snap, &set_plastic(500.0)).unwrap();
+    assert!(r.clamped, "zero [0,1] slope must still find the clamp");
+    let ceiling = r.target_ceiling.clone().expect("ceiling must be reported");
+    assert_close(ceiling.max_rate, 800.0 / 3.0, "ceiling beyond the kink");
+    match ceiling.binding {
+        Constraint::InputCeiling { ref port, .. } => assert_eq!(port, "in-crude"),
+        ref other => panic!("expected input-ceiling binding, got {other:?}"),
+    }
+    assert_close(r.ports["in-crude"], 400.0, "crude tight at its ceiling");
+}
+
+#[test]
+fn t0_multi_output_property_sweep() {
+    // For any requested rate: no cap is ever exceeded, the reported ceiling
+    // is request-independent, and a clamped solve is tight at its binding.
+    let snap = refinery_snapshot(8.0, Some(300.0), 780.0);
+    for i in 0..=12 {
+        let rate = i as f64 * 50.0; // 0..600, crossing the 200 ceiling
+        let r = solver::t0::solve(&snap, &set_plastic(rate)).unwrap();
+        for (id, e) in &r.edges {
+            assert!(
+                e.saturation <= 1.0 + 1e-6,
+                "rate {rate}: edge {id} over capacity ({})",
+                e.saturation
+            );
+        }
+        assert!(
+            r.ports["in-crude"] <= 300.0 + 1e-6,
+            "rate {rate}: crude over ceiling ({})",
+            r.ports["in-crude"]
+        );
+        let ceiling = r.target_ceiling.clone().expect("ceiling must be reported");
+        assert_close(ceiling.max_rate, 200.0, "request-independent ceiling");
+        match ceiling.binding {
+            Constraint::InputCeiling { ref port, .. } => assert_eq!(port, "in-crude"),
+            ref other => panic!("expected input-ceiling binding, got {other:?}"),
+        }
+        if rate > 200.0 {
+            assert!(r.clamped, "rate {rate} beyond the ceiling must clamp");
+            assert_close(r.ports["in-crude"], 300.0, "tight at the binding");
+        } else {
+            assert!(!r.clamped, "rate {rate} within the ceiling must not clamp");
+            assert_close(r.ports["out-plastic"], rate, "request honored");
+        }
+    }
+}
+
+#[test]
+fn t0_t1_ceiling_parity_multi_output() {
+    // Both tiers must agree on the hard-stop rate and its name for the
+    // multi-output fixture. Only target_ceiling.max_rate and the binding
+    // kind/id are compared: the fixture has no starved inputs, keeping this
+    // robust to T1's elastic-shortfall handling in either landing order.
+    let snap = refinery_snapshot(8.0, Some(300.0), 780.0);
+    let edit = set_plastic(500.0);
+    let a = solver::t0::solve(&snap, &edit).unwrap();
+    let b = solver::t1::solve(&snap, &edit).unwrap();
+    let ca = a.target_ceiling.clone().expect("t0 ceiling");
+    let cb = b.target_ceiling.clone().expect("t1 ceiling");
+    assert!(
+        (ca.max_rate - cb.max_rate).abs() < 1e-4,
+        "ceiling parity: t0={} t1={}",
+        ca.max_rate,
+        cb.max_rate
+    );
+    match (&ca.binding, &cb.binding) {
+        (Constraint::InputCeiling { port: pa, .. }, Constraint::InputCeiling { port: pb, .. }) => {
+            assert_eq!(pa, "in-crude");
+            assert_eq!(pa, pb);
+        }
+        other => panic!("expected matching input-ceiling bindings, got {other:?}"),
+    }
+    assert_eq!(a.clamped, b.clamped, "both tiers clamp");
+}
+
 #[test]
 fn clock_edit_rederives_count() {
     let snap = modular_frame_snapshot(2.0, None, 780.0);
