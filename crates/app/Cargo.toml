@@ -9,6 +9,11 @@ default = ["shell"]
 # The Tauri desktop shell. The dev-bridge binary builds without it, so a
 # container lacking WebKitGTK can still drive the full core headlessly.
 shell = ["dep:tauri", "dep:tauri-plugin-opener", "dep:tauri-build"]
+# Production shell: serve the embedded renderer bundle instead of pointing the
+# window at devUrl (localhost:5173). Tauri gates this on its custom-protocol
+# feature — `cargo tauri build` enables it implicitly, but we invoke cargo
+# directly, so shipping builds MUST use `--features prod`.
+prod = ["shell", "tauri/custom-protocol"]
 
 [[bin]]
 name = "app"
