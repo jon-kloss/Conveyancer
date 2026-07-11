@@ -506,3 +506,290 @@ fn clock_noise_within_tolerance_is_in_sync() {
         ImportOutcome::InSync
     ));
 }
+
+// ── cluster(): grid-indexed DBSCAN vs the original O(n²) algorithm ─────────
+//
+// cluster() was rewritten to use a uniform grid index with mark-on-push
+// (CODE-REVIEW M17). These tests pin its semantics to the ORIGINAL brute-force
+// algorithm (inlined below as the reference oracle) and smoke-test the two
+// failure modes of the old code: O(n²) time on big saves and multiplicative
+// duplicate stack pushes on dense cliques.
+
+use app::import::cluster;
+use app::import::Cluster;
+
+/// Fixed-seed LCG (Knuth MMIX constants) — deterministic, no new deps.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0
+    }
+    fn f(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.f()
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+}
+
+/// The ORIGINAL cluster assignment loop (pre-grid, mark-on-pop, full scan),
+/// kept verbatim as the reference oracle. Returns clusters in emission order
+/// (ids assigned in outer-loop seed order), members ascending.
+fn reference_clusters(pts: &[(f64, f64)]) -> Vec<Vec<usize>> {
+    const EPS: f64 = 120.0;
+    let mut cluster_of: Vec<Option<usize>> = vec![None; pts.len()];
+    let mut n_clusters = 0usize;
+    for i in 0..pts.len() {
+        if cluster_of[i].is_some() {
+            continue;
+        }
+        let id = n_clusters;
+        n_clusters += 1;
+        let mut stack = vec![i];
+        while let Some(j) = stack.pop() {
+            if cluster_of[j].is_some() {
+                continue;
+            }
+            cluster_of[j] = Some(id);
+            for (k, p) in pts.iter().enumerate() {
+                if cluster_of[k].is_none() && (p.0 - pts[j].0).hypot(p.1 - pts[j].1) <= EPS {
+                    stack.push(k);
+                }
+            }
+        }
+    }
+    let mut clusters = vec![Vec::new(); n_clusters];
+    for (k, c) in cluster_of.iter().enumerate() {
+        clusters[c.unwrap()].push(k);
+    }
+    clusters
+}
+
+/// Recover each cluster's member indices from unique per-machine classes
+/// ("C<idx>"), in emission order — observable through the public API because
+/// every machine forms its own group.
+fn member_sets(clusters: &[Cluster]) -> Vec<Vec<usize>> {
+    clusters
+        .iter()
+        .map(|c| {
+            let mut v: Vec<usize> = c
+                .groups
+                .iter()
+                .map(|g| g.machine[1..].parse().unwrap())
+                .collect();
+            v.sort_unstable();
+            v
+        })
+        .collect()
+}
+
+fn run_case(points: Vec<(f64, f64)>) {
+    let machines: Vec<ImportMachine> = points
+        .iter()
+        .enumerate()
+        .map(|(i, (x, y))| m(&format!("C{i}"), "", *x, *y))
+        .collect();
+    let gd = gamedata::docs::GameData::default();
+    let got = member_sets(&cluster(&snapshot(machines), &gd));
+    let want = reference_clusters(&points);
+    assert_eq!(
+        got,
+        want,
+        "cluster membership/emission order diverged from the original \
+         algorithm on {} points",
+        points.len()
+    );
+}
+
+fn shuffle(rng: &mut Lcg, pts: &mut [(f64, f64)]) {
+    for i in (1..pts.len()).rev() {
+        pts.swap(i, rng.below(i + 1));
+    }
+}
+
+#[test]
+fn cluster_matches_bruteforce_reference_on_random_inputs() {
+    let mut rng = Lcg(0x5EED_F1C5_17E5_2026);
+    for case in 0..50 {
+        let mut pts: Vec<(f64, f64)> = Vec::new();
+        match case % 5 {
+            // uniform sparse over the map
+            0 => {
+                let n = 1 + rng.below(400);
+                for _ in 0..n {
+                    pts.push((rng.range(-5000.0, 5000.0), rng.range(-5000.0, 5000.0)));
+                }
+            }
+            // dense Gaussian-ish clumps, radius < eps
+            1 => {
+                for _ in 0..2 + rng.below(4) {
+                    let (cx, cy) = (rng.range(-4000.0, 4000.0), rng.range(-4000.0, 4000.0));
+                    for _ in 0..20 + rng.below(80) {
+                        pts.push((cx + rng.range(-55.0, 55.0), cy + rng.range(-55.0, 55.0)));
+                    }
+                }
+            }
+            // chained lines at ~100 m spacing (cross-cell neighbors)
+            2 => {
+                for _ in 0..1 + rng.below(4) {
+                    let (mut x, mut y) = (rng.range(-3000.0, 3000.0), rng.range(-3000.0, 3000.0));
+                    let a = rng.range(0.0, std::f64::consts::TAU);
+                    let (dx, dy) = (a.cos() * 100.0, a.sin() * 100.0);
+                    for _ in 0..30 + rng.below(90) {
+                        pts.push((x, y));
+                        x += dx;
+                        y += dy;
+                    }
+                }
+            }
+            // exact duplicates
+            3 => {
+                for _ in 0..1 + rng.below(40) {
+                    let p = (rng.range(-2000.0, 2000.0), rng.range(-2000.0, 2000.0));
+                    for _ in 0..1 + rng.below(8) {
+                        pts.push(p);
+                    }
+                }
+            }
+            // mix of all regimes
+            _ => {
+                for _ in 0..rng.below(100) {
+                    pts.push((rng.range(-5000.0, 5000.0), rng.range(-5000.0, 5000.0)));
+                }
+                let (cx, cy) = (rng.range(-1000.0, 1000.0), rng.range(-1000.0, 1000.0));
+                for _ in 0..rng.below(120) {
+                    pts.push((cx + rng.range(-55.0, 55.0), cy + rng.range(-55.0, 55.0)));
+                }
+                let p = (rng.range(-500.0, 500.0), rng.range(-500.0, 500.0));
+                for _ in 0..rng.below(10) {
+                    pts.push(p);
+                }
+            }
+        }
+        pts.truncate(400);
+        shuffle(&mut rng, &mut pts);
+        run_case(pts);
+    }
+}
+
+#[test]
+fn cluster_degenerate_inputs() {
+    let gd = gamedata::docs::GameData::default();
+
+    // empty snapshot → no clusters
+    assert!(cluster(&snapshot(vec![]), &gd).is_empty());
+
+    // single machine → one cluster
+    let c = cluster(&snapshot(vec![m("Build_SmelterMk1_C", "", 3.0, 4.0)]), &gd);
+    assert_eq!(c.len(), 1);
+
+    // all-coincident points → one cluster, one group of 60
+    let c = cluster(
+        &snapshot(
+            (0..60)
+                .map(|_| m("Build_SmelterMk1_C", "", 42.0, -42.0))
+                .collect(),
+        ),
+        &gd,
+    );
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].groups.len(), 1);
+    assert_eq!(c[0].groups[0].count, 60);
+
+    // non-finite coordinates stay singletons and don't poison neighbors
+    // (NaN/±inf fail the distance test against everything, as before)
+    let c = cluster(
+        &snapshot(vec![
+            m("Normal", "", 0.0, 0.0),
+            m("Normal2", "", 50.0, 0.0),
+            m("NanBox", "", f64::NAN, 0.0),
+            m("InfBox", "", f64::INFINITY, f64::NEG_INFINITY),
+        ]),
+        &gd,
+    );
+    assert_eq!(c.len(), 3, "pair + NaN singleton + inf singleton");
+    assert_eq!(c[0].groups.len(), 2);
+    assert_eq!(c[1].groups[0].machine, "NanBox");
+    assert_eq!(c[2].groups[0].machine, "InfBox");
+}
+
+/// 20k machines in one giant chained grid (60 m spacing < eps): the old code
+/// took seconds here (O(n²) scans); the grid index must stay well under 2 s.
+#[test]
+fn perf_smoke_20k_chained_grid() {
+    let machines: Vec<ImportMachine> = (0..20_000)
+        .map(|i| {
+            m(
+                "Build_SmelterMk1_C",
+                "Recipe_IngotIron_C",
+                (i % 142) as f64 * 60.0,
+                (i / 142) as f64 * 60.0,
+            )
+        })
+        .collect();
+    let snap = snapshot(machines);
+    let gd = gamedata::docs::GameData::default();
+    let t = std::time::Instant::now();
+    let clusters = cluster(&snap, &gd);
+    let dt = t.elapsed();
+    eprintln!("20k chained grid clustered in {dt:?}");
+    assert_eq!(clusters.len(), 1, "one connected component");
+    assert!(dt < std::time::Duration::from_secs(2), "took {dt:?}");
+}
+
+/// 10k machines on one 100 m pad — the old code's memory-blowup case
+/// (duplicate pushes grew the stack toward O(n²) entries). Mark-on-push +
+/// bucket pruning make it linear.
+#[test]
+fn perf_smoke_10k_clique() {
+    let mut rng = Lcg(0xC11_0E2026);
+    let machines: Vec<ImportMachine> = (0..10_000)
+        .map(|_| {
+            m(
+                "Build_SmelterMk1_C",
+                "Recipe_IngotIron_C",
+                rng.range(-50.0, 50.0),
+                rng.range(-50.0, 50.0),
+            )
+        })
+        .collect();
+    let snap = snapshot(machines);
+    let gd = gamedata::docs::GameData::default();
+    let t = std::time::Instant::now();
+    let clusters = cluster(&snap, &gd);
+    let dt = t.elapsed();
+    eprintln!("10k clique clustered in {dt:?}");
+    assert_eq!(clusters.len(), 1);
+    assert!(dt < std::time::Duration::from_secs(2), "took {dt:?}");
+}
+
+/// Strict local bench — run with `cargo test -- --ignored`.
+#[test]
+#[ignore = "strict perf bound for local runs; CI uses the 2 s smoke above"]
+fn perf_strict_20k_chained_grid() {
+    let machines: Vec<ImportMachine> = (0..20_000)
+        .map(|i| {
+            m(
+                "Build_SmelterMk1_C",
+                "Recipe_IngotIron_C",
+                (i % 142) as f64 * 60.0,
+                (i / 142) as f64 * 60.0,
+            )
+        })
+        .collect();
+    let snap = snapshot(machines);
+    let gd = gamedata::docs::GameData::default();
+    let t = std::time::Instant::now();
+    let clusters = cluster(&snap, &gd);
+    let dt = t.elapsed();
+    assert_eq!(clusters.len(), 1);
+    assert!(dt < std::time::Duration::from_millis(250), "took {dt:?}");
+}

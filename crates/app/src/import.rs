@@ -6,7 +6,7 @@
 //!     layer into a `Proposal { source: SaveReimport }` (drift), reviewed like
 //!     any proposal. Import is enrichment, never load-bearing (Principle 6).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use planner_core::entities::*;
 use planner_core::proposals::*;
@@ -93,22 +93,54 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
     let pts: Vec<&ImportMachine> = snapshot.machines.iter().collect();
     let mut cluster_of: Vec<Option<usize>> = vec![None; pts.len()];
     let mut n_clusters = 0usize;
+    // Uniform grid with eps-sized cells: every point within eps of `p` lies in
+    // the 3×3 cell block around `p`'s cell, so the neighbor scan touches only
+    // nearby buckets instead of the whole array. Points are marked at PUSH
+    // time (each enters the stack at most once) and leave the grid exactly
+    // once via swap_remove when assigned, keeping expansion ~O(n) in time and
+    // O(n) in stack memory even on dense megabase saves (CODE-REVIEW M17).
+    // NaN/±inf coordinates saturate to a finite cell key and fail the `<= eps`
+    // distance test against everything, so they stay singletons as before.
+    let cell = |p: &ImportMachine| {
+        (
+            (p.x / DBSCAN_EPS_M).floor() as i64,
+            (p.y / DBSCAN_EPS_M).floor() as i64,
+        )
+    };
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (k, p) in pts.iter().enumerate() {
+        grid.entry(cell(p)).or_default().push(k);
+    }
+    let mut stack: Vec<usize> = Vec::new();
     for i in 0..pts.len() {
         if cluster_of[i].is_some() {
             continue;
         }
         let id = n_clusters;
         n_clusters += 1;
-        let mut stack = vec![i];
+        cluster_of[i] = Some(id);
+        stack.push(i);
         while let Some(j) = stack.pop() {
-            if cluster_of[j].is_some() {
-                continue;
-            }
-            cluster_of[j] = Some(id);
-            for (k, p) in pts.iter().enumerate() {
-                if cluster_of[k].is_none() && (p.x - pts[j].x).hypot(p.y - pts[j].y) <= DBSCAN_EPS_M
-                {
-                    stack.push(k);
+            let (cx, cy) = cell(pts[j]);
+            for dx in -1..=1i64 {
+                for dy in -1..=1i64 {
+                    let key = (cx.saturating_add(dx), cy.saturating_add(dy));
+                    let Some(bucket) = grid.get_mut(&key) else {
+                        continue;
+                    };
+                    let mut t = 0;
+                    while t < bucket.len() {
+                        let k = bucket[t];
+                        if cluster_of[k].is_some() {
+                            bucket.swap_remove(t);
+                        } else if (pts[k].x - pts[j].x).hypot(pts[k].y - pts[j].y) <= DBSCAN_EPS_M {
+                            cluster_of[k] = Some(id);
+                            stack.push(k);
+                            bucket.swap_remove(t);
+                        } else {
+                            t += 1;
+                        }
+                    }
                 }
             }
         }
