@@ -156,6 +156,18 @@ export interface PlanMeta {
   name: string;
 }
 
+export interface StyleGuide {
+  id: Id;
+  name: string;
+  /** (material, share 0..1) */
+  palette: [string, number][];
+  massing: string;
+  techniques: string[];
+  sequence: string[];
+  /** provenance: where this guide came from (vision call | manual) */
+  sourceNote: string;
+}
+
 export interface Plan {
   meta: PlanMeta;
   factories: Record<Id, Factory>;
@@ -167,6 +179,7 @@ export interface Plan {
   junctions: Record<Id, Junction>;
   proposals: Record<Id, Proposal>;
   switches: Record<Id, PrioritySwitch>;
+  styleGuides: Record<Id, StyleGuide>;
 }
 
 // ---- gamedata ----
@@ -398,6 +411,7 @@ export interface EditResponse {
   undoLabel: string | null;
   created: Id[];
   planHash: string;
+  advisor: AdvisorFeed;
 }
 
 export interface InitPayload {
@@ -406,6 +420,7 @@ export interface InitPayload {
   gamedata: GameData;
   world: World;
   planHash: string;
+  advisor: AdvisorFeed;
   canUndo: boolean;
   canRedo: boolean;
   undoLabel: string | null;
@@ -415,6 +430,8 @@ export interface InitPayload {
 export interface ViewState {
   map?: { center: [number, number]; zoom: number };
   openFactory?: Id | null;
+  /** first-run card dismissed */
+  onboarded?: boolean;
 }
 
 // ---- commands (serde: tag "type" snake_case, fields camelCase) ----
@@ -456,7 +473,10 @@ export type Command =
   | { type: "delete_proposal"; id: Id }
   | { type: "add_priority_switch"; route: Id; priority: number }
   | { type: "set_switch_priority"; id: Id; priority: number }
-  | { type: "delete_switch"; id: Id };
+  | { type: "delete_switch"; id: Id }
+  | { type: "create_style_guide"; guide: StyleGuide }
+  | { type: "delete_style_guide"; id: Id }
+  | { type: "set_factory_theme"; factory: Id; styleGuide: Id | null };
 
 export const BELT_CAPACITY = [60, 120, 270, 480, 780, 1200];
 export const beltCapacity = (tier: number) => BELT_CAPACITY[Math.min(6, Math.max(1, tier)) - 1];
@@ -493,3 +513,50 @@ export type ImportOutcome =
   | { outcome: "imported"; response: EditResponse; factories: number; machines: number; quarantined: number }
   | { outcome: "drift"; response: EditResponse; proposal: Id }
   | { outcome: "in_sync" };
+
+// ---- advisor + chat (Phase 5, SDD §9) ----
+
+export type AdvisorSeverity = "conflict" | "trend" | "tip";
+
+export type AdvisorCta =
+  | { kind: "planProduction"; item: string; rate: number }
+  | { kind: "trace"; selection: string; id: Id }
+  | { kind: "review"; proposal: Id };
+
+export interface AdvisorCard {
+  id: Id;
+  severity: AdvisorSeverity;
+  title: string;
+  body: string;
+  rule: string;
+  saw: string;
+  at: string;
+  dismissed: boolean;
+  cta?: AdvisorCta;
+}
+
+export interface AdvisorFeed {
+  cards: AdvisorCard[];
+  muted: string[];
+  paused: boolean;
+  callsThisHour: number;
+  callBudget: number;
+  aiStatus: "offline" | "ready";
+}
+
+export type ChatScope = { scope: "empire" } | { scope: "factory"; id: Id } | { scope: "selection"; id: Id };
+
+export interface ChatReply {
+  reply: string;
+  causal: [string, string][];
+  entities: [string, string, Id][];
+  proposal: Id | null;
+  saw: string;
+  engine: string;
+}
+
+export interface ContextSnapshot {
+  payload: unknown;
+  bytes: number;
+  snapshotTime: string;
+}

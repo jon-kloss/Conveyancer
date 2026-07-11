@@ -8,7 +8,7 @@ Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), 
 - ~~v1: Circuits, generator factories~~ — DONE (Phase 2); priority switches still open (needs persisted Circuit entities).
 - ~~v1: Proposal system, global solver, wizard, T2 mini-proposals~~ — DONE (Phase 3).
 - ~~v1: Rail/truck/drone inspectors + save import~~ — DONE (Phase 4).
-- v1: AI layer — advisor gate, chat, proposal_intent, style guides (Phase 5).
+- ~~v1: AI layer — advisor gate, chat, proposal_intent, style guides~~ — DONE (Phase 5, offline-honest; model relay scaffolded).
 - v1.1: Batteries/storage in circuit math (`⚡ +BUFFER` slot reserved, A2.2).
 - v2: Signal-block rail capacity modeling (A3.1); direct .pak icon/tile extraction (SDD §7).
 - v1: Belt tier picker on connection drop (currently defaults Mk.1, editable via inspector/edge select) — UI spec 4c.
@@ -32,3 +32,7 @@ Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), 
 - v1.1: Belt-bridged cluster merging + belt/rail/power route reconstruction from save connection components (counts imported today).
 - v1.1: Truck fuel + drone batteries injected as solver demand (rendered as line items today).
 - v2: Signal-block rail capacity modeling (fixed 15% headway today, A3.1).
+- v1.1: Streaming model relay (SSE) behind FICSIT_AI_KEY + OS-keychain storage; advisor prose pass over armed events within the visible budget.
+- v1.1: Image→style-guide vision call (surface + entity are live; needs the model relay).
+- v1.1: An empty upstream factory feeds routes unconstrained (no groups → no supply entry); tighten to zero-supply once boundary-only factories have a defined meaning.
+- v1.1: @-entity references in the chat composer; chat history persistence.

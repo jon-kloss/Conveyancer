@@ -3,7 +3,11 @@
 // state in both — the renderer only ever sees patches (SDD §4).
 
 import type {
+  AdvisorFeed,
+  ChatReply,
+  ChatScope,
   Command,
+  ContextSnapshot,
   EditResponse,
   ImportOutcome,
   ImportSnapshot,
@@ -28,6 +32,11 @@ export interface Backend {
   proposalAccept(id: string): Promise<EditResponse>;
   proposalEval(id: string): Promise<ProposalConsequence>;
   importRun(snapshot: ImportSnapshot): Promise<ImportOutcome>;
+  advisorDismiss(id: string): Promise<AdvisorFeed>;
+  advisorUnmute(rule: string): Promise<AdvisorFeed>;
+  advisorPause(paused: boolean): Promise<AdvisorFeed>;
+  chatSend(scope: ChatScope, message: string): Promise<ChatReply>;
+  chatContext(scope: ChatScope): Promise<ContextSnapshot>;
 }
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -74,6 +83,21 @@ class TauriBackend implements Backend {
   }
   importRun(snapshot: ImportSnapshot) {
     return this.invoke<ImportOutcome>("import_run", { snapshot });
+  }
+  advisorDismiss(id: string) {
+    return this.invoke<AdvisorFeed>("advisor_dismiss", { id });
+  }
+  advisorUnmute(rule: string) {
+    return this.invoke<AdvisorFeed>("advisor_unmute", { rule });
+  }
+  advisorPause(paused: boolean) {
+    return this.invoke<AdvisorFeed>("advisor_pause", { paused });
+  }
+  chatSend(scope: ChatScope, message: string) {
+    return this.invoke<ChatReply>("chat_send", { scope, message });
+  }
+  chatContext(scope: ChatScope) {
+    return this.invoke<ContextSnapshot>("chat_context", { scope });
   }
 }
 
@@ -132,6 +156,21 @@ class BridgeBackend implements Backend {
   }
   importRun(snapshot: ImportSnapshot) {
     return this.call<ImportOutcome>("import/run", { method: "POST", body: JSON.stringify(snapshot) });
+  }
+  advisorDismiss(id: string) {
+    return this.call<AdvisorFeed>("advisor/dismiss", { method: "POST", body: JSON.stringify({ id }) });
+  }
+  advisorUnmute(rule: string) {
+    return this.call<AdvisorFeed>("advisor/unmute", { method: "POST", body: JSON.stringify({ rule }) });
+  }
+  advisorPause(paused: boolean) {
+    return this.call<AdvisorFeed>("advisor/pause", { method: "POST", body: JSON.stringify({ paused }) });
+  }
+  chatSend(scope: ChatScope, message: string) {
+    return this.call<ChatReply>("chat", { method: "POST", body: JSON.stringify({ scope, message }) });
+  }
+  chatContext(scope: ChatScope) {
+    return this.call<ContextSnapshot>("context", { method: "POST", body: JSON.stringify(scope) });
   }
 }
 

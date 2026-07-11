@@ -12,6 +12,8 @@ use planner_core::proposals::{fnv1a, resolve_aliases, Proposal, ProposalItem, Pr
 use planner_core::state::{Entity, PlanState};
 use planner_core::undo::UndoLog;
 
+use crate::advisor::{AdvisorFeed, AdvisorState};
+
 use gamedata::docs::GameData;
 use gamedata::worldnodes::WorldSnapshot;
 use persist::plan_file::{PersistError, PlanFile};
@@ -198,6 +200,8 @@ pub struct EditResponse {
     pub created: Vec<Id>,
     /// Plan-content hash (proposals excluded) — STALE badge comparator.
     pub plan_hash: String,
+    /// Current advisor feed (badge + cards re-render on every response).
+    pub advisor: AdvisorFeed,
 }
 
 pub struct Session {
@@ -208,6 +212,10 @@ pub struct Session {
     pub world: WorldSnapshot,
     /// Consecutive over-budget T1 solves per factory (A4 miss behavior).
     slow_solves: BTreeMap<Id, u32>,
+    /// Ambient advisor state (cards/mutes persist outside the undo journal).
+    pub advisor: AdvisorState,
+    /// Model API key (env `FICSIT_AI_KEY`; OS keychain when the shell wires it).
+    pub ai_key: Option<String>,
 }
 
 impl Session {
@@ -241,6 +249,13 @@ impl Session {
         let world = gamedata::worldnodes::bundled();
         let (state, entries, cursor) = file.load()?;
         let undo = UndoLog::hydrate_with_cursor(entries, cursor);
+        let mut advisor = AdvisorState::default();
+        for json in file.load_advisor_cards().unwrap_or_default() {
+            if let Ok(card) = serde_json::from_str(&json) {
+                advisor.cards.push(card);
+            }
+        }
+        advisor.muted = file.load_mutes().unwrap_or_default().into_iter().collect();
         Ok(Self {
             state,
             undo,
@@ -248,6 +263,10 @@ impl Session {
             gamedata: gd,
             world,
             slow_solves: BTreeMap::new(),
+            advisor,
+            ai_key: std::env::var("FICSIT_AI_KEY")
+                .ok()
+                .filter(|k| !k.is_empty()),
         })
     }
 
@@ -267,6 +286,7 @@ impl Session {
             },
             "world": self.world,
             "planHash": self.plan_hash(),
+            "advisor": self.advisor.feed(self.ai_key.is_some()),
             "canUndo": self.undo.can_undo(),
             "canRedo": self.undo.can_redo(),
             "undoLabel": self.undo.undo_label(),
@@ -304,6 +324,7 @@ impl Session {
         // manifests) fold into the same undo entry as the causing edit.
         let trigger = Self::solve_trigger(&cmds);
         let derived = self.empire_solve(&trigger, Some(&mut tx));
+        self.advise(&derived);
 
         let created = tx.created.clone();
         let entry = self.undo.commit(tx);
@@ -318,6 +339,7 @@ impl Session {
             undo_label: self.undo.undo_label().map(String::from),
             created,
             plan_hash: self.plan_hash(),
+            advisor: self.advisor.feed(self.ai_key.is_some()),
         })
     }
 
@@ -410,6 +432,7 @@ impl Session {
             return Err(e);
         }
         let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
+        self.advise(&derived);
         let created = tx.created.clone();
         let entry = self.undo.commit(tx);
         self.file
@@ -422,6 +445,7 @@ impl Session {
             undo_label: self.undo.undo_label().map(String::from),
             created,
             plan_hash: self.plan_hash(),
+            advisor: self.advisor.feed(self.ai_key.is_some()),
         })
     }
 
@@ -564,6 +588,7 @@ impl Session {
             let mut tx = Transaction::new("import save");
             crate::import::write_built_layer(&mut self.state, &mut tx, &clusters, &import_id);
             let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
+            self.advise(&derived);
             let created = tx.created.clone();
             let entry = self.undo.commit(tx);
             self.file
@@ -577,6 +602,7 @@ impl Session {
                     undo_label: self.undo.undo_label().map(String::from),
                     created,
                     plan_hash: self.plan_hash(),
+                    advisor: self.advisor.feed(self.ai_key.is_some()),
                 },
                 factories: clusters.len() as u32,
                 machines: snapshot.machines.len() as u32,
@@ -608,6 +634,50 @@ impl Session {
         })
     }
 
+    /// Run the advisor gate over fresh derived state and persist new cards.
+    fn advise(&mut self, derived: &Derived) {
+        let events = crate::advisor::evaluate(&self.state, derived);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let created = self.advisor.gate(events, now, &crate::jobs::now_rfc3339());
+        for card in &created {
+            let _ = self
+                .file
+                .save_advisor_card(&card.id, &serde_json::to_string(card).unwrap_or_default());
+        }
+    }
+
+    /// Dismiss = hide the card AND mute its rule (persisted) — the spec's
+    /// anti-nag contract: dismissing means "stop telling me about this".
+    pub fn advisor_dismiss(&mut self, card_id: &str) -> AdvisorFeed {
+        let mut rule = None;
+        if let Some(card) = self.advisor.cards.iter_mut().find(|c| c.id == card_id) {
+            card.dismissed = true;
+            rule = Some(card.rule.clone());
+            let _ = self
+                .file
+                .save_advisor_card(&card.id, &serde_json::to_string(card).unwrap_or_default());
+        }
+        if let Some(rule) = rule {
+            self.advisor.muted.insert(rule.clone());
+            let _ = self.file.add_mute(&rule, &crate::jobs::now_rfc3339());
+        }
+        self.advisor.feed(self.ai_key.is_some())
+    }
+
+    pub fn advisor_unmute(&mut self, rule: &str) -> AdvisorFeed {
+        self.advisor.muted.remove(rule);
+        let _ = self.file.remove_mute(rule);
+        self.advisor.feed(self.ai_key.is_some())
+    }
+
+    pub fn advisor_set_paused(&mut self, paused: bool) -> AdvisorFeed {
+        self.advisor.paused = paused;
+        self.advisor.feed(self.ai_key.is_some())
+    }
+
     pub fn set_view_state(&mut self, json: &str) -> Result<(), SessionError> {
         self.file.set_view_state(json)?;
         Ok(())
@@ -626,6 +696,7 @@ impl Session {
             undo_label: self.undo.undo_label().map(String::from),
             created: vec![],
             plan_hash: self.plan_hash(),
+            advisor: self.advisor.feed(self.ai_key.is_some()),
         }
     }
 

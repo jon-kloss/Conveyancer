@@ -14,6 +14,7 @@ export function applyPatches(plan: Plan, ops: PatchOp[]): Plan {
     junctions: { ...plan.junctions },
     proposals: { ...plan.proposals },
     switches: { ...plan.switches },
+    styleGuides: { ...plan.styleGuides },
     meta: { ...plan.meta },
   };
   for (const op of ops) {

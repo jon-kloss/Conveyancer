@@ -7,6 +7,8 @@ import GraphView from "./graph/GraphView";
 import AuditDrawer from "./audit/AuditDrawer";
 import WizardModal from "./wizard/WizardModal";
 import ProposalReview from "./proposal/ProposalReview";
+import AdvisorPanel from "./advisor/AdvisorPanel";
+import Onboarding from "./shell/Onboarding";
 import { useStore } from "./state/store";
 import "./shell/shell.css";
 
@@ -36,6 +38,15 @@ export default function App() {
         // TAB toggles the audit HUD (mock 1i)
         e.preventDefault();
         setAuditOpen((o) => !o);
+      } else if (
+        (e.key === "a" || e.key === "A") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLSelectElement)
+      ) {
+        const st = useStore.getState();
+        st.setAdvisorOpen(!st.advisorOpen);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -88,7 +99,9 @@ export default function App() {
         )}
         {!reviewing && <AuditDrawer open={auditOpen} onToggle={() => setAuditOpen((o) => !o)} />}
         {reviewingProposal && <ProposalReview proposal={reviewingProposal} />}
+        {!reviewing && <AdvisorPanel />}
         <WizardModal />
+        <Onboarding />
       </main>
       <StatusBar overlayMode={mode === "overlay"} />
     </div>

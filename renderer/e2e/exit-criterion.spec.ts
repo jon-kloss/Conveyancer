@@ -47,6 +47,15 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("map-root")).toBeVisible();
 
+  // ---- fresh plan: the first-run card offers three doors, no tour ----
+  await expect(page.getByTestId("onboarding")).toBeVisible();
+  await expect(page.getByTestId("door-factory")).toBeVisible();
+  await expect(page.getByTestId("door-wizard")).toBeVisible();
+  await expect(page.getByTestId("door-import")).toBeVisible();
+  await expect(page.getByTestId("onboarding")).toContainText("NO TOUR");
+  await page.getByTestId("onboard-skip").click();
+  await expect(page.getByTestId("onboarding")).not.toBeVisible();
+
   // ---- place a factory on the map ----
   await page.getByTestId("btn-add-factory").click();
   await page.locator(".map-leaflet").click({ position: { x: 820, y: 700 } });

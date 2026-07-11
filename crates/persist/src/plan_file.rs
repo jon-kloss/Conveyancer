@@ -203,6 +203,42 @@ impl PlanFile {
     }
 
     /// Persist window/zoom state (UI restores position on reopen — Principle 1).
+    /// Advisor feed persistence — outside the undo journal by design: cards
+    /// record what the advisor SAW; undoing a plan edit must not eat them.
+    pub fn save_advisor_card(&self, id: &str, json: &str) -> Result<(), PersistError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO advisor_cards (id, json) VALUES (?1, ?2)",
+            (id, json),
+        )?;
+        Ok(())
+    }
+
+    pub fn load_advisor_cards(&self) -> Result<Vec<String>, PersistError> {
+        let mut stmt = self.conn.prepare("SELECT json FROM advisor_cards")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn add_mute(&self, rule: &str, at: &str) -> Result<(), PersistError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO mutes (rule, muted_at) VALUES (?1, ?2)",
+            (rule, at),
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_mute(&self, rule: &str) -> Result<(), PersistError> {
+        self.conn
+            .execute("DELETE FROM mutes WHERE rule = ?1", [rule])?;
+        Ok(())
+    }
+
+    pub fn load_mutes(&self) -> Result<Vec<String>, PersistError> {
+        let mut stmt = self.conn.prepare("SELECT rule FROM mutes")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     pub fn set_view_state(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("view_state", json)?;
         Ok(())

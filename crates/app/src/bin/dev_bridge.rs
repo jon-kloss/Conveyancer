@@ -124,6 +124,35 @@ fn main() -> anyhow::Result<()> {
                     }
                     ok(&serde_json::json!({ "proposal": proposal }))
                 }
+                (Method::Post, "/api/advisor/dismiss") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    ok(&s.advisor_dismiss(req["id"].as_str().unwrap_or_default()))
+                }
+                (Method::Post, "/api/advisor/unmute") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    ok(&s.advisor_unmute(req["rule"].as_str().unwrap_or_default()))
+                }
+                (Method::Post, "/api/advisor/pause") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    ok(&s.advisor_set_paused(req["paused"].as_bool().unwrap_or(false)))
+                }
+                (Method::Post, "/api/chat") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let scope: app::chat::ContextScope =
+                        serde_json::from_value(req["scope"].clone())
+                            .unwrap_or(app::chat::ContextScope::Empire);
+                    let message = req["message"].as_str().unwrap_or_default();
+                    ok(&app::chat::chat(&mut s, &scope, message))
+                }
+                (Method::Post, "/api/context") => {
+                    match serde_json::from_str::<app::chat::ContextScope>(&body) {
+                        Ok(scope) => ok(&app::chat::compact_state(&mut s, &scope)),
+                        Err(_) => ok(&app::chat::compact_state(
+                            &mut s,
+                            &app::chat::ContextScope::Empire,
+                        )),
+                    }
+                }
                 (Method::Post, "/api/import/run") => {
                     match serde_json::from_str::<app::import::ImportSnapshot>(&body) {
                         Ok(snapshot) => match s.import_save(snapshot) {

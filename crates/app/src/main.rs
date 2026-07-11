@@ -97,6 +97,38 @@ fn t2_optimize(
 }
 
 #[tauri::command]
+fn advisor_dismiss(state: State<AppState>, id: String) -> app::advisor::AdvisorFeed {
+    state.0.lock().unwrap().advisor_dismiss(&id)
+}
+
+#[tauri::command]
+fn advisor_unmute(state: State<AppState>, rule: String) -> app::advisor::AdvisorFeed {
+    state.0.lock().unwrap().advisor_unmute(&rule)
+}
+
+#[tauri::command]
+fn advisor_pause(state: State<AppState>, paused: bool) -> app::advisor::AdvisorFeed {
+    state.0.lock().unwrap().advisor_set_paused(paused)
+}
+
+#[tauri::command]
+fn chat_send(
+    state: State<AppState>,
+    scope: app::chat::ContextScope,
+    message: String,
+) -> app::chat::ChatReply {
+    app::chat::chat(&mut state.0.lock().unwrap(), &scope, &message)
+}
+
+#[tauri::command]
+fn chat_context(
+    state: State<AppState>,
+    scope: app::chat::ContextScope,
+) -> app::chat::ContextSnapshot {
+    app::chat::compact_state(&mut state.0.lock().unwrap(), &scope)
+}
+
+#[tauri::command]
 fn import_run(
     window: tauri::Window,
     state: State<AppState>,
@@ -156,6 +188,11 @@ fn main() {
             wizard_cancel,
             t2_optimize,
             import_run,
+            advisor_dismiss,
+            advisor_unmute,
+            advisor_pause,
+            chat_send,
+            chat_context,
             proposal_accept,
             proposal_eval
         ])

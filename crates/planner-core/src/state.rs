@@ -44,6 +44,8 @@ pub struct PlanState {
     pub proposals: BTreeMap<Id, Proposal>,
     #[serde(default)]
     pub switches: BTreeMap<Id, PrioritySwitch>,
+    #[serde(default)]
+    pub style_guides: BTreeMap<Id, StyleGuide>,
 }
 
 /// Collection names as they appear in patch paths and the projected store.
@@ -56,6 +58,7 @@ pub const COLL_ROUTES: &str = "routes";
 pub const COLL_JUNCTIONS: &str = "junctions";
 pub const COLL_PROPOSALS: &str = "proposals";
 pub const COLL_SWITCHES: &str = "switches";
+pub const COLL_STYLE_GUIDES: &str = "styleGuides";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entity {
@@ -68,6 +71,7 @@ pub enum Entity {
     Junction(Junction),
     Proposal(Proposal),
     Switch(PrioritySwitch),
+    StyleGuide(StyleGuide),
 }
 
 impl Entity {
@@ -82,6 +86,7 @@ impl Entity {
             Entity::Junction(e) => &e.id,
             Entity::Proposal(e) => &e.id,
             Entity::Switch(e) => &e.id,
+            Entity::StyleGuide(e) => &e.id,
         }
     }
 
@@ -96,6 +101,7 @@ impl Entity {
             Entity::Junction(_) => COLL_JUNCTIONS,
             Entity::Proposal(_) => COLL_PROPOSALS,
             Entity::Switch(_) => COLL_SWITCHES,
+            Entity::StyleGuide(_) => COLL_STYLE_GUIDES,
         }
     }
 
@@ -110,6 +116,7 @@ impl Entity {
             Entity::Junction(e) => serde_json::to_value(e).unwrap(),
             Entity::Proposal(e) => serde_json::to_value(e).unwrap(),
             Entity::Switch(e) => serde_json::to_value(e).unwrap(),
+            Entity::StyleGuide(e) => serde_json::to_value(e).unwrap(),
         }
     }
 
@@ -127,6 +134,9 @@ impl Entity {
             COLL_JUNCTIONS => Entity::Junction(serde_json::from_value(value.clone()).map_err(err)?),
             COLL_PROPOSALS => Entity::Proposal(serde_json::from_value(value.clone()).map_err(err)?),
             COLL_SWITCHES => Entity::Switch(serde_json::from_value(value.clone()).map_err(err)?),
+            COLL_STYLE_GUIDES => {
+                Entity::StyleGuide(serde_json::from_value(value.clone()).map_err(err)?)
+            }
             other => return Err(format!("unknown collection {other}")),
         })
     }
@@ -146,6 +156,7 @@ impl PlanState {
             COLL_JUNCTIONS: self.junctions,
             COLL_PROPOSALS: self.proposals,
             COLL_SWITCHES: self.switches,
+            COLL_STYLE_GUIDES: self.style_guides,
         })
     }
 
@@ -160,6 +171,7 @@ impl PlanState {
             COLL_JUNCTIONS => self.junctions.get(id).cloned().map(Entity::Junction),
             COLL_PROPOSALS => self.proposals.get(id).cloned().map(Entity::Proposal),
             COLL_SWITCHES => self.switches.get(id).cloned().map(Entity::Switch),
+            COLL_STYLE_GUIDES => self.style_guides.get(id).cloned().map(Entity::StyleGuide),
             _ => None,
         }
     }
@@ -193,6 +205,9 @@ impl PlanState {
             Entity::Switch(v) => {
                 self.switches.insert(v.id.clone(), v);
             }
+            Entity::StyleGuide(v) => {
+                self.style_guides.insert(v.id.clone(), v);
+            }
         }
     }
 
@@ -224,6 +239,9 @@ impl PlanState {
             }
             COLL_SWITCHES => {
                 self.switches.remove(id);
+            }
+            COLL_STYLE_GUIDES => {
+                self.style_guides.remove(id);
             }
             _ => {}
         }

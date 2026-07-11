@@ -293,6 +293,22 @@ pub enum RouteKind {
     Power,
 }
 
+/// Style guide (SDD §9 image→style-guide): typed aesthetic descriptor,
+/// linkable to factories. The vision call fills it when a model key exists;
+/// manual creation keeps the surface honest offline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StyleGuide {
+    pub id: Id,
+    pub name: String,
+    /// (material, share 0..1)
+    pub palette: Vec<(String, f64)>,
+    pub massing: String,
+    pub techniques: Vec<String>,
+    pub sequence: Vec<String>,
+    pub source_note: String,
+}
+
 /// Priority switch (A2.3): an 18px square map pin sitting ON a power line.
 /// Shedding order is highest priority number first (P8 before P1) — the audit
 /// POWER tab derives each switch's SHEDS AT threshold from it.

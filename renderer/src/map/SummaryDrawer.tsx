@@ -94,6 +94,58 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
       </section>
 
       <section className="drawer-section">
+        <h3 className="t-label">THEME</h3>
+        <div className="drawer-row">
+          <span className="drawer-row-name">Style guide</span>
+          <select
+            className="mono"
+            style={{ height: 24, maxWidth: 160 }}
+            value={factory.styleGuide ?? ""}
+            onChange={(e) =>
+              void dispatch([
+                { type: "set_factory_theme", factory: factory.id, styleGuide: e.target.value || null },
+              ])
+            }
+            data-testid="theme-select"
+          >
+            <option value="">— none —</option>
+            {Object.values(plan.styleGuides).map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className="chip"
+            title="Image→style guide needs a model key (AI OFFLINE) — this starts a manual guide"
+            onClick={() => {
+              const n = Object.keys(plan.styleGuides).length + 1;
+              void dispatch([
+                {
+                  type: "create_style_guide",
+                  guide: {
+                    id: "",
+                    name: `GUIDE ${n}`,
+                    palette: [
+                      ["FICSIT Foundation 8m", 0.6],
+                      ["Concrete", 0.4],
+                    ],
+                    massing: "Terraced decks stepping with the terrain.",
+                    techniques: ["Belt walls between decks", "Lifts in service towers"],
+                    sequence: ["Foundations", "Load-bearing frames", "Machines", "Belting", "Facade"],
+                    sourceNote: "MANUAL — aesthetic inference needs a model key (AI OFFLINE)",
+                  },
+                },
+              ]);
+            }}
+            data-testid="btn-new-guide"
+          >
+            + NEW GUIDE
+          </button>
+        </div>
+      </section>
+
+      <section className="drawer-section">
         <h3 className="t-label">OUTPUTS</h3>
         {outputs.length === 0 && <div className="drawer-empty">No output ports yet — open the factory to add them.</div>}
         {outputs.map((p) => (

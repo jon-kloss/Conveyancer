@@ -224,6 +224,16 @@ pub enum Command {
     DeleteSwitch {
         id: Id,
     },
+    CreateStyleGuide {
+        guide: StyleGuide,
+    },
+    DeleteStyleGuide {
+        id: Id,
+    },
+    SetFactoryTheme {
+        factory: Id,
+        style_guide: Option<Id>,
+    },
 }
 
 impl Command {
@@ -266,6 +276,9 @@ impl Command {
             Command::AddPrioritySwitch { .. } => "add priority switch",
             Command::SetSwitchPriority { .. } => "set switch priority",
             Command::DeleteSwitch { .. } => "delete switch",
+            Command::CreateStyleGuide { .. } => "save style guide",
+            Command::DeleteStyleGuide { .. } => "delete style guide",
+            Command::SetFactoryTheme { .. } => "set factory theme",
         }
     }
 }
@@ -1225,6 +1238,54 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             require_planned(sw.status, id, "reprioritize")?;
             sw.priority = *priority;
             tx.record(state.upsert(Entity::Switch(sw)));
+        }
+        Command::CreateStyleGuide { guide } => {
+            let mut g = guide.clone();
+            if g.id.is_empty() {
+                g.id = new_id();
+            }
+            tx.created.push(g.id.clone());
+            tx.record(state.upsert(Entity::StyleGuide(g)));
+        }
+        Command::DeleteStyleGuide { id } => {
+            state
+                .style_guides
+                .get(id)
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            // unlink any factory themed with it
+            let themed: Vec<Factory> = state
+                .factories
+                .values()
+                .filter(|f| f.style_guide.as_deref() == Some(id.as_str()))
+                .cloned()
+                .collect();
+            for mut f in themed {
+                f.style_guide = None;
+                tx.record(state.upsert(Entity::Factory(f)));
+            }
+            if let Some(ops) = state.remove(COLL_STYLE_GUIDES, id) {
+                tx.record(ops);
+            }
+        }
+        Command::SetFactoryTheme {
+            factory,
+            style_guide,
+        } => {
+            let mut f = state
+                .factories
+                .get(factory)
+                .cloned()
+                .ok_or(DomainError::NotFound {
+                    id: factory.clone(),
+                })?;
+            if let Some(sg) = style_guide {
+                state
+                    .style_guides
+                    .get(sg)
+                    .ok_or(DomainError::NotFound { id: sg.clone() })?;
+            }
+            f.style_guide = style_guide.clone();
+            tx.record(state.upsert(Entity::Factory(f)));
         }
         Command::DeleteSwitch { id } => {
             let sw = state

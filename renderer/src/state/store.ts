@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { backend } from "./backend";
 import { applyPatches } from "./patch";
 import type {
+  AdvisorFeed,
   Command,
   Derived,
   DerivedFactory,
@@ -38,6 +39,7 @@ const emptyPlan: Plan = {
   junctions: {},
   proposals: {},
   switches: {},
+  styleGuides: {},
 };
 
 const emptyDerived: Derived = {
@@ -77,6 +79,9 @@ export interface AppStore {
   reviewing: Id | null;
   /** wizard modal: closed | open (optionally pre-filled from FIX WITH SOLVER) */
   wizard: { open: boolean; prefill?: { item: string; rate: number } };
+  /** ambient advisor feed (updated by every backend response) */
+  advisor: AdvisorFeed;
+  advisorOpen: boolean;
 
   hydrate(): Promise<void>;
   dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[]>;
@@ -91,6 +96,8 @@ export interface AppStore {
   setReviewing(id: Id | null): void;
   setWizard(w: AppStore["wizard"]): void;
   acceptProposal(id: Id): Promise<void>;
+  setAdvisor(feed: AdvisorFeed): void;
+  setAdvisorOpen(open: boolean): void;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -113,6 +120,8 @@ export const useStore = create<AppStore>((set, get) => ({
   planHash: "",
   reviewing: null,
   wizard: { open: false },
+  advisor: { cards: [], muted: [], paused: false, callsThisHour: 0, callBudget: 6, aiStatus: "offline" },
+  advisorOpen: false,
 
   async hydrate() {
     try {
@@ -128,6 +137,7 @@ export const useStore = create<AppStore>((set, get) => ({
         canRedo: init.canRedo,
         undoLabel: init.undoLabel,
         planHash: init.planHash,
+        advisor: init.advisor,
         viewState: init.viewState ?? {},
         view:
           openFactory && init.plan.factories[openFactory]
@@ -151,6 +161,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
       planHash: resp.planHash,
+      advisor: resp.advisor,
       projected: null,
       settled,
     }));
@@ -175,6 +186,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
       planHash: resp.planHash,
+      advisor: resp.advisor,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
     }));
@@ -190,6 +202,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
       planHash: resp.planHash,
+      advisor: resp.advisor,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
     }));
@@ -217,6 +230,14 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ wizard: w });
   },
 
+  setAdvisor(feed) {
+    set({ advisor: feed });
+  },
+
+  setAdvisorOpen(open) {
+    set({ advisorOpen: open });
+  },
+
   // Accept = one backend transaction, one undo entry, ◇ entities only.
   async acceptProposal(id) {
     const resp = await backend.proposalAccept(id);
@@ -227,6 +248,7 @@ export const useStore = create<AppStore>((set, get) => ({
       canRedo: resp.canRedo,
       undoLabel: resp.undoLabel,
       planHash: resp.planHash,
+      advisor: resp.advisor,
       reviewing: null,
       settled: new Set(resp.patches.map((p) => p.path)),
     }));
