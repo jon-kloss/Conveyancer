@@ -74,7 +74,16 @@ factory (N), run the wizard (P), or import a save (S). The plan persists to
 `dev-world.ficsit` in the repo root by default; delete the file (and its
 `-wal`/`-shm` siblings) for a fresh world.
 
-### The desktop app
+### Windows: download the exe
+
+Every push to `main` (and the CI workflow's watched branches) runs the
+`windows-build` action, which uploads a portable **FICSIT-Planner.exe** —
+grab it from the run's Artifacts on GitHub and double-click. The renderer is
+embedded in the binary; the only runtime dependency is Microsoft's WebView2
+(preinstalled on Windows 10/11). Pushing a `v*` tag also publishes it as a
+GitHub Release. The plan file lives in `%APPDATA%\dev.ficsit.planner\`.
+
+### The desktop app (from source)
 
 Debug builds point the window at the vite dev server, so run both:
 
