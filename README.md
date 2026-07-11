@@ -96,6 +96,15 @@ cargo run -p app --features shell   # terminal 2 (needs WebKitGTK on Linux)
 The shell stores its plan in the OS app-data directory
 (`…/dev.ficsit.planner/world.ficsit`).
 
+For a self-contained binary (embedded renderer, no vite), build the renderer
+first and use the `prod` feature — plain `--release` is **not** enough, because
+Tauri decides dev-vs-production by feature, not by profile:
+
+```sh
+cd renderer && pnpm build
+cargo build -p app --features prod --release
+```
+
 ### Environment variables
 
 | Variable | Meaning | Default |

@@ -44,7 +44,10 @@ jobs:
           pnpm build
 
       - name: build the shell (release)
-        run: cargo build -p app --features shell --release
+        # `prod` = shell + tauri/custom-protocol: without it the exe runs in
+        # Tauri dev mode and points its window at devUrl (localhost:5173),
+        # which doesn't exist on user machines.
+        run: cargo build -p app --features prod --release
 
       - name: package
         shell: pwsh
