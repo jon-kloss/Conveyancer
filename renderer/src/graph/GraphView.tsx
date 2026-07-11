@@ -29,6 +29,7 @@ import RecipeStrip from "./RecipeStrip";
 import AddGroupMenu from "./AddGroupMenu";
 import AddPortMenu from "./AddPortMenu";
 import { fmtPower } from "../lib/format";
+import { isEditableTarget } from "../lib/keys";
 import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
 import FloorPlates from "./FloorPlates";
 import { fmtRate, fmtPercent } from "../lib/format";
@@ -497,7 +498,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const [stripOpen, setStripOpen] = useState(true);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (isEditableTarget(e)) return;
       if (e.key === "Escape") {
         if (addMenu) setAddMenu(null);
         else if (selection) setSelection(null);

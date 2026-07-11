@@ -11,6 +11,7 @@ import ProposalReview from "./proposal/ProposalReview";
 import AdvisorPanel from "./advisor/AdvisorPanel";
 import Onboarding from "./shell/Onboarding";
 import { useStore, errText } from "./state/store";
+import { isEditableTarget } from "./lib/keys";
 import "./shell/shell.css";
 
 export default function App() {
@@ -46,19 +47,15 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        // typing: leave the event alone so native text undo keeps working
+        if (isEditableTarget(e)) return;
         e.preventDefault();
         void (e.shiftKey ? redo() : undo());
-      } else if (e.key === "Tab" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLSelectElement)) {
+      } else if (e.key === "Tab" && !isEditableTarget(e)) {
         // TAB toggles the audit HUD (mock 1i)
         e.preventDefault();
         setAuditOpen((o) => !o);
-      } else if (
-        (e.key === "a" || e.key === "A") &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLSelectElement)
-      ) {
+      } else if ((e.key === "a" || e.key === "A") && !e.metaKey && !e.ctrlKey && !isEditableTarget(e)) {
         const st = useStore.getState();
         st.setAdvisorOpen(!st.advisorOpen);
       }

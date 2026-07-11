@@ -1,0 +1,19 @@
+// Shared typing guard for global keyboard shortcuts.
+
+// Input types with a caret: these own native text undo and free typing.
+// Range/checkbox/radio/button inputs do NOT belong here — a planner who just
+// dragged the target slider still expects ⌘Z to undo the plan, and the slider
+// keeps focus after the drag.
+const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "tel", "email", "password", "number"]);
+
+/** True when the key event originates from a text-entry / form surface that
+ *  owns its own keyboard semantics (native undo, caret moves, option pick). */
+export function isEditableTarget(e: Pick<KeyboardEvent, "target">): boolean {
+  const t = e.target;
+  if (t instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(t.type);
+  return (
+    t instanceof HTMLTextAreaElement ||
+    t instanceof HTMLSelectElement ||
+    (t instanceof HTMLElement && t.isContentEditable)
+  );
+}

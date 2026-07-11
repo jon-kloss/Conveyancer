@@ -10,6 +10,7 @@ import { MapCanvasLayer } from "./CanvasLayer";
 import type { CanvasLayerData, NodeRenderState } from "./CanvasLayer";
 import { fromLatLng, toLatLng } from "./maputil";
 import { useStore } from "../state/store";
+import { isEditableTarget } from "../lib/keys";
 import type { WorldNode } from "../state/types";
 import SummaryDrawer from "./SummaryDrawer";
 import NodeDrawer from "./NodeDrawer";
@@ -79,6 +80,8 @@ export default function MapView() {
   const fileRef = useRef<HTMLInputElement>(null);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
+  // one-shot: swallow the contextmenu that follows a route-drag release
+  const suppressCtxRef = useRef(false);
 
   const claimLinks = useMemo(() => {
     const nodeById: Record<string, { x: number; y: number }> = {};
@@ -323,10 +326,15 @@ export default function MapView() {
       if (routeHit) setSelection({ kind: "route", id: routeHit });
       else setSelection(null);
     };
-    // right-drag from a pin draws a route (ghost-blue until confirmed)
+    // right-drag from a pin draws a route (ghost-blue until confirmed).
+    // mouseup listens on window so releasing over a drawer or other chrome
+    // still ends the drag instead of leaving a stuck ghost line.
     const onMouseUp = (e: MouseEvent) => {
       const draft = routeDraftRef.current;
       if (!draft || e.button !== 2) return;
+      // Chromium fires contextmenu after the right-button release; suppress
+      // that one (and only that one) even when it lands outside the map.
+      suppressCtxRef.current = true;
       const st = useStore.getState();
       const rect = map.getContainer().getBoundingClientRect();
       const pt = L.point(e.clientX - rect.left, e.clientY - rect.top);
@@ -339,14 +347,22 @@ export default function MapView() {
       if (target) setRoutePopover({ from: draft.from, to: target });
     };
     const onCtx = (e: Event) => e.preventDefault();
-    map.getContainer().addEventListener("mouseup", onMouseUp);
+    const onWindowCtx = (e: Event) => {
+      if (suppressCtxRef.current) {
+        suppressCtxRef.current = false;
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("contextmenu", onWindowCtx);
     map.getContainer().addEventListener("contextmenu", onCtx);
     map.on("mousemove", onMove);
     map.on("click", onClick);
     return () => {
       map.off("mousemove", onMove);
       map.off("click", onClick);
-      map.getContainer().removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("contextmenu", onWindowCtx);
       map.getContainer().removeEventListener("contextmenu", onCtx);
     };
   }, [placing, world.regions, dispatch, setPlacing, setSelection]);
@@ -403,12 +419,14 @@ export default function MapView() {
   // ---- keys: N place, F frame, ESC deselect, 1/4 overlays, ⏎ dive ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (isEditableTarget(e)) return;
       const map = mapRef.current;
       if (e.key === "n" || e.key === "N") setPlacing(!placing);
       else if (e.key === "p" || e.key === "P") setWizard({ open: true });
       else if (e.key === "Escape") {
-        if (placing) setPlacing(false);
+        // an in-flight route draft cancels first (via the ref: no new deps)
+        if (routeDraftRef.current) setRouteDraft(null);
+        else if (placing) setPlacing(false);
         else setSelection(null);
       } else if (e.key === "1") setOverlay("flows", !overlays.flows);
       else if (e.key === "2") setOverlay("power", !overlays.power);

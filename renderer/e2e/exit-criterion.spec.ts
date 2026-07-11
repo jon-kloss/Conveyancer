@@ -63,6 +63,12 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
 
   // rename it
   await page.locator(".drawer-name").click();
+  await page.locator(".drawer-name-input").fill("TYPO NAME");
+  // M23 regression: ⌘Z while typing must NOT undo the plan (factory creation
+  // is the only undoable command at this point — the pin would vanish).
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(page.locator(".pin-wrap")).toHaveCount(1);
+  await expect(page.getByTestId("summary-drawer")).toBeVisible();
   await page.locator(".drawer-name-input").fill("MODULAR WORKS");
   await page.keyboard.press("Enter");
   await expect(page.locator(".pin-chip")).toContainText("MODULAR WORKS");
