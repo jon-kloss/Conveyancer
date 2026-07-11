@@ -1842,3 +1842,99 @@ fn rail_routes_compute_throughput_and_respec() {
         RouteKind::Rail { .. }
     ));
 }
+
+// ---- variable-power draw (Particle Accelerator etc.) ----
+
+/// Variable-power recipes carry an average sustained draw override; the
+/// session snapshot and the solve must plan with it, not the ~0 the machine
+/// would otherwise report from real Docs.json.
+#[test]
+fn variable_power_recipe_average_drives_group_power() {
+    let mut s = Session::in_memory(None).unwrap();
+    let r = s
+        .edit(vec![Command::CreateFactory {
+            name: "QUANTUM WORKS".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap();
+    let fid = r.created[0].clone();
+
+    let r = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Coal_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(600.0),
+            graph_pos: gp(0.0, 200.0),
+        }])
+        .unwrap();
+    let in_port = r.created[0].clone();
+    let r = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_Diamond_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(800.0, 200.0),
+        }])
+        .unwrap();
+    let out_port = r.created[0].clone();
+
+    let pa = add_group(
+        &mut s,
+        &fid,
+        "Build_HadronCollider_C",
+        "Recipe_Diamond_C",
+        gp(400.0, 200.0),
+    );
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Port(in_port),
+        EdgeEnd::Group(pa.clone()),
+        "Desc_Coal_C",
+        5,
+    );
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Group(pa.clone()),
+        EdgeEnd::Port(out_port.clone()),
+        "Desc_Diamond_C",
+        5,
+    );
+
+    // The snapshot's RecipeSpec carries the recipe average (constant +
+    // factor/2 = 500 MW), not the machine estimate path.
+    let snap = s.snapshot(&fid).unwrap();
+    let gs = snap.groups.iter().find(|g| g.id == pa).unwrap();
+    assert_eq!(gs.recipe.power_mw, 500.0);
+
+    // Solve at exactly one machine's worth of demand: 1 diamond / 2 s =
+    // 30/min per machine, so a 30/min target lands count 1 @ 100% clock and
+    // group power = 500 × 1 × 1.0^1.321928 = 500 MW.
+    let r = s
+        .edit(vec![Command::SetPortRate {
+            id: out_port,
+            rate: 30.0,
+        }])
+        .unwrap();
+    let df = &r.derived.factories[&fid];
+    let gp_mw = df.groups[&pa].power_mw;
+    assert!(
+        (gp_mw - 500.0).abs() < 1e-6,
+        "variable-power draw reaches group power: {gp_mw}"
+    );
+    assert!(
+        (df.total_power_mw - 500.0).abs() < 1e-6,
+        "and the factory total: {}",
+        df.total_power_mw
+    );
+}

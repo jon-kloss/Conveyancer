@@ -121,6 +121,15 @@ pub fn machine_power(gd: &GameData, class: &str) -> f64 {
     gd.machines.get(class).map(|m| m.power_mw).unwrap_or(0.0)
 }
 
+/// Planning draw for one machine running `recipe`: the recipe's variable-power
+/// average when present (Particle Accelerator etc. — draw varies by recipe),
+/// otherwise the machine's fixed draw.
+pub fn recipe_power(gd: &GameData, recipe: &Recipe, machine: &str) -> f64 {
+    recipe
+        .variable_power_mw
+        .unwrap_or_else(|| machine_power(gd, machine))
+}
+
 /// Manufacturer classes a recipe can run in (first automated machine wins for Phase 1).
 pub fn manufacturer_for(gd: &GameData, recipe: &Recipe) -> Option<String> {
     recipe
@@ -153,6 +162,24 @@ mod tests {
         assert_eq!(
             manufacturer_for(&back, mf).as_deref(),
             Some("Build_AssemblerMk1_C")
+        );
+        // variable_power_mw survives the roundtrip and recipe_power prefers it
+        assert_eq!(
+            recipe_power(&back, mf, "Build_AssemblerMk1_C"),
+            15.0,
+            "fixed-power recipes fall back to the machine draw"
+        );
+        let diamond = &back.recipes["Recipe_Diamond_C"];
+        assert_eq!(diamond.variable_power_mw, Some(500.0));
+        assert_eq!(
+            recipe_power(&back, diamond, "Build_HadronCollider_C"),
+            500.0
+        );
+        let dark = &back.recipes["Recipe_DarkMatter_C"];
+        assert_eq!(
+            recipe_power(&back, dark, "Build_HadronCollider_C"),
+            1000.0,
+            "recipe average beats the machine estimate"
         );
     }
 }

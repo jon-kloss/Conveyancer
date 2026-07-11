@@ -47,7 +47,7 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
         durationS: recipe.durationS,
         inputs: recipe.ingredients,
         outputs: recipe.products,
-        powerMw: gamedata.machines[g.machine]?.powerMw ?? 0,
+        powerMw: recipe.variablePowerMw ?? gamedata.machines[g.machine]?.powerMw ?? 0,
       },
       count: effCount(g),
       clock: effClock(g),

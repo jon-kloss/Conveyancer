@@ -274,6 +274,9 @@ pub fn global_solve(
                 if alts == 1 { "" } else { "s" }
             ),
         );
+        let power_mw = machine
+            .map(|_| gamedata::db::recipe_power(gd, r, &machine_class) * count as f64)
+            .unwrap_or(0.0);
         stages.push(Stage {
             item: item.clone(),
             rate: *rate,
@@ -281,7 +284,7 @@ pub fn global_solve(
             machine: machine_class,
             count,
             clock,
-            power_mw: machine.map(|m| m.power_mw * count as f64).unwrap_or(0.0),
+            power_mw,
         });
     }
 
@@ -883,8 +886,7 @@ fn pick_recipe<'a>(
                 let power = r
                     .produced_in
                     .first()
-                    .and_then(|m| gd.machines.get(m))
-                    .map(|m| m.power_mw)
+                    .map(|m| gamedata::db::recipe_power(gd, r, m))
                     .unwrap_or(0.0);
                 (1.0 / per_min, power, r.alternate)
             };

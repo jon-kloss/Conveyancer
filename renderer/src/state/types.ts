@@ -206,6 +206,8 @@ export interface GameRecipe {
   products: [string, number][];
   producedIn: string[];
   alternate: boolean;
+  /** Average sustained draw override for variable-power machines (absent for fixed-power recipes). */
+  variablePowerMw?: number | null;
 }
 export interface GameMachine { className: string; displayName: string; powerMw: number; kind: string }
 export interface GameBelt { className: string; displayName: string; capacityPerMin: number; tier: number }

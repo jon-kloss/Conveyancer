@@ -743,12 +743,7 @@ impl Session {
         for gid in &factory.groups {
             let g = self.state.groups.get(gid)?;
             let recipe = self.gamedata.recipes.get(&g.recipe)?;
-            let power = self
-                .gamedata
-                .machines
-                .get(&g.machine)
-                .map(|m| m.power_mw)
-                .unwrap_or(0.0);
+            let power = gamedata::db::recipe_power(&self.gamedata, recipe, &g.machine);
             groups.push(GroupSpec {
                 id: g.id.clone(),
                 recipe: RecipeSpec {
