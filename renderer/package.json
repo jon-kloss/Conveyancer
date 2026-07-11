@@ -11,6 +11,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@etothepii/satisfactory-file-parser": "^4.1.1",
     "@fontsource/barlow": "^5.2.5",
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@fontsource/rajdhani": "^5.2.5",

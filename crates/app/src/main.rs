@@ -97,6 +97,21 @@ fn t2_optimize(
 }
 
 #[tauri::command]
+fn import_run(
+    window: tauri::Window,
+    state: State<AppState>,
+    snapshot: app::import::ImportSnapshot,
+) -> Result<app::session::ImportOutcome, SessionError> {
+    let outcome = state.0.lock().unwrap().import_save(snapshot)?;
+    if let app::session::ImportOutcome::Imported { response, .. }
+    | app::session::ImportOutcome::Drift { response, .. } = &outcome
+    {
+        let _ = window.emit("state://patch", response);
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
 fn proposal_accept(
     window: tauri::Window,
     state: State<AppState>,
@@ -140,6 +155,7 @@ fn main() {
             wizard_progress,
             wizard_cancel,
             t2_optimize,
+            import_run,
             proposal_accept,
             proposal_eval
         ])

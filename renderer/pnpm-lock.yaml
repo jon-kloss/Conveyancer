@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@etothepii/satisfactory-file-parser':
+        specifier: ^4.1.1
+        version: 4.1.1
       '@fontsource/barlow':
         specifier: ^5.2.5
         version: 5.2.8
@@ -301,6 +304,9 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@etothepii/satisfactory-file-parser@4.1.1':
+    resolution: {integrity: sha512-5xVYuM5aL8hZ2RZk8FfvUnUL6dt6GkUAFgFV66g+z1mGliUsgwwUJiKSqhJK3APwq6dLB3cmlD8W7n/qYpTySA==}
 
   '@fontsource/barlow@5.2.8':
     resolution: {integrity: sha512-iuFOnY4OI2cd1STrJ3NdJNzWjhcwv6JarmqfdoZzAmz9g0jTVjES86MNbuBxqVR3ydbTEjo4opEl24GXScRM7w==}
@@ -683,6 +689,9 @@ packages:
     resolution: {integrity: sha512-wRNIrw4DmVLKQlbgOMdkMx27Wrpzes2hh5Jtbi2bjPd+4wJstWIqP5A+lscnqbm0xxmT5Bpg8Lec5ItEBwx6BQ==}
     engines: {node: '>=18'}
 
+  pako@2.2.0:
+    resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
+
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -1024,6 +1033,10 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
+  '@etothepii/satisfactory-file-parser@4.1.1':
+    dependencies:
+      pako: 2.2.0
+
   '@fontsource/barlow@5.2.8': {}
 
   '@fontsource/jetbrains-mono@5.2.8': {}
@@ -1351,6 +1364,8 @@ snapshots:
   nanoid@3.3.15: {}
 
   node-releases@2.0.51: {}
+
+  pako@2.2.0: {}
 
   picocolors@1.1.1: {}
 

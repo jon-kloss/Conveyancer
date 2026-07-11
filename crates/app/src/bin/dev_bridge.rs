@@ -124,6 +124,15 @@ fn main() -> anyhow::Result<()> {
                     }
                     ok(&serde_json::json!({ "proposal": proposal }))
                 }
+                (Method::Post, "/api/import/run") => {
+                    match serde_json::from_str::<app::import::ImportSnapshot>(&body) {
+                        Ok(snapshot) => match s.import_save(snapshot) {
+                            Ok(outcome) => ok(&outcome),
+                            Err(e) => err(422, e),
+                        },
+                        Err(e) => err(400, e),
+                    }
+                }
                 (Method::Post, "/api/proposal/accept") => {
                     let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     match s.accept_proposal(req["id"].as_str().unwrap_or_default()) {

@@ -62,6 +62,10 @@ pub struct ProposalItem {
     /// Item ids that must be included (and accepted first) for this item.
     #[serde(default)]
     pub depends_on: Vec<Id>,
+    /// SaveReimport drift payload (`import::SyncOp`) — accept applies it to
+    /// the ◆ Built layer directly, the one documented exception to ◇-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

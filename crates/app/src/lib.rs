@@ -2,6 +2,7 @@
 //! Both frontends call the exact same `Session` methods; Rust owns canonical
 //! state in every mode (SDD §4 — no state forking).
 
+pub mod import;
 pub mod jobs;
 pub mod session;
 pub mod wizard;

@@ -1195,3 +1195,131 @@ fn priority_switches_derive_shed_thresholds() {
     assert_eq!(resp.derived.circuits.len(), 1);
     assert_eq!(resp.derived.circuits[0].members.len(), 2);
 }
+
+#[test]
+fn rail_routes_compute_throughput_and_respec() {
+    let mut s = Session::in_memory(None).unwrap();
+    let mk = |s: &mut Session, name: &str, x: f64| -> Id {
+        s.edit(vec![Command::CreateFactory {
+            name: name.into(),
+            position: MapPos { x, y: 0.0, z: 0.0 },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+            .clone()
+    };
+    let a = mk(&mut s, "STEEL COAST", 0.0);
+    let b = mk(&mut s, "MOTOR WORKS", 3000.0);
+    let out = s
+        .edit(vec![Command::AddPort {
+            factory: a.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(600.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let inp = s
+        .edit(vec![Command::AddPort {
+            factory: b.clone(),
+            direction: PortDirection::In,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(0.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+
+    // a 3km haul: rail route with the default consist
+    let resp = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Rail {
+                spec: RailSpec::default(),
+            },
+            from: out.clone(),
+            to: inp,
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 3000.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+        }])
+        .unwrap();
+    let route = resp.created[0].clone();
+    assert_eq!(
+        s.state.ports[&out].bound_route.as_deref(),
+        Some(route.as_str()),
+        "rail binds ports like belts"
+    );
+    let dr = &resp.derived.routes[&route];
+    let t = dr.transport.as_ref().expect("math block");
+    // 2 × 3km × 1.12 at 90 km/h + 50s dwell + 15% headway
+    let travel = 2.0 * 3000.0 * 1.12 / (90.0 / 3.6);
+    assert!(
+        (t.round_trip_s - travel).abs() < 1.0,
+        "travel {}",
+        t.round_trip_s
+    );
+    assert!((t.load_unload_s - 50.0).abs() < 1e-9);
+    assert!(
+        (dr.capacity - t.throughput_per_min).abs() < 1e-9,
+        "capacity IS the math"
+    );
+    assert!(
+        t.throughput_per_min > 1000.0,
+        "ingot rail moves serious volume"
+    );
+
+    // respec: +1 consist doubles throughput; belt→rail swap forbidden on power
+    let spec = RailSpec {
+        consists: 2,
+        ..Default::default()
+    };
+    let resp = s
+        .edit(vec![Command::SetRouteSpec {
+            id: route.clone(),
+            kind: RouteKind::Rail { spec },
+        }])
+        .unwrap();
+    let t2 = resp.derived.routes[&route]
+        .transport
+        .as_ref()
+        .unwrap()
+        .clone();
+    assert!((t2.throughput_per_min - 2.0 * t.throughput_per_min).abs() < 1e-6);
+
+    // downgrade to a drone: same binding, new math (batteries line appears)
+    let resp = s
+        .edit(vec![Command::SetRouteSpec {
+            id: route.clone(),
+            kind: RouteKind::Drone {
+                spec: DroneSpec::default(),
+            },
+        }])
+        .unwrap();
+    let t3 = resp.derived.routes[&route]
+        .transport
+        .as_ref()
+        .unwrap()
+        .clone();
+    assert!(t3.batteries_per_min.is_some());
+    // one undo step reverts the respec
+    s.undo().unwrap().unwrap();
+    assert!(matches!(
+        s.state.routes[&route].kind,
+        RouteKind::Rail { .. }
+    ));
+}

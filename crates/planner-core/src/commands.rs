@@ -165,6 +165,12 @@ pub enum Command {
         id: Id,
         tier: u8,
     },
+    /// Swap a cargo route's kind/spec (belt↔rail↔truck↔drone, or edit the
+    /// consists/cars/dwell/headway of the current kind).
+    SetRouteSpec {
+        id: Id,
+        kind: RouteKind,
+    },
     DeleteRoute {
         id: Id,
     },
@@ -246,6 +252,7 @@ impl Command {
             Command::DeleteJunction { .. } => "delete junction",
             Command::AddRoute { .. } => "draw route",
             Command::SetRouteTier { .. } => "set route tier",
+            Command::SetRouteSpec { .. } => "set route spec",
             Command::DeleteRoute { .. } => "delete route",
             Command::SetEdgeTier { .. } => "set belt tier",
             Command::DeleteEdge { .. } => "delete belt",
@@ -886,8 +893,13 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     tx.created.push(r.id.clone());
                     tx.record(state.upsert(Entity::Route(r)));
                 }
-                RouteKind::Belt { tier } => {
-                    valid_tier(*tier)?;
+                RouteKind::Belt { .. }
+                | RouteKind::Rail { .. }
+                | RouteKind::Truck { .. }
+                | RouteKind::Drone { .. } => {
+                    if let RouteKind::Belt { tier } = kind {
+                        valid_tier(*tier)?;
+                    }
                     let src = state
                         .ports
                         .get(from)
@@ -931,12 +943,41 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     tx.record(state.upsert(Entity::Port(src)));
                     tx.record(state.upsert(Entity::Port(dst)));
                 }
-                other => {
+                RouteKind::Pipe { .. } => {
                     return Err(DomainError::Invalid {
-                        message: format!("{other:?} routes arrive in a later phase"),
+                        message: "pipe routes arrive with fluids".into(),
                     });
                 }
             }
+        }
+        Command::SetRouteSpec { id, kind } => {
+            let mut r = state
+                .routes
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            require_planned(r.status, id, "respec")?;
+            // cargo kinds interchange freely (same port binding); power and
+            // pipe have different endpoint semantics — never switch across
+            let cargo = |k: &RouteKind| {
+                matches!(
+                    k,
+                    RouteKind::Belt { .. }
+                        | RouteKind::Rail { .. }
+                        | RouteKind::Truck { .. }
+                        | RouteKind::Drone { .. }
+                )
+            };
+            if !cargo(&r.kind) || !cargo(kind) {
+                return Err(DomainError::Invalid {
+                    message: "only cargo routes (belt/rail/truck/drone) can be re-specced".into(),
+                });
+            }
+            if let RouteKind::Belt { tier } = kind {
+                valid_tier(*tier)?;
+            }
+            r.kind = kind.clone();
+            tx.record(state.upsert(Entity::Route(r)));
         }
         Command::SetRouteTier { id, tier } => {
             let mut r = state
@@ -962,7 +1003,13 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(r.status, id, "delete")?;
             // unbind ports on belt routes
-            if matches!(r.kind, RouteKind::Belt { .. }) {
+            if matches!(
+                r.kind,
+                RouteKind::Belt { .. }
+                    | RouteKind::Rail { .. }
+                    | RouteKind::Truck { .. }
+                    | RouteKind::Drone { .. }
+            ) {
                 for pid in [&r.endpoints.0, &r.endpoints.1] {
                     if let Some(mut p) = state.ports.get(pid).cloned() {
                         if p.bound_route.as_deref() == Some(id.as_str()) {

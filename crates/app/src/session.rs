@@ -91,6 +91,8 @@ pub struct DerivedRoute {
     pub climb_up_m: f64,
     pub climb_down_m: f64,
     pub item: Option<String>,
+    /// Rail/truck/drone math block (A3) — None for belts and power.
+    pub transport: Option<planner_core::transport::TransportMath>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +149,25 @@ pub struct ProposalConsequence {
     pub delta_generation_mw: f64,
     pub machines: u32,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum ImportOutcome {
+    /// First import — the Built layer was written (one undo entry).
+    Imported {
+        response: EditResponse,
+        factories: u32,
+        machines: u32,
+        quarantined: u32,
+    },
+    /// Re-import with drift — review the SaveReimport proposal.
+    Drift {
+        response: EditResponse,
+        proposal: Id,
+    },
+    /// Re-import found the built layer already in sync.
+    InSync,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -347,6 +368,14 @@ impl Session {
         let mut apply_all =
             |state: &mut PlanState, tx: &mut Transaction| -> Result<(), SessionError> {
                 for item in ordered_included(&p) {
+                    // SaveReimport drift items sync the ◆ Built layer directly
+                    // — the one documented exception to accept-creates-◇-only
+                    if let Some(sync) = &item.sync {
+                        let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
+                            .map_err(|e| SessionError::Internal(e.to_string()))?;
+                        crate::import::apply_sync(state, tx, &op, &p.id);
+                        continue;
+                    }
                     for (idx, cmd) in item.commands.iter().enumerate() {
                         let resolved =
                             resolve_aliases(cmd, &symbols).map_err(SessionError::Internal)?;
@@ -411,6 +440,13 @@ impl Session {
         let mut warnings: Vec<String> = Vec::new();
         let mut machines: u32 = 0;
         'items: for item in ordered_included(&p) {
+            if let Some(sync) = &item.sync {
+                if let Ok(op) = serde_json::from_value::<crate::import::SyncOp>(sync.clone()) {
+                    let mut scratch = Transaction::new("eval");
+                    crate::import::apply_sync(&mut self.state, &mut scratch, &op, &p.id);
+                }
+                continue 'items;
+            }
             for (idx, cmd) in item.commands.iter().enumerate() {
                 let resolved = match resolve_aliases(cmd, &symbols) {
                     Ok(c) => c,
@@ -509,6 +545,67 @@ impl Session {
         };
         self.state = saved;
         Ok(consequence)
+    }
+
+    /// Save import (SDD §8). First import writes the ◆ Built layer directly;
+    /// re-imports never write — they diff into a SaveReimport proposal.
+    pub fn import_save(
+        &mut self,
+        snapshot: crate::import::ImportSnapshot,
+    ) -> Result<ImportOutcome, SessionError> {
+        let clusters = crate::import::cluster(&snapshot, &self.gamedata);
+        let has_built = self
+            .state
+            .factories
+            .values()
+            .any(|f| f.status == Status::Built);
+        if !has_built {
+            let import_id = planner_core::entities::new_id();
+            let mut tx = Transaction::new("import save");
+            crate::import::write_built_layer(&mut self.state, &mut tx, &clusters, &import_id);
+            let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
+            let created = tx.created.clone();
+            let entry = self.undo.commit(tx);
+            self.file
+                .commit(&entry, &self.state.meta, self.undo.entries().len())?;
+            return Ok(ImportOutcome::Imported {
+                response: EditResponse {
+                    patches: entry.forward,
+                    derived,
+                    can_undo: self.undo.can_undo(),
+                    can_redo: self.undo.can_redo(),
+                    undo_label: self.undo.undo_label().map(String::from),
+                    created,
+                    plan_hash: self.plan_hash(),
+                },
+                factories: clusters.len() as u32,
+                machines: snapshot.machines.len() as u32,
+                quarantined: snapshot.quarantined.values().sum(),
+            });
+        }
+        // re-import: diff only, never write
+        let items = crate::import::diff_against_built(&self.state, &self.gamedata, &clusters);
+        if items.is_empty() {
+            return Ok(ImportOutcome::InSync);
+        }
+        let proposal = Proposal {
+            id: String::new(),
+            source: planner_core::proposals::ProposalSource::SaveReimport,
+            title: format!("RE-IMPORT {}", snapshot.save_name.to_uppercase()),
+            goal: vec![],
+            status: ProposalStatus::Draft,
+            number: 0,
+            snapshot_time: crate::jobs::now_rfc3339(),
+            input_hash: self.plan_hash(),
+            provenance: "SAVE RE-IMPORT".into(),
+            items,
+        };
+        let response = self.edit(vec![Command::CreateProposal { proposal }])?;
+        let proposal_id = response.created[0].clone();
+        Ok(ImportOutcome::Drift {
+            response,
+            proposal: proposal_id,
+        })
     }
 
     pub fn set_view_state(&mut self, json: &str) -> Result<(), SessionError> {
@@ -671,7 +768,7 @@ impl Session {
     fn empire_order(&self) -> (Vec<Id>, bool) {
         let mut deps: BTreeMap<Id, Vec<Id>> = BTreeMap::new(); // factory -> upstream factories
         for r in self.state.routes.values() {
-            if let RouteKind::Belt { .. } = r.kind {
+            if !matches!(r.kind, RouteKind::Power | RouteKind::Pipe { .. }) {
                 let (Some(src), Some(dst)) = (
                     self.state.ports.get(&r.endpoints.0),
                     self.state.ports.get(&r.endpoints.1),
@@ -820,11 +917,17 @@ impl Session {
                 let Some(route) = self.state.routes.get(rid) else {
                     continue;
                 };
-                let RouteKind::Belt { tier } = route.kind else {
+                let item = route.manifest.first().map(|(i, _)| i.as_str());
+                let Some((cap, _)) = cargo_capacity(
+                    &self.gamedata,
+                    &route.kind,
+                    polyline_length(&route.path),
+                    item,
+                ) else {
                     continue;
                 };
                 let out_rate = result.ports.get(pid).copied().unwrap_or(0.0);
-                let supply = out_rate.min(belt_capacity(tier));
+                let supply = out_rate.min(cap);
                 supplies.insert(route.endpoints.1.clone(), supply);
                 route_supply.insert(rid.clone(), supply);
             }
@@ -839,10 +942,15 @@ impl Session {
         let route_list: Vec<planner_core::entities::Route> =
             self.state.routes.values().cloned().collect();
         for r in &route_list {
-            let RouteKind::Belt { tier } = r.kind else {
+            let item_class = r.manifest.first().map(|(i, _)| i.as_str());
+            let Some((capacity, transport)) = cargo_capacity(
+                &self.gamedata,
+                &r.kind,
+                polyline_length(&r.path),
+                item_class,
+            ) else {
                 continue;
             };
-            let capacity = belt_capacity(tier);
             let dst_port = &r.endpoints.1;
             let dst_factory = self.state.ports.get(dst_port).map(|p| p.factory.clone());
             let flow = dst_factory
@@ -864,6 +972,7 @@ impl Session {
                     climb_up_m: polyline_climb(&r.path).0,
                     climb_down_m: polyline_climb(&r.path).1,
                     item,
+                    transport,
                 },
             );
             // Deficit: the downstream factory's own target is clamped by this port.
@@ -1177,6 +1286,48 @@ fn ordered_included(p: &Proposal) -> Vec<&ProposalItem> {
         }
     }
     out
+}
+
+/// Stack size for transport math: SS_* → items per inventory slot.
+fn stack_size_of(gd: &GameData, item: Option<&str>) -> f64 {
+    let Some(item) = item.and_then(|i| gd.items.get(i)) else {
+        return 100.0;
+    };
+    match item.stack_size.as_str() {
+        "SS_ONE" => 1.0,
+        "SS_SMALL" => 50.0,
+        "SS_MEDIUM" => 100.0,
+        "SS_BIG" | "SS_LARGE" => 200.0,
+        "SS_HUGE" => 500.0,
+        _ => 100.0,
+    }
+}
+
+/// Capacity + optional math block for a cargo route. None for power/pipe.
+fn cargo_capacity(
+    gd: &GameData,
+    kind: &RouteKind,
+    path_len_m: f64,
+    item: Option<&str>,
+) -> Option<(f64, Option<planner_core::transport::TransportMath>)> {
+    use planner_core::transport::*;
+    let stack = stack_size_of(gd, item);
+    match kind {
+        RouteKind::Belt { tier } => Some((belt_capacity(*tier), None)),
+        RouteKind::Rail { spec } => {
+            let m = rail_math(path_len_m, spec, stack);
+            Some((m.throughput_per_min, Some(m)))
+        }
+        RouteKind::Truck { spec } => {
+            let m = truck_math(path_len_m, spec, stack);
+            Some((m.throughput_per_min, Some(m)))
+        }
+        RouteKind::Drone { spec } => {
+            let m = drone_math(path_len_m, spec, stack);
+            Some((m.throughput_per_min, Some(m)))
+        }
+        RouteKind::Pipe { .. } | RouteKind::Power => None,
+    }
 }
 
 fn polyline_length(path: &[MapPos]) -> f64 {

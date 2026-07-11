@@ -229,6 +229,29 @@ pub struct StationSpec {
     pub dwell_s: f64,
 }
 
+impl Default for RailSpec {
+    fn default() -> Self {
+        Self {
+            consists: 1,
+            locos: 1,
+            cars: 4,
+            stations: vec![
+                StationSpec {
+                    name: "LOAD".into(),
+                    platforms: 1,
+                    dwell_s: 25.0,
+                },
+                StationSpec {
+                    name: "UNLOAD".into(),
+                    platforms: 1,
+                    dwell_s: 25.0,
+                },
+            ],
+            headway_penalty: 0.15,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TruckSpec {
@@ -240,6 +263,23 @@ pub struct TruckSpec {
 #[serde(rename_all = "camelCase")]
 pub struct DroneSpec {
     pub batteries_per_trip: f64,
+}
+
+impl Default for TruckSpec {
+    fn default() -> Self {
+        Self {
+            trucks: 1,
+            fuel_item: "Desc_Coal_C".into(),
+        }
+    }
+}
+
+impl Default for DroneSpec {
+    fn default() -> Self {
+        Self {
+            batteries_per_trip: 4.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

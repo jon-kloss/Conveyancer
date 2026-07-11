@@ -6,6 +6,7 @@ pub mod entities;
 pub mod patch;
 pub mod proposals;
 pub mod state;
+pub mod transport;
 pub mod undo;
 
 pub use entities::*;
