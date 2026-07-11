@@ -1938,3 +1938,234 @@ fn variable_power_recipe_average_drives_group_power() {
         df.total_power_mw
     );
 }
+
+// ---- M9: persist failure can never diverge memory from disk ----
+// The fault seam (`s.file.faults`, persist's `fault-injection` feature) fails
+// the next N commits/checkpoints before their SQLite transaction opens —
+// observationally identical to a rolled-back mid-write failure.
+
+fn create_named_factory(s: &mut Session, name: &str) -> Id {
+    s.edit(vec![Command::CreateFactory {
+        name: name.into(),
+        position: MapPos {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        region: "GRASS FIELDS".into(),
+    }])
+    .unwrap()
+    .created[0]
+        .clone()
+}
+
+/// Disk and memory agree entity-for-entity right now.
+fn assert_disk_matches_memory(s: &Session) {
+    let (disk, entries, cursor) = s.file.load().unwrap();
+    assert_eq!(disk.project(), s.state.project(), "disk == memory");
+    assert_eq!(cursor, s.undo.entries().len(), "cursor == applied depth");
+    assert!(entries.len() >= cursor);
+}
+
+#[test]
+fn edit_persist_failure_leaves_no_trace() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.ficsit");
+    let fid;
+    {
+        let mut s = Session::open(&path, None, "fixture").unwrap();
+        fid = create_named_factory(&mut s, "NORTHERN FORGE");
+        let hash_before = s.plan_hash();
+        let depth_before = s.undo.entries().len();
+        let label_before = s.undo.undo_label().map(String::from);
+
+        // E1 hits a transient persist failure: the error surfaces and the
+        // edit leaves no trace anywhere.
+        s.file.faults.fail_commits = 1;
+        let err = s.edit(vec![Command::RenameFactory {
+            id: fid.clone(),
+            name: "GHOST".into(),
+        }]);
+        assert!(err.is_err(), "persist failure must surface");
+        assert_eq!(s.state.factories[&fid].name, "NORTHERN FORGE");
+        assert_eq!(s.plan_hash(), hash_before, "plan hash unchanged");
+        assert_eq!(s.undo.entries().len(), depth_before, "undo depth unchanged");
+        assert_eq!(s.undo.undo_label().map(String::from), label_before);
+        assert_disk_matches_memory(&s);
+
+        // E2 (the fault was one-shot) succeeds on top of the clean state.
+        s.edit(vec![Command::RenameFactory {
+            id: fid.clone(),
+            name: "IRON WORKS".into(),
+        }])
+        .unwrap();
+        assert_eq!(s.state.factories[&fid].name, "IRON WORKS");
+        assert_disk_matches_memory(&s);
+    }
+    // Reopen: E2 present, E1 absent, and undo applies cleanly — the M9
+    // silent-loss + journal-skew scenario is impossible.
+    let mut s = Session::open(&path, None, "fixture").unwrap();
+    assert_eq!(s.state.factories[&fid].name, "IRON WORKS");
+    assert_eq!(s.undo.entries().len(), 2, "create + E2, no ghost entry");
+    let r = s.undo().unwrap().unwrap();
+    assert!(!r.patches.is_empty());
+    assert_eq!(s.state.factories[&fid].name, "NORTHERN FORGE");
+}
+
+#[test]
+fn edit_persist_failure_preserves_redo_tail() {
+    let mut s = Session::in_memory(None).unwrap();
+    let fid = create_named_factory(&mut s, "BASE");
+    s.edit(vec![Command::RenameFactory {
+        id: fid.clone(),
+        name: "SECOND".into(),
+    }])
+    .unwrap();
+    s.undo().unwrap().unwrap();
+    assert!(s.undo.can_redo(), "redo tail exists");
+
+    // A failed edit must not truncate the redo tail (commit-then-rollback
+    // would have destroyed it before the persist error).
+    s.file.faults.fail_commits = 1;
+    assert!(s
+        .edit(vec![Command::RenameFactory {
+            id: fid.clone(),
+            name: "THIRD".into(),
+        }])
+        .is_err());
+    assert!(s.undo.can_redo(), "redo tail survives in memory");
+    let (_, entries, cursor) = s.file.load().unwrap();
+    assert_eq!(entries.len(), 2, "redo tail survives on disk");
+    assert_eq!(cursor, 1);
+    let r = s.redo().unwrap().unwrap();
+    assert!(!r.patches.is_empty());
+    assert_eq!(s.state.factories[&fid].name, "SECOND");
+}
+
+#[test]
+fn undo_redo_persist_failure_restores_position() {
+    let mut s = Session::in_memory(None).unwrap();
+    let fid = create_named_factory(&mut s, "FIRST");
+    s.edit(vec![Command::RenameFactory {
+        id: fid.clone(),
+        name: "SECOND".into(),
+    }])
+    .unwrap();
+
+    // undo: checkpoint fails → the just-undone entry is re-applied.
+    s.file.faults.fail_checkpoints = 1;
+    assert!(s.undo().is_err(), "failed checkpoint must surface");
+    assert_eq!(s.state.factories[&fid].name, "SECOND", "position restored");
+    assert!(!s.undo.can_redo(), "cursor restored");
+    assert_eq!(s.undo.entries().len(), 2);
+    assert_disk_matches_memory(&s);
+
+    // The fault was one-shot: the same undo now succeeds.
+    s.undo().unwrap().unwrap();
+    assert_eq!(s.state.factories[&fid].name, "FIRST");
+    assert_disk_matches_memory(&s);
+
+    // redo mirror: checkpoint fails → the just-redone entry is un-applied.
+    s.file.faults.fail_checkpoints = 1;
+    assert!(s.redo().is_err());
+    assert_eq!(s.state.factories[&fid].name, "FIRST", "position restored");
+    assert!(s.undo.can_redo());
+    assert_disk_matches_memory(&s);
+
+    s.redo().unwrap().unwrap();
+    assert_eq!(s.state.factories[&fid].name, "SECOND");
+    assert_disk_matches_memory(&s);
+}
+
+#[test]
+fn accept_proposal_persist_failure_rolls_back() {
+    use planner_core::proposals::*;
+    let mut s = Session::in_memory(None).unwrap();
+    let proposal = Proposal {
+        id: String::new(),
+        source: ProposalSource::GlobalSolver,
+        title: "TEST SITE".into(),
+        goal: vec![],
+        status: ProposalStatus::Draft,
+        number: 0,
+        snapshot_time: "2026-01-01T00:00:00Z".into(),
+        input_hash: s.plan_hash(),
+        provenance: "TEST".into(),
+        items: vec![ProposalItem {
+            id: "item-1".into(),
+            kind: ProposalItemKind::Create,
+            included: true,
+            label: "+ PROPOSED SITE — NEW".into(),
+            detail: String::new(),
+            impact: String::new(),
+            commands: vec![Command::CreateFactory {
+                name: "PROPOSED SITE".into(),
+                position: MapPos {
+                    x: 100.0,
+                    y: 100.0,
+                    z: 0.0,
+                },
+                region: "GRASS FIELDS".into(),
+            }],
+            aliases: vec![None],
+            depends_on: vec![],
+            sync: None,
+        }],
+    };
+    let pid = s
+        .edit(vec![Command::CreateProposal { proposal }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let factories_before = s.state.factories.len();
+
+    s.file.faults.fail_commits = 1;
+    assert!(s.accept_proposal(&pid).is_err());
+    assert_eq!(
+        s.state.proposals[&pid].status,
+        ProposalStatus::Draft,
+        "proposal still Draft after rollback"
+    );
+    assert_eq!(
+        s.state.factories.len(),
+        factories_before,
+        "no materialized entities"
+    );
+    assert_disk_matches_memory(&s);
+
+    // A clean accept then succeeds.
+    s.accept_proposal(&pid).unwrap();
+    assert_eq!(s.state.proposals[&pid].status, ProposalStatus::Accepted);
+    assert_eq!(s.state.factories.len(), factories_before + 1);
+    assert_disk_matches_memory(&s);
+}
+
+#[test]
+fn solver_write_backs_roll_back_with_failed_edit() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_fid, out_port, smelt) = build_modular_frame_factory(&mut s);
+    assert_eq!(s.state.groups[&smelt].count, 1);
+    let rate_before = s.state.ports[&out_port].rate;
+
+    // The failing edit's tx also carries solver write-backs (counts/clocks,
+    // route manifests) — they must ride the same rollback.
+    s.file.faults.fail_commits = 1;
+    assert!(s
+        .edit(vec![Command::SetPortRate {
+            id: out_port.clone(),
+            rate: 2.0,
+        }])
+        .is_err());
+    assert_eq!(s.state.groups[&smelt].count, 1, "write-back reverted");
+    assert!((s.state.ports[&out_port].rate - rate_before).abs() < 1e-9);
+    assert_disk_matches_memory(&s);
+
+    // Retried, the same edit lands write-backs normally.
+    s.edit(vec![Command::SetPortRate {
+        id: out_port,
+        rate: 2.0,
+    }])
+    .unwrap();
+    assert_eq!(s.state.groups[&smelt].count, 2);
+    assert_disk_matches_memory(&s);
+}

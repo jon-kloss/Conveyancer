@@ -1,6 +1,7 @@
 //! One open plan file + its canonical state, undo log, gamedata, and solver
 //! orchestration. Every mutation: apply commands → T1 re-solve → fold solve
-//! write-backs into the same transaction → commit (one undo entry) → persist.
+//! write-backs into the same transaction → persist → commit (one undo entry).
+//! Disk commits first — see [`Session::commit_mutation`] for the invariant.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -327,13 +328,44 @@ impl Session {
         // manifests) fold into the same undo entry as the causing edit.
         let trigger = Self::solve_trigger(&cmds);
         let derived = self.empire_solve(&trigger, Some(&mut tx));
-        self.advise(&derived);
+        self.commit_mutation(tx, derived)
+    }
 
+    /// The ONLY path from an applied `Transaction` to a durable undo entry.
+    ///
+    /// Invariant: **disk commits first; the in-memory undo log advances only
+    /// after the plan file has durably committed the same entry.** A persist
+    /// failure therefore can never diverge memory from disk: the SQLite
+    /// transaction rolled back (disk holds the pre-edit state), so we roll
+    /// the applied transaction back out of canonical state and surface the
+    /// error — renderer, memory, and disk all agree on the pre-edit state,
+    /// and the redo tail (memory and disk) is untouched. Advisor cards are
+    /// gated and persisted only after the commit succeeds, so a rolled-back
+    /// edit never leaves phantom cards.
+    fn commit_mutation(
+        &mut self,
+        tx: Transaction,
+        derived: Derived,
+    ) -> Result<EditResponse, SessionError> {
         let created = tx.created.clone();
-        let entry = self.undo.commit(tx);
-        self.file
-            .commit(&entry, &self.state.meta, self.undo.entries().len())?;
-
+        let entry = UndoLog::stage(tx);
+        // `+ 1`: the log hasn't advanced yet, so the applied count after this
+        // commit is the current depth plus this entry. PlanFile::commit keeps
+        // `applied - 1` prior journal rows (its redo-tail DELETE) — exactly
+        // the entries applied before this one, same as the pre-staging code.
+        if let Err(e) = self
+            .file
+            .commit(&entry, &self.state.meta, self.undo.entries().len() + 1)
+        {
+            // entry.inverse is already in application order (stage reversed it).
+            if let Err(m) = self.state.apply_batch(&entry.inverse) {
+                // Compensation failed — self-heal from disk, which is intact.
+                self.rehydrate_from_disk(&m)?;
+            }
+            return Err(e.into());
+        }
+        self.undo.push(entry.clone());
+        self.advise(&derived);
         Ok(EditResponse {
             patches: entry.forward,
             derived,
@@ -346,12 +378,34 @@ impl Session {
         })
     }
 
+    /// Last-resort recovery when in-memory rollback itself fails: reload
+    /// canonical state + undo journal from the plan file, which is always a
+    /// valid restore point (every durable write is one atomic transaction).
+    fn rehydrate_from_disk(&mut self, cause: &str) -> Result<(), SessionError> {
+        let (state, entries, cursor) = self.file.load().map_err(|e| {
+            SessionError::Internal(format!(
+                "rollback after persist failure failed ({cause}) and reload failed: {e}"
+            ))
+        })?;
+        self.state = state;
+        self.undo = UndoLog::hydrate_with_cursor(entries, cursor);
+        Ok(())
+    }
+
     pub fn undo(&mut self) -> Result<Option<EditResponse>, SessionError> {
         let Some(batch) = self.undo.undo(&mut self.state) else {
             return Ok(None);
         };
-        self.file
-            .checkpoint(&batch, &self.state.meta, self.applied_count())?;
+        if let Err(e) = self
+            .file
+            .checkpoint(&batch, &self.state.meta, self.applied_count())
+        {
+            // Disk untouched (the checkpoint transaction rolled back) —
+            // compensate with the opposite move: re-applying the just-undone
+            // entry restores state and cursor in one call.
+            let _ = self.undo.redo(&mut self.state);
+            return Err(e.into());
+        }
         Ok(Some(self.nav_response(batch)))
     }
 
@@ -359,8 +413,14 @@ impl Session {
         let Some(batch) = self.undo.redo(&mut self.state) else {
             return Ok(None);
         };
-        self.file
-            .checkpoint(&batch, &self.state.meta, self.applied_count())?;
+        if let Err(e) = self
+            .file
+            .checkpoint(&batch, &self.state.meta, self.applied_count())
+        {
+            // Mirror of undo(): un-apply the just-redone entry.
+            let _ = self.undo.undo(&mut self.state);
+            return Err(e.into());
+        }
         Ok(Some(self.nav_response(batch)))
     }
 
@@ -435,21 +495,7 @@ impl Session {
             return Err(e);
         }
         let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
-        self.advise(&derived);
-        let created = tx.created.clone();
-        let entry = self.undo.commit(tx);
-        self.file
-            .commit(&entry, &self.state.meta, self.undo.entries().len())?;
-        Ok(EditResponse {
-            patches: entry.forward,
-            derived,
-            can_undo: self.undo.can_undo(),
-            can_redo: self.undo.can_redo(),
-            undo_label: self.undo.undo_label().map(String::from),
-            created,
-            plan_hash: self.plan_hash(),
-            advisor: self.advisor.feed(self.ai_key.is_some()),
-        })
+        self.commit_mutation(tx, derived)
     }
 
     /// Live consequence of the CURRENT checkbox state (mock 3a partial
@@ -603,22 +649,9 @@ impl Session {
                 &self.gamedata,
             );
             let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
-            self.advise(&derived);
-            let created = tx.created.clone();
-            let entry = self.undo.commit(tx);
-            self.file
-                .commit(&entry, &self.state.meta, self.undo.entries().len())?;
+            let response = self.commit_mutation(tx, derived)?;
             return Ok(ImportOutcome::Imported {
-                response: EditResponse {
-                    patches: entry.forward,
-                    derived,
-                    can_undo: self.undo.can_undo(),
-                    can_redo: self.undo.can_redo(),
-                    undo_label: self.undo.undo_label().map(String::from),
-                    created,
-                    plan_hash: self.plan_hash(),
-                    advisor: self.advisor.feed(self.ai_key.is_some()),
-                },
+                response,
                 factories: clusters.len() as u32,
                 machines: snapshot.machines.len() as u32,
                 quarantined: snapshot.quarantined.values().sum(),

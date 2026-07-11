@@ -59,19 +59,32 @@ impl UndoLog {
         &self.entries[..self.cursor]
     }
 
-    /// Commit an open transaction: truncate the redo tail and append.
+    /// Build the entry a commit WOULD append, without mutating the log.
     /// Inverse ops are stored in reverse application order, ready to apply.
-    pub fn commit(&mut self, tx: Transaction) -> UndoEntry {
+    /// Callers that persist entries durably should stage first, persist, and
+    /// only `push` once the entry is safely on disk.
+    pub fn stage(tx: Transaction) -> UndoEntry {
         let mut inverse = tx.inverse;
         inverse.reverse();
-        let entry = UndoEntry {
+        UndoEntry {
             label: tx.label,
             forward: tx.forward,
             inverse,
-        };
+        }
+    }
+
+    /// Append a staged entry: truncate the redo tail, push, advance the cursor.
+    pub fn push(&mut self, entry: UndoEntry) {
         self.entries.truncate(self.cursor);
-        self.entries.push(entry.clone());
+        self.entries.push(entry);
         self.cursor = self.entries.len();
+    }
+
+    /// Commit an open transaction: truncate the redo tail and append.
+    /// Equivalent to `stage` + `push`.
+    pub fn commit(&mut self, tx: Transaction) -> UndoEntry {
+        let entry = Self::stage(tx);
+        self.push(entry.clone());
         entry
     }
 
@@ -157,6 +170,61 @@ mod tests {
         log.redo(&mut state).unwrap();
         assert_eq!(state.factories[&fid].name, "IRON WORKS");
         assert!(!log.can_redo());
+    }
+
+    #[test]
+    fn stage_then_push_equals_commit() {
+        // Two logs fed identical transactions: one via commit, one via
+        // stage+push. Entries, cursor behavior, and undo/redo must agree.
+        let mut state_a = PlanState::default();
+        let mut log_a = UndoLog::new();
+        let mut log_b = UndoLog::new();
+        let cmd = Command::CreateFactory {
+            name: "PARITY".into(),
+            position: MapPos {
+                x: 1.0,
+                y: 2.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        };
+        // One applied transaction feeds both paths (ids are fresh ULIDs, so
+        // applying the command twice would never compare equal).
+        let tx = apply(&mut state_a, &cmd).unwrap();
+        let mut state_b = state_a.clone();
+        let entry_a = log_a.commit(tx.clone());
+        let entry_b = UndoLog::stage(tx);
+        // Staging alone never mutates the log.
+        assert!(!log_b.can_undo());
+        assert_eq!(log_b.entries().len(), 0);
+        log_b.push(entry_b.clone());
+        assert_eq!(entry_a.label, entry_b.label);
+        assert_eq!(entry_a.forward, entry_b.forward);
+        assert_eq!(entry_a.inverse, entry_b.inverse);
+        assert_eq!(log_a.entries().len(), log_b.entries().len());
+        assert_eq!(log_a.can_undo(), log_b.can_undo());
+        assert_eq!(log_a.can_redo(), log_b.can_redo());
+        // Push truncates a redo tail exactly like commit does.
+        log_a.undo(&mut state_a).unwrap();
+        log_b.undo(&mut state_b).unwrap();
+        assert!(log_a.can_redo() && log_b.can_redo());
+        let cmd2 = Command::CreateFactory {
+            name: "TAIL".into(),
+            position: MapPos {
+                x: 3.0,
+                y: 4.0,
+                z: 0.0,
+            },
+            region: "DUNE DESERT".into(),
+        };
+        let tx_a = apply(&mut state_a, &cmd2).unwrap();
+        let tx_b = apply(&mut state_b, &cmd2).unwrap();
+        log_a.commit(tx_a);
+        log_b.push(UndoLog::stage(tx_b));
+        assert!(!log_a.can_redo());
+        assert!(!log_b.can_redo());
+        assert_eq!(log_a.entries().len(), 1);
+        assert_eq!(log_b.entries().len(), 1);
     }
 
     #[test]
