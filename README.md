@@ -76,12 +76,13 @@ factory (N), run the wizard (P), or import a save (S). The plan persists to
 
 ### Windows: download the exe
 
-Every push to `main` (and the CI workflow's watched branches) runs the
-`windows-build` action, which uploads a portable **FICSIT-Planner.exe** —
-grab it from the run's Artifacts on GitHub and double-click. The renderer is
-embedded in the binary; the only runtime dependency is Microsoft's WebView2
-(preinstalled on Windows 10/11). Pushing a `v*` tag also publishes it as a
-GitHub Release. The plan file lives in `%APPDATA%\dev.ficsit.planner\`.
+Every merge to `main` publishes a portable **FICSIT-Planner.exe** as a GitHub
+Release (auto-tagged `v0.1.<build#>`) — grab it from the repo's Releases page
+and double-click. Branch pushes upload the same exe as a run artifact instead.
+The renderer is embedded in the binary; the only runtime dependency is
+Microsoft's WebView2 (preinstalled on Windows 10/11). Pushing a `v*` tag by
+hand releases under that exact version. The plan file lives in
+`%APPDATA%\dev.ficsit.planner\`.
 
 ### The desktop app (from source)
 
