@@ -10,7 +10,7 @@ import WizardModal from "./wizard/WizardModal";
 import ProposalReview from "./proposal/ProposalReview";
 import AdvisorPanel from "./advisor/AdvisorPanel";
 import Onboarding from "./shell/Onboarding";
-import { useStore } from "./state/store";
+import { useStore, errText } from "./state/store";
 import "./shell/shell.css";
 
 export default function App() {
@@ -29,6 +29,18 @@ export default function App() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  // Backstop: a rejection that escaped every local handler still lands in
+  // the status-bar chip instead of dying silently in the console.
+  useEffect(() => {
+    const onRejection = (e: PromiseRejectionEvent) => {
+      console.error(e.reason);
+      useStore.getState().reportCmdError(errText(e.reason));
+      e.preventDefault();
+    };
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => window.removeEventListener("unhandledrejection", onRejection);
+  }, []);
 
   // Global keys: ⌘Z / ⌘⇧Z include solve-induced changes by construction.
   useEffect(() => {

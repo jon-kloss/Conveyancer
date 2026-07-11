@@ -98,6 +98,11 @@ export default function WizardModal() {
         if (outcome.outcome === "proposal") {
           // store the draft through the ordinary command path, then review it
           const created = await dispatch([{ type: "create_proposal", proposal: outcome.proposal }]);
+          if (!created) {
+            // refusal is in the status bar; back to the goal form, wizard open
+            setStep(1);
+            return;
+          }
           setWizard({ open: false });
           if (created[0]) setReviewing(created[0]);
         } else if (outcome.outcome === "infeasible") {

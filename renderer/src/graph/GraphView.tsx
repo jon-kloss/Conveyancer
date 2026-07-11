@@ -18,7 +18,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useStore, solveChip } from "../state/store";
+import { useStore, solveChip, errText } from "../state/store";
 import type { Command, DerivedFactory, Id } from "../state/types";
 import MachineGroupNode, { type GroupNodeData } from "./MachineGroupNode";
 import BoundaryPortNode, { type PortNodeData } from "./BoundaryPortNode";
@@ -66,10 +66,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         return;
       }
       const created = await dispatch([{ type: "create_proposal", proposal }]);
-      if (created[0]) {
+      const id = created?.[0];
+      if (id) {
         setView({ mode: "map" });
-        setReviewing(created[0]);
+        setReviewing(id);
       }
+    } catch (e) {
+      useStore.getState().reportCmdError(errText(e));
     } finally {
       setT2Busy(false);
     }
@@ -154,8 +157,8 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const commitArrange = useCallback(
     (cmds: Command[]) => {
       if (cmds.length === 0) return;
-      void dispatch(cmds).then(() => {
-        window.setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
+      void dispatch(cmds).then((r) => {
+        if (r) window.setTimeout(() => void fitView({ padding: 0.15, duration: 300 }), 60);
       });
     },
     [dispatch, fitView],
@@ -502,11 +505,24 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       } else if (e.key === "Backspace" || e.key === "Delete") {
         const sel = useStore.getState().selection;
         if (!sel) return;
-        if (sel.kind === "group") void dispatch([{ type: "delete_group", id: sel.id }]);
-        else if (sel.kind === "edge") void dispatch([{ type: "delete_edge", id: sel.id }]);
-        else if (sel.kind === "port") void dispatch([{ type: "delete_port", id: sel.id }]);
-        else if (sel.kind === "junction") void dispatch([{ type: "delete_junction", id: sel.id }]);
-        setSelection(null);
+        const del: Command[] | null =
+          sel.kind === "group"
+            ? [{ type: "delete_group", id: sel.id }]
+            : sel.kind === "edge"
+              ? [{ type: "delete_edge", id: sel.id }]
+              : sel.kind === "port"
+                ? [{ type: "delete_port", id: sel.id }]
+                : sel.kind === "junction"
+                  ? [{ type: "delete_junction", id: sel.id }]
+                  : null;
+        if (!del) {
+          setSelection(null);
+          return;
+        }
+        // keep the selection when the backend refuses (e.g. ◆ built entities)
+        void dispatch(del).then((r) => {
+          if (r) setSelection(null);
+        });
       } else if (e.key === "r" || e.key === "R") {
         setStripOpen((o) => !o);
       } else if (e.key === "f" || e.key === "F") {

@@ -3,7 +3,7 @@
 // action through existing review surfaces — the advisor never edits the plan.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useStore } from "../state/store";
+import { useStore, errText } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtRate } from "../lib/format";
 import type { AdvisorCard, ChatReply, ChatScope, ContextSnapshot } from "../state/types";
@@ -44,7 +44,12 @@ export default function AdvisorPanel() {
         </span>
         <button
           className={`chip ${advisor.paused ? "" : "ambient-on"}`}
-          onClick={() => void backend.advisorPause(!advisor.paused).then(useStore.getState().setAdvisor)}
+          onClick={() =>
+            void backend
+              .advisorPause(!advisor.paused)
+              .then(useStore.getState().setAdvisor)
+              .catch((e) => useStore.getState().reportCmdError(errText(e)))
+          }
           data-testid="advisor-pause"
           title="Pause silences the ambient rules"
         >
@@ -138,7 +143,12 @@ function Feed({ cards, muted }: { cards: AdvisorCard[]; muted: string[] }) {
               )}
               <button
                 className="chip"
-                onClick={() => void backend.advisorDismiss(c.id).then(setAdvisor)}
+                onClick={() =>
+                  void backend
+                    .advisorDismiss(c.id)
+                    .then(setAdvisor)
+                    .catch((e) => useStore.getState().reportCmdError(errText(e)))
+                }
                 data-testid="card-dismiss"
                 title="Dismiss mutes this rule — it stops telling you about this"
               >
@@ -160,7 +170,12 @@ function Feed({ cards, muted }: { cards: AdvisorCard[]; muted: string[] }) {
             <button
               key={rule}
               className="chip"
-              onClick={() => void backend.advisorUnmute(rule).then(setAdvisor)}
+              onClick={() =>
+                void backend
+                  .advisorUnmute(rule)
+                  .then(setAdvisor)
+                  .catch((e) => useStore.getState().reportCmdError(errText(e)))
+              }
               data-testid={`unmute-${rule}`}
             >
               {rule} ×
@@ -224,6 +239,8 @@ function Chat() {
       setMsgs((m) => [...m, { from: "engine", text: reply.reply, reply }]);
       if (reply.proposal) await hydrate(); // the drafted proposal is plan state
       requestAnimationFrame(() => logRef.current?.scrollTo(0, 1e6));
+    } catch (e) {
+      useStore.getState().reportCmdError(errText(e));
     } finally {
       setBusy(false);
     }

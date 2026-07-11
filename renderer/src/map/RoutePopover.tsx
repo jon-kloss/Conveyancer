@@ -102,43 +102,51 @@ export default function RoutePopover({
     const src = plan.factories[fromFactory]!;
     const dst = plan.factories[toFactory]!;
     const path = [src.position, dst.position];
-    if (c.power) {
-      const created = await dispatch([
-        { type: "add_route", kind: { kind: "power" }, from: fromFactory, to: toFactory, path },
-      ]);
-      if (created[0]) setSelection({ kind: "route", id: created[0] });
-      onClose();
-      return;
-    }
-    if (c.inPort) {
-      const created = await dispatch([
-        { type: "add_route", kind: kindFor(), from: c.outPort, to: c.inPort, path },
-      ]);
-      if (created[0]) setSelection({ kind: "route", id: created[0] });
-    } else {
-      // create the IN port, then bind — two commands, one undo step
-      const inCount = dst.ports.filter((id) => plan.ports[id]?.direction === "in").length;
-      const cmds: Command[] = [
-        {
-          type: "add_port",
-          factory: toFactory,
-          direction: "in",
-          item: c.item,
-          rate: 0,
-          rateCeiling: null,
-          graphPos: { x: 0, y: 80 + inCount * 128 },
-        },
-      ];
-      const created = await dispatch(cmds);
-      const newPort = created[0];
-      if (newPort) {
-        const routeIds = await dispatch([
-          { type: "add_route", kind: kindFor(), from: c.outPort, to: newPort, path },
+    // a refused dispatch resolves null (surfaced in the status bar); the
+    // finally keeps the popover from sticking open no matter what happens
+    try {
+      if (c.power) {
+        const created = await dispatch([
+          { type: "add_route", kind: { kind: "power" }, from: fromFactory, to: toFactory, path },
         ]);
-        if (routeIds[0]) setSelection({ kind: "route", id: routeIds[0] });
+        const id = created?.[0];
+        if (id) setSelection({ kind: "route", id });
+        return;
       }
+      if (c.inPort) {
+        const created = await dispatch([
+          { type: "add_route", kind: kindFor(), from: c.outPort, to: c.inPort, path },
+        ]);
+        const id = created?.[0];
+        if (id) setSelection({ kind: "route", id });
+      } else {
+        // create the IN port, then bind — two commands, one undo step
+        const inCount = dst.ports.filter((id) => plan.ports[id]?.direction === "in").length;
+        const cmds: Command[] = [
+          {
+            type: "add_port",
+            factory: toFactory,
+            direction: "in",
+            item: c.item,
+            rate: 0,
+            rateCeiling: null,
+            graphPos: { x: 0, y: 80 + inCount * 128 },
+          },
+        ];
+        const created = await dispatch(cmds);
+        const newPort = created?.[0];
+        // a refused add_port must not attempt the add_route
+        if (newPort) {
+          const routeIds = await dispatch([
+            { type: "add_route", kind: kindFor(), from: c.outPort, to: newPort, path },
+          ]);
+          const id = routeIds?.[0];
+          if (id) setSelection({ kind: "route", id });
+        }
+      }
+    } finally {
+      onClose();
     }
-    onClose();
   };
 
   return (

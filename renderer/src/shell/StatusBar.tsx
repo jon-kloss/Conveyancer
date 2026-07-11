@@ -1,7 +1,7 @@
 // Status bar (24px): power draw, ◈ under-construction count, ⚠ CRIT belts
 // (clickable), right-side totals. Counts collapse to a ⋯ chip in overlay mode.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtPower, flowLevel } from "../lib/format";
 
@@ -10,7 +10,18 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   const derived = useStore((s) => s.derived);
   const setView = useStore((s) => s.setView);
   const setSelection = useStore((s) => s.setSelection);
+  const cmdError = useStore((s) => s.cmdError);
+  const clearCmdError = useStore((s) => s.clearCmdError);
   const [expanded, setExpanded] = useState(false);
+
+  // auto-clear after ~6s; the `at` handshake keeps a stale timer from
+  // dismissing an error that arrived after the timer was armed.
+  useEffect(() => {
+    if (!cmdError) return;
+    const at = cmdError.at;
+    const t = window.setTimeout(() => clearCmdError(at), 6000);
+    return () => window.clearTimeout(t);
+  }, [cmdError, clearCmdError]);
 
   const ucCount = useMemo(
     () =>
@@ -79,6 +90,16 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
         </span>
       ) : (
         counts
+      )}
+      {cmdError && (
+        <button
+          className="sb-item mono sb-error"
+          data-testid="sb-error"
+          onClick={() => clearCmdError(cmdError.at)}
+          title={cmdError.message}
+        >
+          ⚠ <span className="sb-error-msg">{cmdError.message}</span>
+        </button>
       )}
       <span className="sb-spring" />
       <span className="sb-item mono">
