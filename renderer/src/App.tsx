@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Titlebar from "./shell/Titlebar";
 import StatusBar from "./shell/StatusBar";
 import { useLayoutMode } from "./shell/useLayoutMode";
+import { useAutoZoom } from "./shell/useAutoZoom";
 import MapView from "./map/MapView";
 import GraphView from "./graph/GraphView";
 import AuditDrawer from "./audit/AuditDrawer";
@@ -14,6 +15,7 @@ import "./shell/shell.css";
 
 export default function App() {
   const { mode, width, height } = useLayoutMode();
+  useAutoZoom(); // shell only: shrink CSS px on low-logical-res displays (4K TV at 300% scaling)
   const [auditOpen, setAuditOpen] = useState(false);
   const ready = useStore((s) => s.ready);
   const error = useStore((s) => s.error);
@@ -53,38 +55,45 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo]);
 
+  // Early screens (refuse / error / hydrating) still get the titlebar: the
+  // frameless window must never lose its drag region and min/max/close.
+  const screen = (body: ReactNode) => (
+    <div className="app-frame" data-layout="overlay">
+      <Titlebar overlayMode={false} />
+      <main className="app-canvas">
+        <div className="refuse-wrap">{body}</div>
+      </main>
+    </div>
+  );
+
   if (mode === "refuse") {
-    // A1: refuse gracefully, never render broken.
-    return (
-      <div className="refuse-wrap">
-        <div className="refuse-card">
-          <h1 className="t-title">FICSIT PLANNER NEEDS AT LEAST 1366×768</h1>
-          <div className="mono">
-            CURRENT {width}×{height}
-          </div>
+    // A1: refuse gracefully, never render broken. useAutoZoom shrinks CSS px
+    // down to 60% first, so this only appears on genuinely tiny windows.
+    return screen(
+      <div className="refuse-card">
+        <h1 className="t-title">FICSIT PLANNER NEEDS AT LEAST 1366×768</h1>
+        <div className="mono">
+          CURRENT {width}×{height}
         </div>
-      </div>
+        <div className="mono">ENLARGE THE WINDOW OR LOWER THE OS DISPLAY SCALING</div>
+      </div>,
     );
   }
 
   if (error) {
-    return (
-      <div className="refuse-wrap">
-        <div className="refuse-card">
-          <h1 className="t-title">BACKEND UNREACHABLE</h1>
-          <div className="mono">{error}</div>
-        </div>
-      </div>
+    return screen(
+      <div className="refuse-card">
+        <h1 className="t-title">BACKEND UNREACHABLE</h1>
+        <div className="mono">{error}</div>
+      </div>,
     );
   }
 
   if (!ready) {
-    return (
-      <div className="refuse-wrap">
-        <div className="mono" style={{ color: "var(--ink-500)" }}>
-          HYDRATING…
-        </div>
-      </div>
+    return screen(
+      <div className="mono" style={{ color: "var(--ink-500)" }}>
+        HYDRATING…
+      </div>,
     );
   }
 

@@ -17,6 +17,7 @@
         "height": 1080,
         "minWidth": 1100,
         "minHeight": 700,
+        "maximized": true,
         "decorations": false,
         "transparent": false,
         "center": true
