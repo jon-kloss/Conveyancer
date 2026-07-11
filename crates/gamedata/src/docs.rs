@@ -354,9 +354,31 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         }
     }
 
+    // Liquids/gases: Docs amounts are liters; normalize authored recipe
+    // amounts to m³ (game rates are m³/min). Ordering invariant: this MUST
+    // run before burn-recipe synthesis below — fluid mEnergyValue is MJ per
+    // m³, so synthesized burn amounts are born in m³/min and must never be
+    // divided by 1000.
+    let liquid_forms = ["RF_LIQUID", "RF_GAS"];
+    let is_fluid: std::collections::BTreeSet<String> = gd
+        .items
+        .values()
+        .filter(|i| liquid_forms.contains(&i.form.as_str()))
+        .map(|i| i.class_name.clone())
+        .collect();
+    for r in gd.recipes.values_mut() {
+        for (item, amount) in r.ingredients.iter_mut().chain(r.products.iter_mut()) {
+            if is_fluid.contains(item) {
+                *amount /= 1000.0;
+            }
+        }
+    }
+
     // Synthesize fuel-burn recipes: MW·60 MJ/min ÷ fuel MJ = fuel/min.
-    // Supplemental fluids (water) wait for the pipe network model — noted in
-    // DECISIONS.md; the fuel math itself is exact.
+    // Runs after fluid normalization (see above) so these recipes keep their
+    // already-correct m³/min amounts. Supplemental fluids (water) wait for
+    // the pipe network model — noted in DECISIONS.md; the fuel math itself
+    // is exact.
     for (gen_class, mw, fuels) in generator_fuels {
         for fuel in fuels {
             let Some(fuel_item) = gd.items.get(&fuel) else {
@@ -399,22 +421,6 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             energy_mj: 0.0,
         },
     );
-
-    // Liquids/gases: Docs amounts are liters; normalize to m³ (game rates are m³/min).
-    let liquid_forms = ["RF_LIQUID", "RF_GAS"];
-    let is_fluid: std::collections::BTreeSet<String> = gd
-        .items
-        .values()
-        .filter(|i| liquid_forms.contains(&i.form.as_str()))
-        .map(|i| i.class_name.clone())
-        .collect();
-    for r in gd.recipes.values_mut() {
-        for (item, amount) in r.ingredients.iter_mut().chain(r.products.iter_mut()) {
-            if is_fluid.contains(item) {
-                *amount /= 1000.0;
-            }
-        }
-    }
 
     Ok(gd)
 }
@@ -518,5 +524,30 @@ mod tests {
         assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
         assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
         assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
+    }
+
+    #[test]
+    fn liquid_fuel_burn_recipe_is_m3_per_min() {
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        // Authored fluid recipes: Docs stores liters; parse normalizes to m³.
+        let fuel = &gd.recipes["Recipe_LiquidFuel_C"];
+        assert_eq!(
+            fuel.ingredients,
+            vec![("Desc_LiquidOil_C".to_string(), 6.0)]
+        );
+        assert_eq!(fuel.products, vec![("Desc_LiquidFuel_C".to_string(), 4.0)]);
+        // Synthesized burn recipes are computed from mEnergyValue, which for
+        // fluids is MJ per m³ — so they are born in m³/min and must NOT go
+        // through the liter→m³ division: 250 MW · 60 ÷ 750 MJ/m³ = 20 m³/min.
+        let burn = gd
+            .recipes
+            .values()
+            .find(|r| r.produced_in.contains(&"Build_GeneratorFuel_C".to_string()))
+            .expect("synthesized fuel-generator burn recipe");
+        assert_eq!(
+            burn.ingredients,
+            vec![("Desc_LiquidFuel_C".to_string(), 20.0)]
+        );
+        assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 250.0)]);
     }
 }

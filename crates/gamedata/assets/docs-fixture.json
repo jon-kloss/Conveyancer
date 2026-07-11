@@ -5,7 +5,8 @@
       { "ClassName": "Desc_OreIron_C", "mDisplayName": "Iron Ore", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
       { "ClassName": "Desc_OreCopper_C", "mDisplayName": "Copper Ore", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
       { "ClassName": "Desc_Stone_C", "mDisplayName": "Limestone", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
-      { "ClassName": "Desc_Coal_C", "mDisplayName": "Coal", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE", "mEnergyValue": "300.000000" }
+      { "ClassName": "Desc_Coal_C", "mDisplayName": "Coal", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE", "mEnergyValue": "300.000000" },
+      { "ClassName": "Desc_LiquidOil_C", "mDisplayName": "Crude Oil", "mForm": "RF_LIQUID", "mStackSize": "SS_FLUID", "mEnergyValue": "320.000000" }
     ]
   },
   {
@@ -20,7 +21,8 @@
       { "ClassName": "Desc_CopperIngot_C", "mDisplayName": "Copper Ingot", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
       { "ClassName": "Desc_Wire_C", "mDisplayName": "Wire", "mForm": "RF_SOLID", "mStackSize": "SS_HUGE" },
       { "ClassName": "Desc_Cable_C", "mDisplayName": "Cable", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
-      { "ClassName": "Desc_Cement_C", "mDisplayName": "Concrete", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" }
+      { "ClassName": "Desc_Cement_C", "mDisplayName": "Concrete", "mForm": "RF_SOLID", "mStackSize": "SS_LARGE" },
+      { "ClassName": "Desc_LiquidFuel_C", "mDisplayName": "Fuel", "mForm": "RF_LIQUID", "mStackSize": "SS_FLUID", "mEnergyValue": "750.000000" }
     ]
   },
   {
@@ -113,6 +115,14 @@
         "mProduct": "((ItemClass=\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/Parts/Cement/Desc_Cement.Desc_Cement_C'\",Amount=1))",
         "mManufactoringDuration": "4.000000",
         "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\")"
+      },
+      {
+        "ClassName": "Recipe_LiquidFuel_C",
+        "mDisplayName": "Fuel",
+        "mIngredients": "((ItemClass=\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/RawResources/CrudeOil/Desc_LiquidOil.Desc_LiquidOil_C'\",Amount=6000))",
+        "mProduct": "((ItemClass=\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/Parts/Fuel/Desc_LiquidFuel.Desc_LiquidFuel_C'\",Amount=4000))",
+        "mManufactoringDuration": "6.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/OilRefinery/Build_OilRefinery.Build_OilRefinery_C\")"
       }
     ]
   },
@@ -122,7 +132,8 @@
       { "ClassName": "Build_SmelterMk1_C", "mDisplayName": "Smelter", "mPowerConsumption": "4.000000", "mManufacturingSpeed": "1.000000" },
       { "ClassName": "Build_ConstructorMk1_C", "mDisplayName": "Constructor", "mPowerConsumption": "4.000000", "mManufacturingSpeed": "1.000000" },
       { "ClassName": "Build_AssemblerMk1_C", "mDisplayName": "Assembler", "mPowerConsumption": "15.000000", "mManufacturingSpeed": "1.000000" },
-      { "ClassName": "Build_FoundryMk1_C", "mDisplayName": "Foundry", "mPowerConsumption": "16.000000", "mManufacturingSpeed": "1.000000" }
+      { "ClassName": "Build_FoundryMk1_C", "mDisplayName": "Foundry", "mPowerConsumption": "16.000000", "mManufacturingSpeed": "1.000000" },
+      { "ClassName": "Build_OilRefinery_C", "mDisplayName": "Refinery", "mPowerConsumption": "30.000000", "mManufacturingSpeed": "1.000000" }
     ]
   },
   {
@@ -142,6 +153,14 @@
         "mPowerProduction": "75.000000",
         "mFuel": [
           { "mFuelClass": "Desc_Coal_C", "mSupplementalResourceClass": "Desc_Water_C", "mByproduct": "" }
+        ]
+      },
+      {
+        "ClassName": "Build_GeneratorFuel_C",
+        "mDisplayName": "Fuel-Powered Generator",
+        "mPowerProduction": "250.000000",
+        "mFuel": [
+          { "mFuelClass": "Desc_LiquidFuel_C", "mSupplementalResourceClass": "", "mByproduct": "" }
         ]
       }
     ]
