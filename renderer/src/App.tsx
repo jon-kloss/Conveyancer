@@ -14,7 +14,7 @@ import { useStore } from "./state/store";
 import "./shell/shell.css";
 
 export default function App() {
-  const { mode, width, height } = useLayoutMode();
+  const { mode } = useLayoutMode();
   useAutoZoom(); // shell only: shrink CSS px on low-logical-res displays (4K TV at 300% scaling)
   const [auditOpen, setAuditOpen] = useState(false);
   const ready = useStore((s) => s.ready);
@@ -55,8 +55,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo]);
 
-  // Early screens (refuse / error / hydrating) still get the titlebar: the
-  // frameless window must never lose its drag region and min/max/close.
+  // Early screens (error / hydrating) still get the titlebar: the frameless
+  // window must never lose its drag region and min/max/close.
   const screen = (body: ReactNode) => (
     <div className="app-frame" data-layout="overlay">
       <Titlebar overlayMode={false} />
@@ -65,20 +65,6 @@ export default function App() {
       </main>
     </div>
   );
-
-  if (mode === "refuse") {
-    // A1: refuse gracefully, never render broken. useAutoZoom shrinks CSS px
-    // down to 60% first, so this only appears on genuinely tiny windows.
-    return screen(
-      <div className="refuse-card">
-        <h1 className="t-title">FICSIT PLANNER NEEDS AT LEAST 1366×768</h1>
-        <div className="mono">
-          CURRENT {width}×{height}
-        </div>
-        <div className="mono">ENLARGE THE WINDOW OR LOWER THE OS DISPLAY SCALING</div>
-      </div>,
-    );
-  }
 
   if (error) {
     return screen(

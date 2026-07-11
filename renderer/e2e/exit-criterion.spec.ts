@@ -254,11 +254,11 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await expect(page.locator(".pin-chip")).toContainText("MODULAR WORKS");
 });
 
-test("A1: refuses gracefully below the 1366×768 floor", async ({ page }) => {
+test("A1: small viewports degrade to the overlay layout, never a dead end", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/");
-  await expect(page.locator(".refuse-card")).toContainText("1366×768");
-  await expect(page.locator(".refuse-card .mono")).toContainText("1280×720");
-  await page.setViewportSize({ width: 1920, height: 1080 });
   await expect(page.getByTestId("map-root")).toBeVisible();
+  await expect(page.locator(".app-frame")).toHaveAttribute("data-layout", "overlay");
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await expect(page.locator(".app-frame")).toHaveAttribute("data-layout", "reference");
 });

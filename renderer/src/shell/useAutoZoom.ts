@@ -33,7 +33,8 @@ export function useAutoZoom() {
         const { getCurrentWebview } = await import("@tauri-apps/api/webview");
         await getCurrentWebview().setZoom(zoom);
       } catch {
-        // Zoom is an enhancement — without it the refuse card still shows.
+        // Zoom is an enhancement — without it the overlay layout still works,
+        // just more cramped.
       }
     };
 

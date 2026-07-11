@@ -1,4 +1,4 @@
-/* Titlebar (36px), status bar (24px), refuse card, app frame. */
+/* Titlebar (36px), status bar (24px), early-screen cards, app frame. */
 
 .app-frame {
   display: flex;
@@ -150,7 +150,7 @@
   z-index: 40;
 }
 
-/* ---- refuse card (< 1366×768) ---- */
+/* ---- centered card for early screens (backend error / hydrating) ---- */
 .refuse-wrap {
   display: flex;
   align-items: center;

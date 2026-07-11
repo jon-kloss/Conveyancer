@@ -3,10 +3,12 @@
 
 import { useEffect, useState } from "react";
 
-export type LayoutMode = "reference" | "compact" | "overlay" | "refuse";
+export type LayoutMode = "reference" | "compact" | "overlay";
 
-export function layoutModeFor(width: number, height: number): LayoutMode {
-  if (width < 1366 || height < 768) return "refuse";
+export function layoutModeFor(width: number, _height: number): LayoutMode {
+  // No hard floor: below the A1 reference sizes everything degrades to the
+  // overlay layout (panels slide over the canvas). The shell additionally
+  // auto-zooms out on low-logical-resolution displays (useAutoZoom).
   if (width < 1600) return "overlay";
   if (width < 1920) return "compact";
   return "reference";
