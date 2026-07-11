@@ -3,6 +3,10 @@
 /**
  * Solve a factory snapshot with T0 ratio propagation.
  * `snapshot_js` is a `FactorySnapshot`, `edit_js` a `T0Edit`; returns a `T0Result`.
+ *
+ * Solver errors cross the boundary as a thrown JS string; the Ok value is
+ * serialized `json_compatible` so BTreeMaps become plain objects (matching the
+ * renderer's `Record` types), not ES2015 Maps.
  * @param {any} snapshot_js
  * @param {any} edit_js
  * @returns {any}

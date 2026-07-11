@@ -132,6 +132,21 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await page.mouse.move(box.x + box.width * 0.4, box.y + box.height / 2, { steps: 10 });
   // mid-drag: projected (italic) values visible before release
   await expect(page.getByTestId("target-value")).toHaveClass(/projected/);
+  // ...and numerically live: the WASM T0 projection must track the drag before
+  // release. A dead projection leaves the stale pre-drag value here (regression
+  // guard for the Ok/ES-Map serialization bug). Poll — the solve lands on a
+  // later frame than the mousemove.
+  await expect
+    .poll(async () => parseFloat(await page.getByTestId("target-value").innerText()))
+    .toBeGreaterThan(1.2);
+  const midTarget = parseFloat(await page.getByTestId("target-value").innerText());
+  expect(midTarget).toBeLessThanOrEqual(5.0);
+  // and the projected chain propagates upstream mid-drag: ore card = 24 × target
+  await expect
+    .poll(async () =>
+      parseFloat(await page.getByTestId("port-in-Desc_OreIron_C").locator(".t-data-12").innerText()),
+    )
+    .toBeCloseTo(24 * midTarget, 0);
   await page.mouse.up();
   await page.waitForTimeout(400);
 
