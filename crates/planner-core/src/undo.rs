@@ -315,6 +315,162 @@ mod tests {
         ));
     }
 
+    fn add_built_group(state: &mut PlanState, log: &mut UndoLog, fid: &Id) -> Id {
+        let tx = apply(
+            state,
+            &Command::AddGroup {
+                factory: fid.clone(),
+                machine: "Build_SmelterMk1_C".into(),
+                recipe: "Recipe_IngotIron_C".into(),
+                count: 4,
+                clock: 1.0,
+                graph_pos: GraphPos { x: 0.0, y: 0.0 },
+                floor: 0,
+            },
+        )
+        .unwrap();
+        let gid = tx.created[0].clone();
+        log.commit(tx);
+        state.groups.get_mut(&gid).unwrap().status = Status::Built;
+        gid
+    }
+
+    #[test]
+    fn built_group_edits_materialize_planned_delta() {
+        let mut state = PlanState::default();
+        let mut log = UndoLog::new();
+        let fid = create_factory(&mut state, &mut log);
+        let gid = add_built_group(&mut state, &mut log, &fid);
+
+        // Count edit lands as a ◇ delta; the ◆ baseline is untouched.
+        let tx = apply(
+            &mut state,
+            &Command::SetGroupCount {
+                id: gid.clone(),
+                count: 6,
+            },
+        )
+        .unwrap();
+        log.commit(tx);
+        let g = &state.groups[&gid];
+        assert_eq!(g.count, 4, "baseline is game ground truth");
+        assert_eq!(
+            g.planned_delta,
+            Some(GroupDelta {
+                count: Some(6),
+                clock: None,
+            })
+        );
+        assert_eq!(g.effective_count(), 6);
+        assert!((g.effective_clock() - 1.0).abs() < 1e-9);
+
+        // Clock edit merges into the same overlay.
+        let tx = apply(
+            &mut state,
+            &Command::SetGroupClock {
+                id: gid.clone(),
+                clock: 1.5,
+            },
+        )
+        .unwrap();
+        log.commit(tx);
+        let g = &state.groups[&gid];
+        assert!((g.clock - 1.0).abs() < 1e-9);
+        assert_eq!(
+            g.planned_delta,
+            Some(GroupDelta {
+                count: Some(6),
+                clock: Some(1.5),
+            })
+        );
+
+        // Each edit is one undoable step; undoing both restores None.
+        log.undo(&mut state).unwrap();
+        assert_eq!(
+            state.groups[&gid].planned_delta,
+            Some(GroupDelta {
+                count: Some(6),
+                clock: None,
+            })
+        );
+        log.undo(&mut state).unwrap();
+        assert_eq!(state.groups[&gid].planned_delta, None);
+        assert_eq!(state.groups[&gid].count, 4);
+        log.redo(&mut state).unwrap();
+        assert_eq!(
+            state.groups[&gid].planned_delta,
+            Some(GroupDelta {
+                count: Some(6),
+                clock: None,
+            })
+        );
+    }
+
+    #[test]
+    fn setting_built_values_back_clears_the_delta() {
+        let mut state = PlanState::default();
+        let mut log = UndoLog::new();
+        let fid = create_factory(&mut state, &mut log);
+        let gid = add_built_group(&mut state, &mut log, &fid);
+
+        for cmd in [
+            Command::SetGroupCount {
+                id: gid.clone(),
+                count: 6,
+            },
+            Command::SetGroupClock {
+                id: gid.clone(),
+                clock: 1.5,
+            },
+            // typing the built values back in abandons the plan
+            Command::SetGroupClock {
+                id: gid.clone(),
+                clock: 1.0,
+            },
+            Command::SetGroupCount {
+                id: gid.clone(),
+                count: 4,
+            },
+        ] {
+            let tx = apply(&mut state, &cmd).unwrap();
+            log.commit(tx);
+        }
+        assert_eq!(state.groups[&gid].planned_delta, None, "delta dissolved");
+        assert_eq!(state.groups[&gid].count, 4);
+        assert!((state.groups[&gid].clock - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn recipe_floor_and_delete_still_rejected_on_built_groups() {
+        let mut state = PlanState::default();
+        let mut log = UndoLog::new();
+        let fid = create_factory(&mut state, &mut log);
+        let gid = add_built_group(&mut state, &mut log, &fid);
+
+        for cmd in [
+            Command::SetGroupRecipe {
+                id: gid.clone(),
+                machine: "Build_FoundryMk1_C".into(),
+                recipe: "Recipe_IngotSteel_C".into(),
+            },
+            Command::SetGroupFloor {
+                id: gid.clone(),
+                floor: 1,
+            },
+            Command::DeleteGroup { id: gid.clone() },
+        ] {
+            let err = apply(&mut state, &cmd);
+            assert!(
+                matches!(
+                    err,
+                    Err(crate::commands::DomainError::BuiltImmutable { .. })
+                ),
+                "{cmd:?} must stay rejected on ◆"
+            );
+        }
+        assert!(state.groups.contains_key(&gid));
+    }
+
     #[test]
     fn projection_matches_patch_application() {
         // Renderer invariant: hydrate-then-patch equals re-hydrate.

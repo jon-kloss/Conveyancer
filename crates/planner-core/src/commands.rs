@@ -563,8 +563,17 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
-            require_planned(g.status, id, "set count")?;
-            g.count = (*count).max(1);
+            let count = (*count).max(1);
+            if g.status == Status::Built {
+                // §3.1.1: the edit materializes as a planned delta — the built
+                // baseline is game ground truth (only import sync writes it).
+                // Setting the built value back clears that component.
+                let mut delta = g.planned_delta.unwrap_or_default();
+                delta.count = (count != g.count).then_some(count);
+                g.planned_delta = (!delta.is_empty()).then_some(delta);
+            } else {
+                g.count = count;
+            }
             tx.record(state.upsert(Entity::Group(g)));
         }
         Command::SetGroupClock { id, clock } => {
@@ -573,8 +582,15 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
-            require_planned(g.status, id, "set clock")?;
-            g.clock = clamp_clock(*clock)?;
+            let clock = clamp_clock(*clock)?;
+            if g.status == Status::Built {
+                // §3.1.1: see SetGroupCount — same delta materialization rule.
+                let mut delta = g.planned_delta.unwrap_or_default();
+                delta.clock = ((clock - g.clock).abs() > 1e-9).then_some(clock);
+                g.planned_delta = (!delta.is_empty()).then_some(delta);
+            } else {
+                g.clock = clock;
+            }
             tx.record(state.upsert(Entity::Group(g)));
         }
         Command::SetGroupFloor { id, floor } => {

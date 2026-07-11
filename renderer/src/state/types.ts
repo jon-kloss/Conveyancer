@@ -22,6 +22,13 @@ export interface Factory {
   createdBy: CreatedBy;
 }
 
+/** Planned overlay on a ◆ built group (SDD §3.1.1): each component is the
+ *  planned effective value; null/absent means "track the built baseline". */
+export interface GroupDelta {
+  count?: number | null;
+  clock?: number | null;
+}
+
 export interface MachineGroup {
   id: Id;
   factory: Id;
@@ -30,13 +37,19 @@ export interface MachineGroup {
   count: number;
   clock: number;
   somersloops: number;
-  plannedDelta: Id | null;
+  /** Baseline count/clock stay game ground truth; edits on ◆ land here. */
+  plannedDelta: GroupDelta | null;
   graphPos: GraphPos;
   /** Vertical factory floor (0 = ground). */
   floor: number;
   status: Status;
   createdBy: CreatedBy;
 }
+
+/** Count the solver plans with: delta overlay if present, else baseline. */
+export const effCount = (g: MachineGroup): number => g.plannedDelta?.count ?? g.count;
+/** Clock the solver plans with: delta overlay if present, else baseline. */
+export const effClock = (g: MachineGroup): number => g.plannedDelta?.clock ?? g.clock;
 
 export type PortDirection = "in" | "out";
 

@@ -275,6 +275,121 @@ fn exit_criterion_flow() {
 }
 
 #[test]
+fn built_group_delta_feeds_the_solver_and_survives_write_back() {
+    let mut s = Session::in_memory(None).unwrap();
+    // built layer via import: 2 smelters (60 ingot/min) feeding 1 rod constructor
+    let mach = |class: &str, recipe: &str, x: f64| app::import::ImportMachine {
+        class: class.into(),
+        recipe: Some(recipe.into()),
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+    };
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "TEST-01".into(),
+        machines: vec![
+            mach("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0),
+            mach("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0),
+            mach("Build_ConstructorMk1_C", "Recipe_IronRod_C", 100.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let fid = s.state.factories.keys().next().unwrap().clone();
+    let gid = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_SmelterMk1_C")
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(s.state.groups[&gid].status, Status::Built);
+    assert_eq!(s.state.groups[&gid].count, 2);
+
+    // A count edit on ◆ succeeds as a ◇ delta; the baseline stays ground truth.
+    let r = s
+        .edit(vec![Command::SetGroupCount {
+            id: gid.clone(),
+            count: 4,
+        }])
+        .unwrap();
+    let g = &s.state.groups[&gid];
+    assert_eq!(g.count, 2, "baseline untouched");
+    assert_eq!(
+        g.planned_delta,
+        Some(GroupDelta {
+            count: Some(4),
+            clock: None,
+        })
+    );
+    // The solve ran inside the same edit — its write-back must not squash the
+    // delta or the baseline (◆ groups are skipped).
+    let base_power = r.derived.factories[&fid].groups[&gid].power_mw;
+    assert!(base_power > 0.0);
+
+    // The solver snapshot plans with the effective values.
+    let snap = s.snapshot(&fid).unwrap();
+    let gs = snap.groups.iter().find(|g| g.id == gid).unwrap();
+    assert_eq!(gs.count, 4, "snapshot reads the delta count");
+
+    // A clock delta participates in the solve it triggers: underclocking the
+    // bank spreads the same throughput at the sub-linear power law.
+    let r = s
+        .edit(vec![Command::SetGroupClock {
+            id: gid.clone(),
+            clock: 0.5,
+        }])
+        .unwrap();
+    let g = &s.state.groups[&gid];
+    assert!((g.clock - 1.0).abs() < 1e-9, "baseline clock untouched");
+    assert_eq!(g.planned_delta.unwrap().clock, Some(0.5));
+    let under_power = r.derived.factories[&fid].groups[&gid].power_mw;
+    assert!(
+        under_power < base_power,
+        "underclock delta lowers derived power: {under_power} vs {base_power}"
+    );
+
+    // An unrelated solve-inducing edit leaves the delta alone.
+    let out_port = s
+        .state
+        .ports
+        .values()
+        .find(|p| p.direction == PortDirection::Out && p.item == "Desc_IronRod_C")
+        .unwrap()
+        .id
+        .clone();
+    s.edit(vec![Command::SetPortRate {
+        id: out_port,
+        rate: 10.0,
+    }])
+    .unwrap();
+    assert_eq!(
+        s.state.groups[&gid].planned_delta,
+        Some(GroupDelta {
+            count: Some(4),
+            clock: Some(0.5),
+        })
+    );
+    assert_eq!(s.state.groups[&gid].count, 2);
+
+    // Each delta edit is one undo step: unwind to the pristine built layer.
+    s.undo().unwrap().unwrap(); // rate
+    s.undo().unwrap().unwrap(); // clock delta
+    assert_eq!(
+        s.state.groups[&gid].planned_delta,
+        Some(GroupDelta {
+            count: Some(4),
+            clock: None,
+        })
+    );
+    s.undo().unwrap().unwrap(); // count delta
+    assert_eq!(s.state.groups[&gid].planned_delta, None);
+    assert_eq!(s.state.groups[&gid].count, 2);
+}
+
+#[test]
 fn infeasible_target_clamps_and_names_constraint() {
     let mut s = Session::in_memory(None).unwrap();
     let (fid, out_port, _) = build_modular_frame_factory(&mut s);

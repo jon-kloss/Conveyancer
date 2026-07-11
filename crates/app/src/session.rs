@@ -756,8 +756,10 @@ impl Session {
                     outputs: recipe.products.clone(),
                     power_mw: power,
                 },
-                count: g.count,
-                clock: g.clock,
+                // The solver plans with the effective values (built baseline
+                // overlaid by any planned delta) but never writes deltas back.
+                count: g.effective_count(),
+                clock: g.effective_clock(),
             });
         }
         let mut inputs = Vec::new();

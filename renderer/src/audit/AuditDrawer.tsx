@@ -27,7 +27,10 @@ function DriftTab() {
   const plan = useStore((s) => s.plan);
   const setReviewing = useStore((s) => s.setReviewing);
   const planned = Object.values(plan.factories).filter((f) => f.status === "planned").length;
-  const plannedGroups = Object.values(plan.groups).filter((g) => g.status === "planned").length;
+  // A ◆ built group carrying a ◇ delta is a planned change not yet built in-game.
+  const plannedGroups = Object.values(plan.groups).filter(
+    (g) => g.status === "planned" || (g.status === "built" && g.plannedDelta != null),
+  ).length;
   const reimport = Object.values(plan.proposals).find(
     (p) => p.source === "save_reimport" && (p.status === "draft" || p.status === "reviewing"),
   );

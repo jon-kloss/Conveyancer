@@ -5,7 +5,7 @@
 import init, { t0_solve } from "../wasm/pkg/solver_wasm.js";
 import wasmUrl from "../wasm/pkg/solver_wasm_bg.wasm?url";
 import type { DerivedFactory, GameData, Id, Plan, TargetCeiling } from "../state/types";
-import { beltCapacity } from "../state/types";
+import { beltCapacity, effClock, effCount } from "../state/types";
 
 let readyPromise: Promise<void> | null = null;
 export function ensureT0(): Promise<void> {
@@ -49,8 +49,8 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
         outputs: recipe.products,
         powerMw: gamedata.machines[g.machine]?.powerMw ?? 0,
       },
-      count: g.count,
-      clock: g.clock,
+      count: effCount(g),
+      clock: effClock(g),
     });
   }
   const inputs = [];

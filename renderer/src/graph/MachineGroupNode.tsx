@@ -50,7 +50,10 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
 
   const machine = gamedata.machines[group.machine]?.displayName ?? group.machine;
   const recipe = gamedata.recipes[group.recipe];
-  const clockPct = group.clock;
+  // ◇ delta on a ◆ baseline (SDD §3.1.1): render the planned effective values.
+  const deltaCount = group.plannedDelta?.count ?? null;
+  const deltaClock = group.plannedDelta?.clock ?? null;
+  const clockPct = deltaClock ?? group.clock;
   const clockClass = clockPct < 1 ? "clock-under" : clockPct > 1 ? "clock-over" : "";
   const justSettled = settled.has(`/groups/${group.id}`);
   const numCls = `${isProjected || group.status === "planned" ? "projected" : ""} ${justSettled ? "settle" : ""}`;
@@ -64,10 +67,14 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
         <div className="icon-ph s20" />
         <span className="group-card-name">
           {machine.toUpperCase()} <span className={`mono ${numCls}`}>×{group.count}</span>
+          {deltaCount !== null && <span className="mono projected"> ➜ ×{deltaCount}</span>}
         </span>
-        <span className={`chip clock-chip ${clockClass}`} title="Clock">
+        <span
+          className={`chip clock-chip ${clockClass}`}
+          title={deltaClock !== null ? `Clock — built at ${fmtClock(group.clock)}` : "Clock"}
+        >
           {clockPct < 1 ? "↓" : clockPct > 1 ? "↑" : ""}
-          <span className={numCls}>{fmtClock(group.clock)}</span>
+          <span className={deltaClock !== null ? `projected ${numCls}` : numCls}>{fmtClock(clockPct)}</span>
         </span>
       </header>
       <div className="group-card-recipe">
@@ -84,7 +91,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
           )}
         </span>
       </div>
-      <FootprintStrip machine={group.machine} count={group.count} />
+      <FootprintStrip machine={group.machine} count={deltaCount ?? group.count} />
       <footer className="group-card-foot mono">
         <span>IN {recipe?.ingredients.length ?? 0}</span>
         <span>OUT {recipe?.products.length ?? 0}</span>

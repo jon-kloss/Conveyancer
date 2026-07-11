@@ -60,6 +60,25 @@ pub struct Factory {
     pub created_by: CreatedBy,
 }
 
+/// Planned overlay on a ◆ built group (SDD §3.1.1): each component holds the
+/// planned *effective* value; `None` means "track the built baseline". Per-
+/// component so a clock-only retune never pins the count — unedited components
+/// keep following the baseline through re-import sync.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupDelta {
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub clock: Option<f64>,
+}
+
+impl GroupDelta {
+    pub fn is_empty(&self) -> bool {
+        self.count.is_none() && self.clock.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineGroup {
@@ -73,7 +92,11 @@ pub struct MachineGroup {
     /// 0.01–2.50 (1.0 = 100%).
     pub clock: f64,
     pub somersloops: u8,
-    pub planned_delta: Option<Id>,
+    /// User-planned changes riding on a Built baseline. Baseline `count`/`clock`
+    /// stay game ground truth (only import sync writes them); solvers read the
+    /// effective values, never write the delta.
+    #[serde(default)]
+    pub planned_delta: Option<GroupDelta>,
     pub graph_pos: GraphPos,
     /// Vertical factory floor (0 = ground). Display + planning aid; belts
     /// crossing floors render as lifts.
@@ -81,6 +104,22 @@ pub struct MachineGroup {
     pub floor: u32,
     pub status: Status,
     pub created_by: CreatedBy,
+}
+
+impl MachineGroup {
+    /// Count the solver should plan with: the delta overlay if present, else baseline.
+    pub fn effective_count(&self) -> u32 {
+        self.planned_delta
+            .and_then(|d| d.count)
+            .unwrap_or(self.count)
+    }
+
+    /// Clock the solver should plan with: the delta overlay if present, else baseline.
+    pub fn effective_clock(&self) -> f64 {
+        self.planned_delta
+            .and_then(|d| d.clock)
+            .unwrap_or(self.clock)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

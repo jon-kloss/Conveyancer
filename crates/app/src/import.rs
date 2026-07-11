@@ -590,6 +590,18 @@ pub fn apply_sync(
                 Some(mut g) if *count > 0 => {
                     g.count = *count;
                     g.clock = clock.clamp(0.01, 2.5);
+                    // Sync writes the baseline but keeps the user's planned
+                    // delta — except components the game caught up to, which
+                    // dissolve ("visible until built in-game").
+                    if let Some(mut d) = g.planned_delta {
+                        if d.count == Some(g.count) {
+                            d.count = None;
+                        }
+                        if d.clock.is_some_and(|c| (c - g.clock).abs() < 1e-9) {
+                            d.clock = None;
+                        }
+                        g.planned_delta = (!d.is_empty()).then_some(d);
+                    }
                     tx.record(state.upsert(Entity::Group(g)));
                 }
                 Some(g) => {

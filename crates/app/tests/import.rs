@@ -148,6 +148,81 @@ fn first_import_writes_built_layer_then_reimport_diffs() {
 }
 
 #[test]
+fn sync_clears_caught_up_delta_and_keeps_still_ahead_delta() {
+    use planner_core::commands::Command;
+    use planner_core::entities::GroupDelta;
+
+    let mut s = Session::in_memory(None).unwrap();
+    let smelters = |n: usize| -> Vec<ImportMachine> {
+        (0..n)
+            .map(|i| {
+                m(
+                    "Build_SmelterMk1_C",
+                    "Recipe_IngotIron_C",
+                    50.0 * i as f64,
+                    0.0,
+                )
+            })
+            .collect()
+    };
+    s.import_save(snapshot(smelters(3))).unwrap();
+    let gid = s.state.groups.values().next().unwrap().id.clone();
+
+    // Plan an expansion on the ◆ bank: ×3 → ×5, retuned to 150%.
+    s.edit(vec![
+        Command::SetGroupCount {
+            id: gid.clone(),
+            count: 5,
+        },
+        Command::SetGroupClock {
+            id: gid.clone(),
+            clock: 1.5,
+        },
+    ])
+    .unwrap();
+    assert_eq!(
+        s.state.groups[&gid].planned_delta,
+        Some(GroupDelta {
+            count: Some(5),
+            clock: Some(1.5),
+        })
+    );
+
+    // The game built the 2 extra smelters (still at 100%): accepting the drift
+    // sync moves the baseline and dissolves the caught-up count component,
+    // while the still-ahead clock retune stays user intent.
+    let ImportOutcome::Drift { proposal, .. } = s.import_save(snapshot(smelters(5))).unwrap()
+    else {
+        panic!("expected drift");
+    };
+    s.accept_proposal(&proposal).unwrap();
+    let g = &s.state.groups[&gid];
+    assert_eq!(g.count, 5, "baseline synced to the game");
+    assert_eq!(
+        g.planned_delta,
+        Some(GroupDelta {
+            count: None,
+            clock: Some(1.5),
+        }),
+        "count caught up → cleared; clock still ahead → kept"
+    );
+
+    // Baseline-keyed drift diff is unaffected by the remaining delta: an
+    // identical save re-imports IN SYNC and the delta survives untouched.
+    assert!(matches!(
+        s.import_save(snapshot(smelters(5))).unwrap(),
+        ImportOutcome::InSync
+    ));
+    assert_eq!(
+        s.state.groups[&gid].planned_delta,
+        Some(GroupDelta {
+            count: None,
+            clock: Some(1.5),
+        })
+    );
+}
+
+#[test]
 fn import_auto_wires_groups_ports_and_preserves_built_counts() {
     let mut s = Session::in_memory(None).unwrap();
     // one cluster: 2 smelters (60 ingot/min) feeding 1 rod constructor

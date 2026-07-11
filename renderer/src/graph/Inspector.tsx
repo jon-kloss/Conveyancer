@@ -7,7 +7,7 @@ import { useStore, solveChip } from "../state/store";
 import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
 import { footprintOf, footprintArea } from "./footprints";
 import { fmtClock, fmtPower, fmtRate } from "../lib/format";
-import { beltCapacity, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
+import { beltCapacity, effClock, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
 
 const CLOCK_STEPS = [0.5, 0.75, 1.0, 1.5, 2.5];
 
@@ -168,7 +168,7 @@ export default function Inspector({
               {CLOCK_STEPS.map((c) => (
                 <button
                   key={c}
-                  className={`insp-clock-btn mono ${Math.abs(selectedGroup.clock - c) < 1e-9 ? "active" : ""}`}
+                  className={`insp-clock-btn mono ${Math.abs(effClock(selectedGroup) - c) < 1e-9 ? "active" : ""}`}
                   onClick={() => void dispatch([{ type: "set_group_clock", id: selectedGroup.id, clock: c }])}
                 >
                   {c * 100}
@@ -176,8 +176,8 @@ export default function Inspector({
               ))}
               <input
                 className="insp-clock-fine mono"
-                key={selectedGroup.id + selectedGroup.clock}
-                defaultValue={fmtClock(selectedGroup.clock)}
+                key={selectedGroup.id + effClock(selectedGroup)}
+                defaultValue={fmtClock(effClock(selectedGroup))}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter") return;
                   const v = parseFloat(e.currentTarget.value) / 100;
