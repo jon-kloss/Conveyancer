@@ -4,7 +4,7 @@
 
 import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
-import { fmtPercent, fmtPower, fmtRate, flowLevel } from "../lib/format";
+import { fmtPercent, fmtPower, fmtRate, flowLevel, circuitHeadroom, powerLevel } from "../lib/format";
 import { beltCapacity } from "../state/types";
 import "./audit.css";
 
@@ -168,8 +168,8 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
     () =>
       derived.circuits
         .map((c) => {
-          const headroom = c.generationMw > 0 ? (c.generationMw - c.demandMw) / c.generationMw : c.demandMw > 0 ? -1 : 1;
-          const level: "ok" | "warn" | "crit" = headroom < 0.05 ? "crit" : headroom < 0.2 ? "warn" : "ok";
+          const headroom = circuitHeadroom(c.generationMw, c.demandMw);
+          const level = powerLevel(headroom);
           return { ...c, headroom, level };
         })
         .sort((a, b) => a.headroom - b.headroom),

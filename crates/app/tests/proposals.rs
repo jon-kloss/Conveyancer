@@ -8,10 +8,249 @@ use app::wizard::{global_solve, WizardGoal, WizardOutcome};
 use app::Session;
 use planner_core::commands::Command;
 use planner_core::entities::*;
-use planner_core::proposals::ProposalStatus;
+use planner_core::proposals::{
+    Proposal, ProposalItem, ProposalItemKind, ProposalSource, ProposalStatus,
+};
 
 fn gp(x: f64, y: f64) -> GraphPos {
     GraphPos { x, y }
+}
+
+fn pos(x: f64, y: f64) -> MapPos {
+    MapPos { x, y, z: 0.0 }
+}
+
+/// Force a plant's POWER_ITEM out port to a fixed generation target.
+fn set_generation(s: &mut Session, plant: &Id, mw: f64) {
+    let port = s
+        .state
+        .ports
+        .values()
+        .find(|p| {
+            p.factory == *plant
+                && p.direction == PortDirection::Out
+                && p.item == gamedata::docs::POWER_ITEM
+        })
+        .expect("plant has a power out port")
+        .id
+        .clone();
+    s.edit(vec![Command::SetPortRate { id: port, rate: mw }])
+        .unwrap();
+}
+
+/// A factory that DRAWS power: `rod_rate`/min of iron rods on Constructor Mk1
+/// (4 MW, 15/min each) → a deterministic `rod_rate / 15 * 4` MW of draw.
+fn load_factory(s: &mut Session, name: &str, rod_rate: f64) -> Id {
+    let f = s
+        .edit(vec![Command::CreateFactory {
+            name: name.into(),
+            position: pos(900.0, 900.0),
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let ingot_in = s
+        .edit(vec![Command::AddPort {
+            factory: f.clone(),
+            direction: PortDirection::In,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(1000.0),
+            graph_pos: gp(0.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let rod_out = s
+        .edit(vec![Command::AddPort {
+            factory: f.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronRod_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(600.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let ctors = s
+        .edit(vec![Command::AddGroup {
+            factory: f.clone(),
+            machine: "Build_ConstructorMk1_C".into(),
+            recipe: "Recipe_IronRod_C".into(),
+            count: 1,
+            clock: 1.0,
+            graph_pos: gp(300.0, 100.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    for (from, to, item) in [
+        (
+            EdgeEnd::Port(ingot_in),
+            EdgeEnd::Group(ctors.clone()),
+            "Desc_IronIngot_C",
+        ),
+        (
+            EdgeEnd::Group(ctors),
+            EdgeEnd::Port(rod_out.clone()),
+            "Desc_IronRod_C",
+        ),
+    ] {
+        s.edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from,
+            to,
+            item: item.into(),
+            tier: 3,
+        }])
+        .unwrap();
+    }
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out,
+        rate: rod_rate,
+    }])
+    .unwrap();
+    f
+}
+
+/// A coal generator producing `mw` MW (fuel is drawn from an uncapped in port,
+/// no node claim needed). One generator caps at 75 MW.
+fn gen_factory(s: &mut Session, name: &str, mw: f64) -> Id {
+    let plant = s
+        .edit(vec![Command::CreateFactory {
+            name: name.into(),
+            position: pos(1500.0, 100.0),
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let coal_in = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Coal_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(1000.0),
+            graph_pos: gp(0.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let mw_out = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::Out,
+            item: gamedata::docs::POWER_ITEM.into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(600.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let burn = s
+        .gamedata
+        .recipes
+        .values()
+        .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
+        .unwrap()
+        .class_name
+        .clone();
+    let gens = s
+        .edit(vec![Command::AddGroup {
+            factory: plant.clone(),
+            machine: "Build_GeneratorCoal_C".into(),
+            recipe: burn,
+            count: 1,
+            clock: 1.0,
+            graph_pos: gp(300.0, 100.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    for (from, to, item) in [
+        (
+            EdgeEnd::Port(coal_in),
+            EdgeEnd::Group(gens.clone()),
+            "Desc_Coal_C",
+        ),
+        (
+            EdgeEnd::Group(gens),
+            EdgeEnd::Port(mw_out.clone()),
+            gamedata::docs::POWER_ITEM,
+        ),
+    ] {
+        s.edit(vec![Command::AddEdge {
+            factory: plant.clone(),
+            from,
+            to,
+            item: item.into(),
+            tier: 6,
+        }])
+        .unwrap();
+    }
+    s.edit(vec![Command::SetPortRate {
+        id: mw_out,
+        rate: mw,
+    }])
+    .unwrap();
+    plant
+}
+
+fn bare_factory(s: &mut Session, name: &str) -> Id {
+    s.edit(vec![Command::CreateFactory {
+        name: name.into(),
+        position: pos(200.0, 2000.0),
+        region: "GRASS FIELDS".into(),
+    }])
+    .unwrap()
+    .created[0]
+        .clone()
+}
+
+fn power_route_item(from: &Id, to: &Id) -> ProposalItem {
+    ProposalItem {
+        id: new_id(),
+        kind: ProposalItemKind::RouteAdd,
+        included: true,
+        label: "⚡ power line".into(),
+        detail: "grid tie".into(),
+        impact: "power".into(),
+        commands: vec![Command::AddRoute {
+            kind: RouteKind::Power,
+            from: from.clone(),
+            to: to.clone(),
+            path: vec![pos(0.0, 0.0), pos(10.0, 10.0)],
+        }],
+        aliases: vec![None],
+        depends_on: vec![],
+        sync: None,
+    }
+}
+
+/// Store a Draft proposal made of the given items and return its id.
+fn store_proposal(s: &mut Session, items: Vec<ProposalItem>) -> Id {
+    let proposal = Proposal {
+        id: new_id(),
+        source: ProposalSource::GlobalSolver,
+        title: "TEST POWER".into(),
+        goal: vec![],
+        status: ProposalStatus::Draft,
+        number: 0,
+        snapshot_time: "2026-07-10T00:00:00Z".into(),
+        input_hash: s.plan_hash(),
+        provenance: "test".into(),
+        items,
+    };
+    s.edit(vec![Command::CreateProposal { proposal }])
+        .unwrap()
+        .created[0]
+        .clone()
 }
 
 /// An empire with ingot surplus and a coal grid — the wizard should reuse
@@ -837,4 +1076,125 @@ fn t2_suggests_cast_screw_mini_proposal() {
         g.count,
         g.clock
     );
+}
+
+/// Piece 1 + 3: a proposal that adds a site and ties it to the grid produces a
+/// structured per-circuit impact — before→after draw AND generation — that the
+/// review banner renders. Power no longer leaks into the `warnings` strip.
+#[test]
+fn eval_reports_per_circuit_power_impact_for_a_touched_grid() {
+    let mut s = Session::in_memory(None).unwrap();
+    build_base(&mut s); // 150 MW coal plant, ungridded until the power line ties in
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![("Desc_IronRod_C".into(), 30.0)],
+            constraints: Default::default(),
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal");
+    };
+    let pid = s
+        .edit(vec![Command::CreateProposal { proposal }])
+        .unwrap()
+        .created[0]
+        .clone();
+
+    let cons = s.eval_proposal(&pid).unwrap();
+    assert_eq!(
+        cons.circuit_impacts.len(),
+        1,
+        "the power line forms one grid → one impact: {:?}",
+        cons.circuit_impacts
+    );
+    let ci = &cons.circuit_impacts[0];
+    assert!(
+        ci.demand_after_mw > ci.demand_before_mw,
+        "the site adds draw: {ci:?}"
+    );
+    assert!(ci.generation_after_mw > 0.0, "generation surfaced: {ci:?}");
+    // headroom_after is exactly the shared formula over the after values
+    let expected = (ci.generation_after_mw - ci.demand_after_mw) / ci.generation_after_mw;
+    assert!((ci.headroom_after - expected).abs() < 1e-9);
+    assert!(
+        ci.headroom_after >= 0.20,
+        "150 MW plant keeps healthy margin: {ci:?}"
+    );
+    assert_eq!(ci.level, "ok", "healthy margin reads OK: {ci:?}");
+    assert!(
+        !cons.warnings.iter().any(|w| w.contains("margin")),
+        "power moved out of the warning strip: {:?}",
+        cons.warnings
+    );
+}
+
+/// Piece 1: a grid pushed under 5% headroom flags CRIT — the loud consequence
+/// the game hides. A 20 MW plant taking on a 40 MW load browns out.
+#[test]
+fn eval_flags_a_grid_pushed_under_five_percent_as_crit() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_, plant) = build_base(&mut s);
+    set_generation(&mut s, &plant, 20.0); // throttle the plant to 20 MW
+    let load = load_factory(&mut s, "HEAVY LOAD", 150.0); // 10× constructor = 40 MW
+
+    let pid = store_proposal(&mut s, vec![power_route_item(&plant, &load)]);
+    let cons = s.eval_proposal(&pid).unwrap();
+
+    assert_eq!(
+        cons.circuit_impacts.len(),
+        1,
+        "one newly-formed grid: {:?}",
+        cons.circuit_impacts
+    );
+    let ci = &cons.circuit_impacts[0];
+    assert!(
+        ci.demand_after_mw > ci.generation_after_mw,
+        "load overdraws the throttled plant: {ci:?}"
+    );
+    assert!(ci.headroom_after < 0.05, "under the crit floor: {ci:?}");
+    assert_eq!(ci.level, "crit", "browned-out grid reads CRIT: {ci:?}");
+}
+
+/// Arbiter decision 1 + Piece 1: a proposal touching two grids yields one
+/// impact per TOUCHED grid; a grid the proposal never touches is absent. Grids
+/// are matched by member-set overlap, not their index-based names.
+#[test]
+fn multi_grid_proposal_yields_one_impact_per_touched_grid() {
+    let mut s = Session::in_memory(None).unwrap();
+    let p1 = gen_factory(&mut s, "PLANT ONE", 50.0);
+    let l1 = bare_factory(&mut s, "SUB ONE");
+    let p2 = gen_factory(&mut s, "PLANT TWO", 50.0);
+    let l2 = bare_factory(&mut s, "SUB TWO");
+    let p3 = gen_factory(&mut s, "PLANT THREE", 50.0);
+    let l3 = bare_factory(&mut s, "SUB THREE");
+
+    // grid one already exists in the plan — the proposal must never touch it
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Power,
+        from: p1.clone(),
+        to: l1.clone(),
+        path: vec![pos(0.0, 0.0), pos(1.0, 1.0)],
+    }])
+    .unwrap();
+
+    // the proposal ties two NEW grids (plant two + plant three)
+    let pid = store_proposal(
+        &mut s,
+        vec![power_route_item(&p2, &l2), power_route_item(&p3, &l3)],
+    );
+    let cons = s.eval_proposal(&pid).unwrap();
+
+    assert_eq!(
+        cons.circuit_impacts.len(),
+        2,
+        "one impact per touched grid; the untouched grid one is absent: {:?}",
+        cons.circuit_impacts
+    );
+    for ci in &cons.circuit_impacts {
+        assert!(
+            ci.generation_after_mw > 0.0 && ci.demand_before_mw == 0.0,
+            "each touched grid is newly formed from zero: {ci:?}"
+        );
+    }
 }

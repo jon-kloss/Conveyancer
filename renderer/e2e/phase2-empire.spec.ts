@@ -231,4 +231,16 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await expect(powerChip).not.toHaveClass(/active/);
   await page.keyboard.press("2");
   await expect(powerChip).toHaveClass(/active/);
+
+  // ---- a thin circuit tints the PWR chip (orange is a verb: color follows
+  // the derived condition). Throttle the coal plant below the grid's draw so
+  // GRID A browns out, then restore full generation for the later specs. ----
+  await edit(request, [{ type: "set_port_rate", id: mwOut, rate: 5 }]);
+  await page.reload();
+  await expect(page.getByTestId("map-root")).toBeVisible();
+  await expect(page.getByTestId("sb-power")).toHaveClass(/sb-(warn|crit)/);
+  await edit(request, [{ type: "set_port_rate", id: mwOut, rate: 150 }]);
+  await page.reload();
+  await expect(page.getByTestId("map-root")).toBeVisible();
+  await expect(page.getByTestId("sb-power")).not.toHaveClass(/sb-(warn|crit)/);
 });

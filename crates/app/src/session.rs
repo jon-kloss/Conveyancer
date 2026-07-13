@@ -137,6 +137,45 @@ pub struct DerivedCircuit {
     pub next_shed: Option<String>,
 }
 
+/// Per-grid power delta a proposal would cause (mock 3a review banner).
+/// Transient — derived for the review, never persisted, so no `serde(default)`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CircuitImpact {
+    pub name: String,
+    pub demand_before_mw: f64,
+    pub demand_after_mw: f64,
+    pub generation_before_mw: f64,
+    pub generation_after_mw: f64,
+    /// Headroom AFTER the change, via [`circuit_level`].
+    pub headroom_after: f64,
+    /// `"ok" | "warn" | "crit"` — banner color follows the derived condition.
+    pub level: String,
+}
+
+/// Circuit headroom + level from generation/demand — the ONE place the
+/// `(gen - demand) / gen` formula and the 0.20/0.05 thresholds live (SDD §12).
+/// Demand with no generation reads fully overdrawn (-1); an idle grid reads
+/// full margin (1). Routed through the advisor's power_swing rule, the review
+/// consequence, and the per-circuit impact so all three stay byte-identical.
+pub(crate) fn circuit_level(generation_mw: f64, demand_mw: f64) -> (f64, &'static str) {
+    let headroom = if generation_mw > 0.0 {
+        (generation_mw - demand_mw) / generation_mw
+    } else if demand_mw > 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    let level = if headroom < 0.05 {
+        "crit"
+    } else if headroom < 0.20 {
+        "warn"
+    } else {
+        "ok"
+    };
+    (headroom, level)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalCheck {
@@ -155,6 +194,9 @@ pub struct ProposalConsequence {
     pub delta_generation_mw: f64,
     pub machines: u32,
     pub warnings: Vec<String>,
+    /// Per-grid before→after power for every TOUCHED circuit (mock 3a banner).
+    /// Replaces the old margin-critical `warnings` strings — power lives here.
+    pub circuit_impacts: Vec<CircuitImpact>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -603,7 +645,8 @@ impl Session {
                     - out_rate_of(&saved, &before, item),
             })
             .collect();
-        // new deficits + circuits gone critical feed the amber warning strip
+        // new deficits feed the amber warning strip; per-circuit power now
+        // lives in the structured `circuit_impacts` below, not `warnings`.
         let before_keys: std::collections::BTreeSet<String> = before
             .deficits
             .iter()
@@ -625,20 +668,49 @@ impl Session {
                 ));
             }
         }
-        for c in &after.circuits {
-            let headroom = if c.generation_mw > 0.0 {
-                (c.generation_mw - c.demand_mw) / c.generation_mw
-            } else if c.demand_mw > 0.0 {
-                -1.0
-            } else {
-                1.0
+        // Per-circuit before→after power (mock 3a banner). Match each after
+        // circuit to its before self by LARGEST member-set overlap — the grid
+        // `name` is index-based and renumbers when sites are added. No overlap
+        // ⇒ a newly-formed grid (delta = the full after values).
+        let mut circuit_impacts: Vec<CircuitImpact> = Vec::new();
+        for ac in &after.circuits {
+            let after_set: std::collections::BTreeSet<&Id> = ac.members.iter().collect();
+            let matched = before
+                .circuits
+                .iter()
+                .map(|bc| {
+                    let overlap = bc.members.iter().filter(|m| after_set.contains(m)).count();
+                    (overlap, bc)
+                })
+                .filter(|(overlap, _)| *overlap > 0)
+                .max_by_key(|(overlap, _)| *overlap)
+                .map(|(_, bc)| bc);
+            let (demand_before, gen_before, before_set) = match matched {
+                Some(bc) => (
+                    bc.demand_mw,
+                    bc.generation_mw,
+                    bc.members
+                        .iter()
+                        .collect::<std::collections::BTreeSet<&Id>>(),
+                ),
+                None => (0.0, 0.0, std::collections::BTreeSet::new()),
             };
-            if headroom < 0.05 {
-                warnings.push(format!(
-                    "{} at {:.0}/{:.0} MW — margin critical",
-                    c.name, c.demand_mw, c.generation_mw
-                ));
+            let touched = before_set != after_set
+                || (ac.demand_mw - demand_before).abs() > 1e-6
+                || (ac.generation_mw - gen_before).abs() > 1e-6;
+            if !touched {
+                continue;
             }
+            let (headroom_after, level) = circuit_level(ac.generation_mw, ac.demand_mw);
+            circuit_impacts.push(CircuitImpact {
+                name: ac.name.clone(),
+                demand_before_mw: demand_before,
+                demand_after_mw: ac.demand_mw,
+                generation_before_mw: gen_before,
+                generation_after_mw: ac.generation_mw,
+                headroom_after,
+                level: level.to_string(),
+            });
         }
         let consequence = ProposalConsequence {
             goal_met: goal.iter().all(|g| g.achieved >= g.requested - 1e-6),
@@ -647,6 +719,7 @@ impl Session {
             delta_generation_mw: after.total_generation_mw - before.total_generation_mw,
             machines,
             warnings,
+            circuit_impacts,
         };
         self.state = saved;
         Ok(consequence)
@@ -1590,4 +1663,31 @@ fn item_or(manifest: &[(String, f64)], src_port: &Id, state: &PlanState) -> Stri
         .map(|(i, _)| i.clone())
         .or_else(|| state.ports.get(src_port).map(|p| p.item.clone()))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod circuit_tests {
+    use super::circuit_level;
+
+    /// The shared helper reproduces the EXACT 0.20 / 0.05 boundaries the
+    /// advisor's power_swing rule and the review consequence used inline, so
+    /// routing all three through it is behavior-preserving.
+    #[test]
+    fn circuit_level_matches_the_inline_thresholds() {
+        // 20% headroom is the OK floor: the advisor fired STRICTLY under 0.20
+        assert_eq!(circuit_level(100.0, 79.0).1, "ok"); // 21% headroom
+        assert_eq!(circuit_level(100.0, 80.0).1, "ok"); // exactly 20% → still OK
+        assert_eq!(circuit_level(100.0, 81.0).1, "warn"); // 19% → thin
+                                                          // 5% is the crit floor: the consequence pushed a warning STRICTLY under
+                                                          // 0.05, so exactly 5% is thin (warn), not yet critical
+        assert_eq!(circuit_level(100.0, 94.0).1, "warn"); // 6% → thin
+        assert_eq!(circuit_level(100.0, 95.0).1, "warn"); // exactly 5% → thin
+        assert_eq!(circuit_level(100.0, 96.0).1, "crit"); // 4% → critical
+                                                          // headroom value itself is the inline formula, byte-for-byte
+        assert!((circuit_level(150.0, 30.0).0 - 0.8).abs() < 1e-9);
+        // degenerate fallbacks: draw with no generation is fully overdrawn,
+        // an idle grid is full margin
+        assert_eq!(circuit_level(0.0, 10.0), (-1.0, "crit"));
+        assert_eq!(circuit_level(0.0, 0.0), (1.0, "ok"));
+    }
 }

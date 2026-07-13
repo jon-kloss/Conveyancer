@@ -29,6 +29,13 @@ test("wizard → reviewable proposal → partial accept → undo", async ({ page
   const items = await page.getByTestId("proposal-item").count();
   expect(items).toBeGreaterThanOrEqual(2);
 
+  // power-forward: the per-circuit banner is pinned above the footer — a grid
+  // line with a live headroom figure, and a generator-sizing line — both
+  // visible without scrolling the change list
+  await expect(page.getByTestId("proposal-power-line").first()).toContainText("headroom");
+  await expect(page.getByTestId("proposal-gen-line").first()).toBeVisible();
+  await expect(page.getByTestId("proposal-gen-line").first()).toContainText("generation");
+
   // partial accept: SPACE on the first CLAIM/ROUTE row strikes it + recomputes
   const acceptBtn = page.getByTestId("btn-accept-proposal");
   await expect(acceptBtn).toContainText(`ACCEPT ${items} AS PLANNED`);

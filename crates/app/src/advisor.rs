@@ -158,15 +158,9 @@ pub fn evaluate(state: &PlanState, derived: &Derived) -> Vec<Event> {
 
     // PowerSwing — circuit margin dips under 20% headroom
     for c in &derived.circuits {
-        let headroom = if c.generation_mw > 0.0 {
-            (c.generation_mw - c.demand_mw) / c.generation_mw
-        } else if c.demand_mw > 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        if headroom < 0.20 {
-            let crit = headroom < 0.05;
+        let (headroom, level) = crate::session::circuit_level(c.generation_mw, c.demand_mw);
+        if level != "ok" {
+            let crit = level == "crit";
             events.push(Event {
                 key: format!("power:{}", c.name),
                 rule: "power_swing",

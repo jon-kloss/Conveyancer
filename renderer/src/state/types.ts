@@ -385,6 +385,17 @@ export interface Proposal {
 
 export interface GoalCheck { item: string; requested: number; achieved: number }
 
+/** Per-grid before→after power for a touched circuit (mock 3a review banner). */
+export interface CircuitImpact {
+  name: string;
+  demandBeforeMw: number;
+  demandAfterMw: number;
+  generationBeforeMw: number;
+  generationAfterMw: number;
+  headroomAfter: number;
+  level: "ok" | "warn" | "crit";
+}
+
 export interface ProposalConsequence {
   goal: GoalCheck[];
   goalMet: boolean;
@@ -392,6 +403,7 @@ export interface ProposalConsequence {
   deltaGenerationMw: number;
   machines: number;
   warnings: string[];
+  circuitImpacts: CircuitImpact[];
 }
 
 export interface WizardConstraints {

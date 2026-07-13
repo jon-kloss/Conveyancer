@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
-import { fmtPower, flowLevel } from "../lib/format";
+import { fmtPower, flowLevel, circuitHeadroom, powerLevel, type FlowLevel } from "../lib/format";
 
 export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   const plan = useStore((s) => s.plan);
@@ -40,6 +40,23 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
     return out;
   }, [derived]);
 
+  // PWR chip color: the WORST per-circuit level (orange is a verb — it follows
+  // the derived condition). No grids yet ⇒ color the raw draw against total
+  // generation, so an ungridded empire's overdraw still tints.
+  const powerLevelWorst: FlowLevel = useMemo(() => {
+    const rank = { ok: 0, warn: 1, crit: 2 } as const;
+    if (derived.circuits.length === 0) {
+      return powerLevel(circuitHeadroom(derived.totalGenerationMw, derived.totalPowerMw));
+    }
+    let worst: FlowLevel = "ok";
+    for (const c of derived.circuits) {
+      const lvl = powerLevel(circuitHeadroom(c.generationMw, c.demandMw));
+      if (rank[lvl] > rank[worst]) worst = lvl;
+    }
+    return worst;
+  }, [derived.circuits, derived.totalGenerationMw, derived.totalPowerMw]);
+  const powerClass = powerLevelWorst === "crit" ? "sb-crit" : powerLevelWorst === "warn" ? "sb-warn" : "";
+
   const jumpToCrit = () => {
     const first = critEdges[0];
     if (!first) return;
@@ -65,11 +82,12 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
 
   return (
     <footer className="statusbar">
-      <span className="sb-item mono" data-testid="sb-power">
+      <span className={`sb-item mono ${powerClass}`} data-testid="sb-power">
         PWR {fmtPower(derived.totalPowerMw)}
         {derived.totalGenerationMw > 0 && <span className="sb-gen"> / {fmtPower(derived.totalGenerationMw)}</span>}
         <span className="sb-powerbar" aria-hidden>
           <span
+            className={powerLevelWorst === "ok" ? "" : powerLevelWorst}
             style={{
               width: `${Math.min(
                 100,

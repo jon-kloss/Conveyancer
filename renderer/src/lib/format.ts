@@ -36,6 +36,22 @@ export function flowLevel(saturation: number): FlowLevel {
   return "ok";
 }
 
+/** Circuit headroom: fraction of generation left as margin (SDD §12; mirrors
+ *  the Rust `circuit_level` formula). Demand with no generation reads fully
+ *  overdrawn (-1); an idle grid reads full margin (1). */
+export function circuitHeadroom(generationMw: number, demandMw: number): number {
+  if (generationMw > 0) return (generationMw - demandMw) / generationMw;
+  return demandMw > 0 ? -1 : 1;
+}
+
+/** Power level from headroom (thresholds: ≥20% OK, 5–20% WARN, <5% CRIT). The
+ *  single source for the audit rows, the PWR chip, and the review banner. */
+export function powerLevel(headroom: number): FlowLevel {
+  if (headroom < 0.05) return "crit";
+  if (headroom < 0.2) return "warn";
+  return "ok";
+}
+
 /** Honest fallback for item classes the bundled catalog doesn't know:
  *  Desc_SteelIngot_C → "Steel Ingot" (never leak raw class names to chips). */
 export function prettyClass(cls: string): string {
