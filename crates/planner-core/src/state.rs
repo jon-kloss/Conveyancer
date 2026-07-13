@@ -46,6 +46,11 @@ pub struct PlanState {
     pub switches: BTreeMap<Id, PrioritySwitch>,
     #[serde(default)]
     pub style_guides: BTreeMap<Id, StyleGuide>,
+    /// Manual build-queue completion overrides (W1c) — sparse assertion overlay
+    /// keyed by step id, auto-dissolving on re-import. serde-default so plan
+    /// files predating W1c load unchanged (no migration).
+    #[serde(default)]
+    pub build_overrides: BTreeMap<Id, BuildOverride>,
 }
 
 /// Collection names as they appear in patch paths and the projected store.
@@ -59,6 +64,7 @@ pub const COLL_JUNCTIONS: &str = "junctions";
 pub const COLL_PROPOSALS: &str = "proposals";
 pub const COLL_SWITCHES: &str = "switches";
 pub const COLL_STYLE_GUIDES: &str = "styleGuides";
+pub const COLL_BUILD_OVERRIDES: &str = "buildOverrides";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entity {
@@ -72,6 +78,7 @@ pub enum Entity {
     Proposal(Proposal),
     Switch(PrioritySwitch),
     StyleGuide(StyleGuide),
+    BuildOverride(BuildOverride),
 }
 
 impl Entity {
@@ -87,6 +94,7 @@ impl Entity {
             Entity::Proposal(e) => &e.id,
             Entity::Switch(e) => &e.id,
             Entity::StyleGuide(e) => &e.id,
+            Entity::BuildOverride(e) => &e.id,
         }
     }
 
@@ -102,6 +110,7 @@ impl Entity {
             Entity::Proposal(_) => COLL_PROPOSALS,
             Entity::Switch(_) => COLL_SWITCHES,
             Entity::StyleGuide(_) => COLL_STYLE_GUIDES,
+            Entity::BuildOverride(_) => COLL_BUILD_OVERRIDES,
         }
     }
 
@@ -117,6 +126,7 @@ impl Entity {
             Entity::Proposal(e) => serde_json::to_value(e).unwrap(),
             Entity::Switch(e) => serde_json::to_value(e).unwrap(),
             Entity::StyleGuide(e) => serde_json::to_value(e).unwrap(),
+            Entity::BuildOverride(e) => serde_json::to_value(e).unwrap(),
         }
     }
 
@@ -136,6 +146,9 @@ impl Entity {
             COLL_SWITCHES => Entity::Switch(serde_json::from_value(value.clone()).map_err(err)?),
             COLL_STYLE_GUIDES => {
                 Entity::StyleGuide(serde_json::from_value(value.clone()).map_err(err)?)
+            }
+            COLL_BUILD_OVERRIDES => {
+                Entity::BuildOverride(serde_json::from_value(value.clone()).map_err(err)?)
             }
             other => return Err(format!("unknown collection {other}")),
         })
@@ -157,6 +170,7 @@ impl PlanState {
             COLL_PROPOSALS: self.proposals,
             COLL_SWITCHES: self.switches,
             COLL_STYLE_GUIDES: self.style_guides,
+            COLL_BUILD_OVERRIDES: self.build_overrides,
         })
     }
 
@@ -172,6 +186,11 @@ impl PlanState {
             COLL_PROPOSALS => self.proposals.get(id).cloned().map(Entity::Proposal),
             COLL_SWITCHES => self.switches.get(id).cloned().map(Entity::Switch),
             COLL_STYLE_GUIDES => self.style_guides.get(id).cloned().map(Entity::StyleGuide),
+            COLL_BUILD_OVERRIDES => self
+                .build_overrides
+                .get(id)
+                .cloned()
+                .map(Entity::BuildOverride),
             _ => None,
         }
     }
@@ -208,6 +227,9 @@ impl PlanState {
             Entity::StyleGuide(v) => {
                 self.style_guides.insert(v.id.clone(), v);
             }
+            Entity::BuildOverride(v) => {
+                self.build_overrides.insert(v.id.clone(), v);
+            }
         }
     }
 
@@ -242,6 +264,9 @@ impl PlanState {
             }
             COLL_STYLE_GUIDES => {
                 self.style_guides.remove(id);
+            }
+            COLL_BUILD_OVERRIDES => {
+                self.build_overrides.remove(id);
             }
             _ => {}
         }

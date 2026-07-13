@@ -14,6 +14,7 @@ use planner_core::state::{Entity, PlanState};
 use planner_core::undo::UndoLog;
 
 use crate::advisor::{AdvisorFeed, AdvisorState};
+use crate::buildqueue::{derive_build_queue, BuildStep};
 
 use gamedata::docs::GameData;
 use gamedata::worldnodes::WorldSnapshot;
@@ -233,6 +234,9 @@ pub struct Derived {
     /// Whole-empire recompute wall time (SDD §5.4 budget: 200ms).
     pub recompute_us: u64,
     pub total_power_mw: f64,
+    /// Derived build queue (W1c): ordered ◇ planned / partially-built steps
+    /// with resolved completion. Recomputed every solve like circuits/deficits.
+    pub build_queue: Vec<BuildStep>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +346,7 @@ impl Session {
             "canRedo": self.undo.can_redo(),
             "undoLabel": self.undo.undo_label(),
             "viewState": self.file.view_state().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+            "lastImport": self.file.last_import().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
         })
     }
 
@@ -562,6 +567,20 @@ impl Session {
                 .map_err(|m| SessionError::Internal(format!("rollback failed: {m}")))?;
             return Err(e);
         }
+        // Stamp proposal provenance on the step-bearing entities this accept
+        // created (the raw commands default to CreatedBy::Manual): the build
+        // queue buckets steps by their creating proposal's number and lights
+        // milestone progress from it. Folded into the same undo entry.
+        for cid in tx.created.clone() {
+            self.stamp_proposal_provenance(&mut tx, &cid, id);
+        }
+        // A re-import drift accept writes the ◆ Built layer directly; any manual
+        // build-override the game has now caught up to is redundant, so dissolve
+        // it (mirrors the planned-delta dissolve in import.rs). Folded into the
+        // same undo entry as the accept.
+        if p.items.iter().any(|i| i.sync.is_some()) {
+            crate::buildqueue::dissolve_stale_overrides(&mut self.state, &mut tx, &self.gamedata);
+        }
         let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
         self.commit_mutation(tx, derived)
     }
@@ -749,6 +768,13 @@ impl Session {
             );
             let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
             let response = self.commit_mutation(tx, derived)?;
+            let groups_written: u32 = clusters.iter().map(|c| c.groups.len() as u32).sum();
+            self.write_last_import(
+                &snapshot.save_name,
+                "imported",
+                clusters.len() as u32,
+                groups_written,
+            );
             return Ok(ImportOutcome::Imported {
                 response,
                 factories: clusters.len() as u32,
@@ -759,8 +785,10 @@ impl Session {
         // re-import: diff only, never write
         let items = crate::import::diff_against_built(&self.state, &self.gamedata, &clusters);
         if items.is_empty() {
+            self.write_last_import(&snapshot.save_name, "in_sync", 0, 0);
             return Ok(ImportOutcome::InSync);
         }
+        let drift_count = items.len() as u32;
         let proposal = Proposal {
             id: String::new(),
             source: planner_core::proposals::ProposalSource::SaveReimport,
@@ -776,10 +804,65 @@ impl Session {
         };
         let response = self.edit(vec![Command::CreateProposal { proposal }])?;
         let proposal_id = response.created[0].clone();
+        self.write_last_import(&snapshot.save_name, "drift", 0, drift_count);
         Ok(ImportOutcome::Drift {
             response,
             proposal: proposal_id,
         })
+    }
+
+    /// Re-stamp a just-created ◇ Planned step-bearing entity (factory / group /
+    /// route / node claim) with `CreatedBy::Proposal(pid)`, recording the change
+    /// into `tx`. Only these four kinds surface as build-queue steps; the
+    /// `Planned` guard leaves ◆ Built entities minted by drift sync on their
+    /// `Import` provenance. No-op when already stamped.
+    fn stamp_proposal_provenance(&mut self, tx: &mut Transaction, id: &Id, pid: &str) {
+        let prov = CreatedBy::Proposal(pid.to_string());
+        if let Some(f) = self.state.factories.get(id) {
+            if f.status == Status::Planned && f.created_by != prov {
+                let mut f = f.clone();
+                f.created_by = prov;
+                tx.record(self.state.upsert(Entity::Factory(f)));
+            }
+        } else if let Some(g) = self.state.groups.get(id) {
+            if g.status == Status::Planned && g.created_by != prov {
+                let mut g = g.clone();
+                g.created_by = prov;
+                tx.record(self.state.upsert(Entity::Group(g)));
+            }
+        } else if let Some(r) = self.state.routes.get(id) {
+            if r.status == Status::Planned && r.created_by != prov {
+                let mut r = r.clone();
+                r.created_by = prov;
+                tx.record(self.state.upsert(Entity::Route(r)));
+            }
+        } else if let Some(c) = self.state.node_claims.get(id) {
+            if c.status == Status::Planned && c.created_by != prov {
+                let mut c = c.clone();
+                c.created_by = prov;
+                tx.record(self.state.upsert(Entity::NodeClaim(c)));
+            }
+        }
+    }
+
+    /// Persist the "what changed since last import" summary blob (best-effort,
+    /// like the advisor writes — a failed session-fact write must not fail the
+    /// import). Surfaced through [`Session::hydrate`] as `lastImport`.
+    fn write_last_import(
+        &self,
+        save_name: &str,
+        outcome: &str,
+        factories_added: u32,
+        groups_changed: u32,
+    ) {
+        let blob = serde_json::json!({
+            "at": crate::jobs::now_rfc3339(),
+            "saveName": save_name,
+            "outcome": outcome,
+            "factoriesAdded": factories_added,
+            "groupsChanged": groups_changed,
+        });
+        let _ = self.file.set_last_import(&blob.to_string());
     }
 
     /// Run the advisor gate over fresh derived state and persist new cards.
@@ -1488,6 +1571,9 @@ impl Session {
             }
             derived.total_generation_mw = self.state.factories.keys().map(gen_of).sum();
         }
+        // Build queue: a pure projection over canonical state + gamedata,
+        // recomputed here like circuits/deficits (no stored ordering entity).
+        derived.build_queue = derive_build_queue(&self.state, &self.gamedata);
         derived.recompute_us = started.elapsed().as_micros() as u64;
         derived
     }

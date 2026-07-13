@@ -11,6 +11,7 @@ import type {
   EditResponse,
   GameData,
   Id,
+  LastImport,
   Plan,
   ViewState,
   World,
@@ -59,6 +60,7 @@ const emptyPlan: Plan = {
   proposals: {},
   switches: {},
   styleGuides: {},
+  buildOverrides: {},
 };
 
 const emptyDerived: Derived = {
@@ -71,6 +73,7 @@ const emptyDerived: Derived = {
   empireCycle: false,
   recomputeUs: 0,
   totalPowerMw: 0,
+  buildQueue: [],
 };
 
 export interface AppStore {
@@ -104,6 +107,10 @@ export interface AppStore {
   /** ambient advisor feed (updated by every backend response) */
   advisor: AdvisorFeed;
   advisorOpen: boolean;
+  /** last save-import summary (W1c resume dashboard "what changed") */
+  lastImport: LastImport | null;
+  /** resume dashboard overlay — auto-presents once per plan (viewState.resumeSeen) */
+  dashboardOpen: boolean;
 
   hydrate(): Promise<void>;
   /** Resolves with the created ids, or null when the backend refused the
@@ -126,6 +133,10 @@ export interface AppStore {
   acceptProposal(id: Id): Promise<void>;
   setAdvisor(feed: AdvisorFeed): void;
   setAdvisorOpen(open: boolean): void;
+  setDashboardOpen(open: boolean): void;
+  /** mark a build-queue step done/undone (manual override), or clear it back
+      to derived with `null` — one undoable step (SetBuildDone). */
+  markBuildDone(id: Id, done: boolean | null): Promise<void>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -151,6 +162,8 @@ export const useStore = create<AppStore>((set, get) => ({
   wizard: { open: false },
   advisor: { cards: [], muted: [], paused: false, callsThisHour: 0, callBudget: 6, aiStatus: "offline" },
   advisorOpen: false,
+  lastImport: null,
+  dashboardOpen: false,
 
   async hydrate() {
     try {
@@ -167,6 +180,7 @@ export const useStore = create<AppStore>((set, get) => ({
         undoLabel: init.undoLabel,
         planHash: init.planHash,
         advisor: init.advisor,
+        lastImport: init.lastImport ?? null,
         viewState: init.viewState ?? {},
         view:
           openFactory && init.plan.factories[openFactory]
@@ -294,6 +308,16 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setAdvisorOpen(open) {
     set({ advisorOpen: open });
+  },
+
+  setDashboardOpen(open) {
+    set({ dashboardOpen: open });
+  },
+
+  async markBuildDone(id, done) {
+    // One undoable step: SetBuildDone upserts (Some) or clears (null) the
+    // override; the response patches /buildOverrides and the derived queue.
+    await get().dispatch([{ type: "set_build_done", id, done }]);
   },
 
   // Accept = one backend transaction, one undo entry, ◇ entities only.

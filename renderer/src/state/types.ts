@@ -193,6 +193,15 @@ export interface Plan {
   proposals: Record<Id, Proposal>;
   switches: Record<Id, PrioritySwitch>;
   styleGuides: Record<Id, StyleGuide>;
+  /** W1c manual build-queue completion overrides (sparse assertion overlay) */
+  buildOverrides: Record<Id, BuildOverride>;
+}
+
+/** Manual completion assertion for a build-queue step (W1c) — present only
+ *  when the user hand-checked/unchecked a step; auto-dissolves on re-import. */
+export interface BuildOverride {
+  id: Id;
+  done: boolean;
 }
 
 // ---- gamedata ----
@@ -329,6 +338,38 @@ export interface DerivedCircuit {
   nextShed: string | null;
 }
 
+/** W1c build queue — a DERIVED projection: each step is an existing ◇ planned
+ *  (or partially-built) entity, completion derived from the ◆ built layer. */
+export type BuildStepState = "pending" | "partial" | "done";
+export type BuildStepKind = "factory" | "group" | "route" | "claim";
+
+/** Milestone "built so far" (◆ production of the item) against the game total. */
+export interface BuildProgress {
+  item: string;
+  built: number;
+  total: number;
+}
+
+export interface BuildStep {
+  id: Id;
+  kind: BuildStepKind;
+  /** owning factory, for "go there" navigation (null on map-level routes) */
+  factory: Id | null;
+  label: string;
+  detail: string;
+  /** derived completion, ignoring the override — drives the ◇◈◆ glyph */
+  state: BuildStepState;
+  /** resolved answer: override ?? (state === "done") */
+  done: boolean;
+  /** a manual BuildOverride is pinning `done` */
+  overridden: boolean;
+  /** completion can't be auto-detected (routes/claims) — check is manual */
+  manualOnly: boolean;
+  /** ordering key: creating proposal's number, 0 for MANUAL/import */
+  number: number;
+  progress?: BuildProgress;
+}
+
 export interface Derived {
   factories: Record<Id, DerivedFactory>;
   nodes: Record<string, { claims: number; conflict: boolean }>;
@@ -339,6 +380,8 @@ export interface Derived {
   empireCycle: boolean;
   recomputeUs: number;
   totalPowerMw: number;
+  /** ordered ◇ planned / partially-built steps with resolved completion */
+  buildQueue: BuildStep[];
 }
 
 // ---- IPC ----
@@ -471,6 +514,17 @@ export interface InitPayload {
   canRedo: boolean;
   undoLabel: string | null;
   viewState: ViewState | null;
+  /** last save-import summary (W1c "what changed since last import") */
+  lastImport: LastImport | null;
+}
+
+/** Session fact: what the most recent save import did (W1c resume dashboard). */
+export interface LastImport {
+  at: string;
+  saveName: string;
+  outcome: "imported" | "drift" | "in_sync";
+  factoriesAdded: number;
+  groupsChanged: number;
 }
 
 export interface ViewState {
@@ -478,6 +532,9 @@ export interface ViewState {
   openFactory?: Id | null;
   /** first-run card dismissed */
   onboarded?: boolean;
+  /** resume dashboard has been auto-presented for this plan (persisted, like
+      `onboarded`) — so it greets once and never ambushes the restored map. */
+  resumeSeen?: boolean;
 }
 
 // ---- commands (serde: tag "type" snake_case, fields camelCase) ----
@@ -523,7 +580,8 @@ export type Command =
   | { type: "delete_switch"; id: Id }
   | { type: "create_style_guide"; guide: StyleGuide }
   | { type: "delete_style_guide"; id: Id }
-  | { type: "set_factory_theme"; factory: Id; styleGuide: Id | null };
+  | { type: "set_factory_theme"; factory: Id; styleGuide: Id | null }
+  | { type: "set_build_done"; id: Id; done: boolean | null };
 
 export const BELT_CAPACITY = [60, 120, 270, 480, 780, 1200];
 export const beltCapacity = (tier: number) => BELT_CAPACITY[Math.min(6, Math.max(1, tier)) - 1];

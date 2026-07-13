@@ -364,6 +364,20 @@ pub struct PrioritySwitch {
     pub created_by: CreatedBy,
 }
 
+/// Manual completion assertion for a build-queue step (W1c). A sparse overlay
+/// keyed by the step entity's id (factory / group / route / claim): present
+/// ONLY when the user has manually checked or unchecked a step against its
+/// derived state. Completion itself stays DERIVED (◇◈◆) — this override just
+/// pins the resolved answer, and auto-dissolves on re-import once the derived
+/// state agrees (mirroring `MachineGroup::planned_delta`). Lives in its own
+/// collection so the solver/drift reads never see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildOverride {
+    pub id: Id,
+    pub done: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Route {

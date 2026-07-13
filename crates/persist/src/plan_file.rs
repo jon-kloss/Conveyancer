@@ -297,6 +297,19 @@ impl PlanFile {
     pub fn view_state(&self) -> Option<String> {
         self.get_meta("view_state").ok()
     }
+
+    /// Last save-import summary (W1c) — a session fact for the resume
+    /// dashboard's "what changed since last import" line. Lives in the meta KV
+    /// store alongside view_state/advisor_gate, NOT the undo journal: it records
+    /// what the last import DID, and undoing a plan edit must not rewrite it.
+    pub fn set_last_import(&self, json: &str) -> Result<(), PersistError> {
+        self.set_meta("last_import", json)?;
+        Ok(())
+    }
+
+    pub fn last_import(&self) -> Option<String> {
+        self.get_meta("last_import").ok()
+    }
 }
 
 #[cfg(test)]

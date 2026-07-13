@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Titlebar from "./shell/Titlebar";
 import StatusBar from "./shell/StatusBar";
 import { useLayoutMode } from "./shell/useLayoutMode";
@@ -10,6 +10,7 @@ import WizardModal from "./wizard/WizardModal";
 import ProposalReview from "./proposal/ProposalReview";
 import AdvisorPanel from "./advisor/AdvisorPanel";
 import Onboarding from "./shell/Onboarding";
+import Dashboard from "./dashboard/Dashboard";
 import { useStore, errText } from "./state/store";
 import { isEditableTarget } from "./lib/keys";
 import "./shell/shell.css";
@@ -23,13 +24,41 @@ export default function App() {
   const view = useStore((s) => s.view);
   const reviewing = useStore((s) => s.reviewing);
   const reviewingProposal = useStore((s) => (s.reviewing ? s.plan.proposals[s.reviewing] ?? null : null));
+  const dashboardOpen = useStore((s) => s.dashboardOpen);
+  const emptyPlan = useStore((s) => Object.keys(s.plan.factories).length === 0);
   const hydrate = useStore((s) => s.hydrate);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
 
+  // Hydrate exactly once. StrictMode double-invokes mount effects in dev, and a
+  // second hydrate would re-`set` viewState from disk — clobbering the
+  // `resumeSeen` flag the auto-present effect persists a beat later, so the
+  // dashboard would ambush every later reload. The ref makes it idempotent.
+  const hydrated = useRef(false);
   useEffect(() => {
+    if (hydrated.current) return;
+    hydrated.current = true;
     void hydrate();
   }, [hydrate]);
+
+  // Auto-present the resume dashboard ONCE per plan when there's work to resume
+  // (a non-empty build queue OR open re-import drift) — else fall straight
+  // through to the map (or Onboarding for an empty plan). The `resumeSeen` flag
+  // is PERSISTED in viewState (like `onboarded`), so the greeting fires once and
+  // never ambushes the restored map on later opens; the H key + StatusBar chip
+  // reopen it on demand.
+  useEffect(() => {
+    if (!ready) return;
+    const st = useStore.getState();
+    if (st.viewState.resumeSeen) return;
+    st.saveViewState({ resumeSeen: true });
+    const hasDrift = Object.values(st.plan.proposals).some(
+      (p) => p.source === "save_reimport" && (p.status === "draft" || p.status === "reviewing"),
+    );
+    const hasWork = st.derived.buildQueue.length > 0 || hasDrift;
+    const empty = Object.keys(st.plan.factories).length === 0;
+    if (hasWork && !st.reviewing && !empty) st.setDashboardOpen(true);
+  }, [ready]);
 
   // Backstop: a rejection that escaped every local handler still lands in
   // the status-bar chip instead of dying silently in the console.
@@ -58,6 +87,13 @@ export default function App() {
       } else if ((e.key === "a" || e.key === "A") && !e.metaKey && !e.ctrlKey && !isEditableTarget(e)) {
         const st = useStore.getState();
         st.setAdvisorOpen(!st.advisorOpen);
+      } else if ((e.key === "h" || e.key === "H") && !e.metaKey && !e.ctrlKey && !isEditableTarget(e)) {
+        // H toggles the resume dashboard (home) — but never over a review.
+        const st = useStore.getState();
+        if (!st.reviewing) st.setDashboardOpen(!st.dashboardOpen);
+      } else if (e.key === "Escape") {
+        const st = useStore.getState();
+        if (st.dashboardOpen) st.setDashboardOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -106,6 +142,9 @@ export default function App() {
         {!reviewing && <AdvisorPanel />}
         <WizardModal />
         <Onboarding />
+        {/* Resume overlay: on top of the restored view, never over a review
+            or the empty-plan Onboarding (Principle 1 — reveals the map on dismiss). */}
+        {dashboardOpen && !reviewing && !emptyPlan && <Dashboard />}
       </main>
       <StatusBar overlayMode={mode === "overlay"} />
     </div>

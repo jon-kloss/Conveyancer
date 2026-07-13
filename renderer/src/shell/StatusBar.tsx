@@ -10,9 +10,14 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   const derived = useStore((s) => s.derived);
   const setView = useStore((s) => s.setView);
   const setSelection = useStore((s) => s.setSelection);
+  const setDashboardOpen = useStore((s) => s.setDashboardOpen);
   const cmdError = useStore((s) => s.cmdError);
   const clearCmdError = useStore((s) => s.clearCmdError);
   const [expanded, setExpanded] = useState(false);
+
+  // Build-queue resume affordance: Done/total chip that reopens the dashboard.
+  const buildQueue = derived.buildQueue;
+  const buildDone = useMemo(() => buildQueue.filter((s) => s.done).length, [buildQueue]);
 
   // auto-clear after ~6s; the `at` handshake keeps a stale timer from
   // dismissing an error that arrived after the timer was armed.
@@ -108,6 +113,16 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
         </span>
       ) : (
         counts
+      )}
+      {buildQueue.length > 0 && (
+        <button
+          className="sb-item mono"
+          data-testid="sb-resume"
+          onClick={() => setDashboardOpen(true)}
+          title="Resume — build queue (H)"
+        >
+          ▶ RESUME {buildDone}/{buildQueue.length}
+        </button>
       )}
       {cmdError && (
         <button

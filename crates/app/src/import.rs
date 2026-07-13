@@ -82,7 +82,7 @@ pub struct ClusterGroup {
 
 const DBSCAN_EPS_M: f64 = 120.0;
 /// Clusters match an existing Built factory within this range on re-import.
-const REMATCH_M: f64 = 250.0;
+pub(crate) const REMATCH_M: f64 = 250.0;
 /// Clock drift below this (absolute, on the 0–2.5 scale) is rounding noise,
 /// not player intent: cluster mean clocks are rounded to 3 decimals (≤ 5e-4
 /// error), while deliberate in-game reclocks move in ≥ 1% steps.
@@ -215,6 +215,22 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
         c.name = format!("{} WORKS {}", c.name, n);
     }
     clusters
+}
+
+/// Nearest ◆ Built factory to `pos` within [`REMATCH_M`], or `None`. The
+/// shared "is there a built twin here" rule: re-import drift diffing matches
+/// clusters to built factories within this same radius, so the build queue
+/// (planned entity → its built twin) and drift detection agree on what counts
+/// as "the same site", never disagreeing over whether a plan is built yet.
+pub(crate) fn nearest_built_match<'a>(state: &'a PlanState, pos: &MapPos) -> Option<&'a Factory> {
+    state
+        .factories
+        .values()
+        .filter(|f| f.status == Status::Built)
+        .map(|f| (f, (f.position.x - pos.x).hypot(f.position.y - pos.y)))
+        .filter(|(_, d)| *d <= REMATCH_M)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(f, _)| f)
 }
 
 /// Lowest belt tier whose capacity covers `rate`.

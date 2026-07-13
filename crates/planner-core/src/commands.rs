@@ -240,6 +240,13 @@ pub enum Command {
         factory: Id,
         style_guide: Option<Id>,
     },
+    /// Manually assert (or clear) a build-queue step's completion (W1c).
+    /// `Some(done)` upserts the override; `None` removes it, reverting the step
+    /// to its derived state. Metadata, not a ◆ mutation — no `require_planned`.
+    SetBuildDone {
+        id: Id,
+        done: Option<bool>,
+    },
 }
 
 impl Command {
@@ -286,6 +293,7 @@ impl Command {
             Command::CreateStyleGuide { .. } => "save style guide",
             Command::DeleteStyleGuide { .. } => "delete style guide",
             Command::SetFactoryTheme { .. } => "set factory theme",
+            Command::SetBuildDone { .. } => "mark build done",
         }
     }
 }
@@ -363,6 +371,15 @@ fn require_edge_end(state: &PlanState, end: &EdgeEnd, factory: &Id) -> Result<()
 /// route. Every removal path (DeleteRoute, DeleteFactory, DeletePort) goes
 /// through here so no path can forget the cascade. Deliberately carries no
 /// status check — DeleteFactory bypasses `require_planned` for its children.
+/// Drop a build-queue override for a step entity that is being removed, so an
+/// override can never dangle past the thing it tracked. Recorded into `tx` so
+/// undo restores it with the entity. No-op when there is no override.
+fn prune_build_override(state: &mut PlanState, tx: &mut Transaction, id: &Id) {
+    if let Some(ops) = state.remove(COLL_BUILD_OVERRIDES, id) {
+        tx.record(ops);
+    }
+}
+
 fn remove_route_cascading(state: &mut PlanState, tx: &mut Transaction, route_id: &Id) {
     if let Some(r) = state.routes.get(route_id).cloned() {
         for pid in [&r.endpoints.0, &r.endpoints.1] {
@@ -388,6 +405,7 @@ fn remove_route_cascading(state: &mut PlanState, tx: &mut Transaction, route_id:
     if let Some(ops) = state.remove(COLL_ROUTES, route_id) {
         tx.record(ops);
     }
+    prune_build_override(state, tx, route_id);
 }
 
 /// Remove a factory and everything belonging to it, recording each op into
@@ -453,6 +471,7 @@ pub fn remove_factory_cascading(state: &mut PlanState, tx: &mut Transaction, id:
         if let Some(ops) = state.remove(COLL_GROUPS, &gid) {
             tx.record(ops);
         }
+        prune_build_override(state, tx, &gid);
     }
     for pid in port_ids {
         if let Some(ops) = state.remove(COLL_PORTS, &pid) {
@@ -463,6 +482,7 @@ pub fn remove_factory_cascading(state: &mut PlanState, tx: &mut Transaction, id:
         if let Some(ops) = state.remove(COLL_NODE_CLAIMS, &cid) {
             tx.record(ops);
         }
+        prune_build_override(state, tx, &cid);
     }
     for jid in junction_ids {
         if let Some(ops) = state.remove(COLL_JUNCTIONS, &jid) {
@@ -472,6 +492,7 @@ pub fn remove_factory_cascading(state: &mut PlanState, tx: &mut Transaction, id:
     if let Some(ops) = state.remove(COLL_FACTORIES, id) {
         tx.record(ops);
     }
+    prune_build_override(state, tx, id);
 }
 
 /// Apply a command to canonical state. Returns an open `Transaction`.
@@ -792,6 +813,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             if let Some(ops) = state.remove(COLL_GROUPS, id) {
                 tx.record(ops);
             }
+            prune_build_override(state, &mut tx, id);
         }
         Command::AddPort {
             factory,
@@ -1259,6 +1281,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             if let Some(ops) = state.remove(COLL_NODE_CLAIMS, id) {
                 tx.record(ops);
             }
+            prune_build_override(state, &mut tx, id);
         }
         Command::RenamePlan { name } => {
             let old = state.meta.name.clone();
@@ -1446,6 +1469,23 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             }
             f.style_guide = style_guide.clone();
             tx.record(state.upsert(Entity::Factory(f)));
+        }
+        Command::SetBuildDone { id, done } => {
+            // The override is a sparse assertion overlay routed through the same
+            // upsert/remove machinery as every other entity, so it undoes in one
+            // step. No `require_planned`: it is build-progress metadata, never a
+            // mutation of the ◆ game-ground-truth layer.
+            match done {
+                Some(v) => tx.record(state.upsert(Entity::BuildOverride(BuildOverride {
+                    id: id.clone(),
+                    done: *v,
+                }))),
+                None => {
+                    if let Some(ops) = state.remove(COLL_BUILD_OVERRIDES, id) {
+                        tx.record(ops);
+                    }
+                }
+            }
         }
         Command::DeleteSwitch { id } => {
             let sw = state
