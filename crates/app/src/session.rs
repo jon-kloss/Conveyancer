@@ -260,6 +260,11 @@ impl Session {
             }
         }
         advisor.muted = file.load_mutes().unwrap_or_default().into_iter().collect();
+        if let Some(json) = file.advisor_gate() {
+            // Arming state survives restarts: still-true conditions were
+            // already reported and must not fire duplicate cards on launch.
+            advisor.restore_gate_snapshot(&json);
+        }
         Ok(Self {
             state,
             undo,
@@ -695,6 +700,11 @@ impl Session {
                 .file
                 .save_advisor_card(&card.id, &serde_json::to_string(card).unwrap_or_default());
         }
+        // Gate state changes even when nothing fires (keys arm and prune) —
+        // snapshot it best-effort, like the card writes above.
+        let _ = self
+            .file
+            .save_advisor_gate(&self.advisor.gate_snapshot_json());
     }
 
     /// Dismiss = hide the card AND mute its rule (persisted) — the spec's

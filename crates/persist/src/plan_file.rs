@@ -276,6 +276,19 @@ impl PlanFile {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// Advisor gate arming state (active condition keys + per-rule last-fire
+    /// times) as an opaque JSON blob — joins cards/mutes outside the undo
+    /// journal: it records what the advisor already REPORTED, and undoing a
+    /// plan edit must not re-arm those reports.
+    pub fn save_advisor_gate(&self, json: &str) -> Result<(), PersistError> {
+        self.set_meta("advisor_gate", json)?;
+        Ok(())
+    }
+
+    pub fn advisor_gate(&self) -> Option<String> {
+        self.get_meta("advisor_gate").ok()
+    }
+
     pub fn set_view_state(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("view_state", json)?;
         Ok(())
