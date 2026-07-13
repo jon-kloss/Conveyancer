@@ -1,11 +1,13 @@
 // Phase 4 exit criterion: import Dunarr-076; drift renders in DIFF.
 // Also: rail route math block through the real inspector.
 
+import { fileURLToPath } from "node:url";
+
 import { test, expect, type Page } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
-const SAVES = "/home/user/Conveyancer/fixtures/saves";
+const SAVES = fileURLToPath(new URL("../../fixtures/saves", import.meta.url));
 
 async function importSave(page: Page, file: string) {
   const [chooser] = await Promise.all([
