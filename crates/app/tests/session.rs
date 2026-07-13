@@ -2078,6 +2078,37 @@ fn undo_redo_persist_failure_restores_position() {
 }
 
 #[test]
+fn corrupt_journal_undo_fails_cleanly_and_session_self_heals() {
+    use planner_core::patch::PatchOp;
+    use planner_core::undo::{UndoEntry, UndoLog};
+    let mut s = Session::in_memory(None).unwrap();
+    let fid = create_named_factory(&mut s, "FIRST");
+
+    // Simulate a damaged persisted journal: an in-memory log whose top
+    // entry's inverse can't apply. Before the fallible-undo fix this was a
+    // panic (poisoned mutex); now it surfaces as an error and the session
+    // self-heals from disk.
+    let corrupt = UndoEntry {
+        label: "corrupt".into(),
+        forward: vec![],
+        inverse: vec![PatchOp::Add {
+            path: "/wizzles/x".into(),
+            value: serde_json::json!({}),
+        }],
+    };
+    s.undo = UndoLog::hydrate(vec![corrupt]);
+    assert!(s.undo().is_err(), "corrupt journal must surface, not panic");
+
+    // Rehydrated from the plan file: state matches disk and the real journal
+    // is back, so the same ⌘Z now undoes cleanly.
+    assert_disk_matches_memory(&s);
+    assert_eq!(s.state.factories[&fid].name, "FIRST");
+    s.undo().unwrap().unwrap();
+    assert!(!s.state.factories.contains_key(&fid));
+    assert_disk_matches_memory(&s);
+}
+
+#[test]
 fn accept_proposal_persist_failure_rolls_back() {
     use planner_core::proposals::*;
     let mut s = Session::in_memory(None).unwrap();

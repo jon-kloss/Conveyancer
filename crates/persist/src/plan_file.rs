@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(cursor, 2);
         assert_eq!(state.factories[&fid].name, "IRON WORKS");
         let mut log = UndoLog::hydrate(entries);
-        let batch = log.undo(&mut state).unwrap();
+        let batch = log.undo(&mut state).unwrap().unwrap();
         assert_eq!(state.factories[&fid].name, "NORTHERN FORGE");
         let mut file2 = file2;
         file2.checkpoint(&batch, &state.meta, 1).unwrap();

@@ -398,8 +398,17 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Result<Option<EditResponse>, SessionError> {
-        let Some(batch) = self.undo.undo(&mut self.state) else {
-            return Ok(None);
+        let batch = match self.undo.undo(&mut self.state) {
+            Ok(None) => return Ok(None),
+            Ok(Some(batch)) => batch,
+            Err(m) => {
+                // Corrupt journal entry: the log is untouched but state may
+                // hold a partial application. Disk is intact (no checkpoint
+                // ran), so restore from it — every subsequent ⌘Z re-fails
+                // cleanly instead of panicking.
+                self.rehydrate_from_disk(&m)?;
+                return Err(SessionError::Internal(format!("undo failed: {m}")));
+            }
         };
         if let Err(e) = self
             .file
@@ -407,23 +416,35 @@ impl Session {
         {
             // Disk untouched (the checkpoint transaction rolled back) —
             // compensate with the opposite move: re-applying the just-undone
-            // entry restores state and cursor in one call.
-            let _ = self.undo.redo(&mut self.state);
+            // entry restores state and cursor in one call. It re-applies a
+            // batch that applied cleanly moments ago; if it somehow fails,
+            // restore from disk, which still holds the pre-undo state.
+            if let Err(m) = self.undo.redo(&mut self.state) {
+                self.rehydrate_from_disk(&m)?;
+            }
             return Err(e.into());
         }
         Ok(Some(self.nav_response(batch)))
     }
 
     pub fn redo(&mut self) -> Result<Option<EditResponse>, SessionError> {
-        let Some(batch) = self.undo.redo(&mut self.state) else {
-            return Ok(None);
+        let batch = match self.undo.redo(&mut self.state) {
+            Ok(None) => return Ok(None),
+            Ok(Some(batch)) => batch,
+            Err(m) => {
+                // Mirror of undo(): self-heal from disk, surface the error.
+                self.rehydrate_from_disk(&m)?;
+                return Err(SessionError::Internal(format!("redo failed: {m}")));
+            }
         };
         if let Err(e) = self
             .file
             .checkpoint(&batch, &self.state.meta, self.applied_count())
         {
             // Mirror of undo(): un-apply the just-redone entry.
-            let _ = self.undo.undo(&mut self.state);
+            if let Err(m) = self.undo.undo(&mut self.state) {
+                self.rehydrate_from_disk(&m)?;
+            }
             return Err(e.into());
         }
         Ok(Some(self.nav_response(batch)))

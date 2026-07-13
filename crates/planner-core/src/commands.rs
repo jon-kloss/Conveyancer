@@ -320,6 +320,43 @@ fn valid_tier(tier: u8) -> Result<u8, DomainError> {
     Ok(tier)
 }
 
+/// Endpoint midpoint of a route path — where a priority switch sits (square
+/// pin at the line's midpoint, A2.3). Shared by AddPrioritySwitch and
+/// MoveFactoryPin so placement and refresh can never disagree. Empty paths
+/// fall back to the origin, exactly as switch placement always has.
+fn line_midpoint(path: &[MapPos]) -> MapPos {
+    let a = path.first().copied().unwrap_or(MapPos {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    });
+    let b = path.last().copied().unwrap_or(a);
+    MapPos {
+        x: (a.x + b.x) / 2.0,
+        y: (a.y + b.y) / 2.0,
+        z: (a.z + b.z) / 2.0,
+    }
+}
+
+/// Resolve an edge endpoint to its owning factory, or fail: `NotFound` for a
+/// dangling reference, `Invalid` for an endpoint owned by another factory.
+/// Dev-bridge clients and delete/connect races can produce both; either would
+/// corrupt the intra-factory graph.
+fn require_edge_end(state: &PlanState, end: &EdgeEnd, factory: &Id) -> Result<(), DomainError> {
+    let (id, owner) = match end {
+        EdgeEnd::Group(gid) => (gid, state.groups.get(gid).map(|g| g.factory.clone())),
+        EdgeEnd::Port(pid) => (pid, state.ports.get(pid).map(|p| p.factory.clone())),
+        EdgeEnd::Junction(jid) => (jid, state.junctions.get(jid).map(|j| j.factory.clone())),
+    };
+    let owner = owner.ok_or(DomainError::NotFound { id: id.clone() })?;
+    if &owner != factory {
+        return Err(DomainError::Invalid {
+            message: format!("edge endpoint {id} belongs to a different factory"),
+        });
+    }
+    Ok(())
+}
+
 /// Remove a route and everything riding it, recording each op into `tx`:
 /// unbind any port still bound to the line, cascade the priority switches
 /// sitting on it (switches riding this line go with it), then remove the
@@ -467,6 +504,13 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
+            // Deliberately NOT `require_planned` (§3.1.1 exemption): names are
+            // planner-side labels, not game ground truth — the save format has
+            // no factory-name concept, import *synthesizes* names from the
+            // dominant output, and re-import matching is positional, so a
+            // rename can never break drift detection. Same reasoning as
+            // TidyLayout / card moves on ◆ built entities (DECISIONS
+            // "Built-immutability matrix").
             f.name = name.clone();
             tx.record(state.upsert(Entity::Factory(f)));
         }
@@ -505,7 +549,24 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     touched = true;
                 }
                 if touched {
+                    // Priority switches sit at the line's midpoint (A2.3) —
+                    // snap them to the refreshed geometry so a pin move never
+                    // strands them on the stale line.
+                    let mid = line_midpoint(&r.path);
+                    let rid = r.id.clone();
                     tx.record(state.upsert(Entity::Route(r)));
+                    let switches: Vec<PrioritySwitch> = state
+                        .switches
+                        .values()
+                        .filter(|s| s.route == rid)
+                        .cloned()
+                        .collect();
+                    for mut sw in switches {
+                        if sw.position != mid {
+                            sw.position = mid;
+                            tx.record(state.upsert(Entity::Switch(sw)));
+                        }
+                    }
                 }
             }
         }
@@ -837,6 +898,16 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             state.factories.get(factory).ok_or(DomainError::NotFound {
                 id: factory.clone(),
             })?;
+            // Every endpoint must exist and belong to this edge's factory —
+            // a dangling or cross-factory end would corrupt the graph.
+            if from == to {
+                return Err(DomainError::Invalid {
+                    message: "an edge needs two different endpoints".into(),
+                });
+            }
+            for end in [from, to] {
+                require_edge_end(state, end, factory)?;
+            }
             // Junction port budgets are physical game constraints (splitter
             // 1-in/3-out, merger 3-in/1-out, storage 1/1) — refuse overflow.
             for (end, incoming) in [(from, false), (to, true)] {
@@ -909,6 +980,10 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
+            // Belt tier is physical game infrastructure — a Mk.N belt exists
+            // in the world, so the ◆ built layer is import-owned (§3.1.1).
+            // Tier-upgrade-as-planned-delta is BACKLOG.
+            require_planned(e.status, id, "set tier")?;
             e.tier = valid_tier(*tier)?;
             tx.record(state.upsert(Entity::Edge(e)));
         }
@@ -1121,6 +1196,9 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .get(id)
                 .cloned()
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
+            // Same field SetRouteSpec guards ("respec") — a built route's
+            // belt tier is physical infrastructure (§3.1.1).
+            require_planned(r.status, id, "set tier")?;
             match &mut r.kind {
                 RouteKind::Belt { tier: t } => *t = valid_tier(*tier)?,
                 other => {
@@ -1294,22 +1372,12 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     message: format!("priority P{priority} outside P1–P8"),
                 });
             }
-            // midpoint of the line — square pin grammar (A2.3)
-            let a = r.path.first().copied().unwrap_or(MapPos {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            });
-            let b = r.path.last().copied().unwrap_or(a);
             let sw = PrioritySwitch {
                 id: new_id(),
                 route: route.clone(),
                 priority: *priority,
-                position: MapPos {
-                    x: (a.x + b.x) / 2.0,
-                    y: (a.y + b.y) / 2.0,
-                    z: (a.z + b.z) / 2.0,
-                },
+                // midpoint of the line — square pin grammar (A2.3)
+                position: line_midpoint(&r.path),
                 status: Status::Planned,
                 created_by: CreatedBy::Manual,
             };
