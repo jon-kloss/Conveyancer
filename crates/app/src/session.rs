@@ -918,6 +918,42 @@ impl Session {
 
         let baseline = production[0].clone();
         const EPS: f64 = 1e-6;
+
+        // Discriminate "no downtime" from "can't compute downtime". The old
+        // factory declares positive output when any of its Out ports carries a
+        // positive rate. If it declares output but the scratch-solve baseline is
+        // ~0 for every tracked item, the factory does not actually produce in the
+        // current solve (imported/unsolved/starved — the bundled fixture catalog
+        // can't resolve its recipes) — downtime is UNAVAILABLE, not zero. A
+        // silent-empty dips list here would read as "no impact"; that is the
+        // dishonesty this feature exists to prevent.
+        let declared_positive = self
+            .state
+            .factories
+            .get(&cutover.old_factory)
+            .map(|old| {
+                old.ports
+                    .iter()
+                    .filter_map(|pid| self.state.ports.get(pid))
+                    .filter(|p| {
+                        p.direction == PortDirection::Out && p.item != gamedata::docs::POWER_ITEM
+                    })
+                    .any(|p| p.rate > EPS)
+            })
+            .unwrap_or(false);
+        let baseline_positive = baseline.values().any(|r| *r > EPS);
+        let (downtime_available, unavailable_reason) = if declared_positive && !baseline_positive {
+            (
+                false,
+                Some(format!(
+                    "{} does not produce in the current solve — imported factories may need a real recipe catalog (set FICSIT_DOCS_JSON to your game's Docs.json)",
+                    cutover.old_name
+                )),
+            )
+        } else {
+            (true, None)
+        };
+
         let mut dips: Vec<Dip> = Vec::new();
         for (k, row) in production.iter().enumerate() {
             if k == 0 {
@@ -945,6 +981,8 @@ impl Session {
             production,
             dips,
             hard: cutover.node_reuse,
+            downtime_available,
+            unavailable_reason,
         })
     }
 

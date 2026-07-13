@@ -427,6 +427,12 @@ export interface CutoverPlan {
   dips: Dip[];
   /** node reuse: unavoidable downtime for the build window */
   hard: boolean;
+  /** whether the downtime could be COMPUTED. false when the old factory declares
+   *  positive output but the scratch-solve baseline is ~0 (imported/unsolved) —
+   *  distinguishes "no impact" from "can't compute". Transient (derived). */
+  downtimeAvailable: boolean;
+  /** human reason set when downtimeAvailable is false (else null) */
+  unavailableReason: string | null;
 }
 
 export interface Derived {

@@ -214,7 +214,16 @@ export default function Dashboard() {
             </div>
           );
         })}
-        {dt && dt.dips.length > 0 && (
+        {dt && dt.downtimeAvailable === false && (
+          // Honest: the baseline couldn't be computed (old factory declares
+          // output but doesn't produce in the solve). Informational, not an
+          // error — ink, not a crit/warn colour. A silent-empty downtime here
+          // would read as "no impact", which is exactly the dishonesty we avoid.
+          <div className="dash-line mono info" data-testid="downtime-unavailable">
+            DOWNTIME UNAVAILABLE — {dt.unavailableReason}
+          </div>
+        )}
+        {dt && dt.downtimeAvailable && dt.dips.length > 0 && (
           <div className="dash-line" data-testid="cutover-downtime">
             {dt.dips.map((d, i) => (
               <span className="chip warn" key={i} data-testid="downtime-dip">
@@ -222,6 +231,11 @@ export default function Dashboard() {
                 {d.estHours < 1 ? d.estHours.toFixed(1) : Math.round(d.estHours)}h (est)
               </span>
             ))}
+          </div>
+        )}
+        {dt && dt.downtimeAvailable && dt.dips.length === 0 && (
+          <div className="dash-line mono dim" data-testid="downtime-none">
+            no production impact
           </div>
         )}
       </div>

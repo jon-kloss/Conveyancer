@@ -399,6 +399,81 @@ fn downtime_drop_across_boundaries() {
     );
 }
 
+/// A factory that DECLARES a screw Out port at 40/min but has no group feeding
+/// it — the empire solve produces 0 screws for it. This reproduces the Dunarr
+/// hard case: an imported ◆ factory whose recipes the bundled fixture catalog
+/// can't resolve declares positive output yet solves to zero.
+fn starved_factory(s: &mut Session, name: &str, x: f64, y: f64) -> Id {
+    let f = planned_factory(s, name, x, y);
+    add_port(s, &f, PortDirection::Out, SCREW, 40.0);
+    f
+}
+
+/// HONESTY REGRESSION (Dunarr hard case): when the old factory declares positive
+/// output but the scratch-solve baseline is ~0 for every tracked item, the
+/// downtime CANNOT be computed. `cutover_plan` must report that honestly
+/// (`downtime_available = false` + a reason), never a silent-empty dips list
+/// that reads as "no impact".
+#[test]
+fn downtime_unavailable_when_old_factory_does_not_produce() {
+    let mut s = Session::in_memory(None).unwrap();
+    // OLD declares 40 screws/min on an Out port but has no producing group →
+    // it solves to 0. NEW is a real screw factory that WOULD produce 40.
+    let old = starved_factory(&mut s, "IRON INGOT WORKS 2", 0.0, 0.0);
+    let new = planned_screw_factory(&mut s, "NEW SCREWS", 400.0, 0.0);
+    // Link new → old directly: the SetFactoryReplaces guard requires a ◆ Built
+    // target, but the downtime engine works off the derived Cutover, so set the
+    // alias in state (as `plan_replacement`'s accept path ultimately would).
+    s.state.factories.get_mut(&new).unwrap().replaces = Some(old.clone());
+
+    let plan = s.cutover_plan(new.clone()).unwrap();
+    assert!(
+        !plan.downtime_available,
+        "old declares output but solves to 0 → downtime unavailable"
+    );
+    let reason = plan.unavailable_reason.expect("a reason is set");
+    assert!(!reason.is_empty(), "reason is non-empty");
+    assert!(
+        reason.contains("IRON INGOT WORKS 2"),
+        "reason names the old factory, got: {reason}"
+    );
+    assert!(
+        plan.dips.is_empty(),
+        "no silent dips when downtime can't be computed"
+    );
+    // the tracked screw item's baseline is ~0 — the honest signal itself.
+    assert!(plan.tracked.contains(&SCREW.to_string()));
+    assert!(plan.baseline.get(SCREW).copied().unwrap_or(0.0) < 1e-6);
+}
+
+/// The working case is UNCHANGED: when the old factory really produces, the
+/// switch boundary drops production and `cutover_plan` returns a computable
+/// downtime (`downtime_available = true`) with a real dip.
+#[test]
+fn downtime_available_with_dip_unchanged() {
+    let mut s = Session::in_memory(None).unwrap();
+    let old = planned_screw_factory(&mut s, "OLD SCREWS", 0.0, 0.0);
+    let new = planned_screw_factory(&mut s, "NEW SCREWS", 400.0, 0.0);
+    s.state.factories.get_mut(&new).unwrap().replaces = Some(old.clone());
+
+    let plan = s.cutover_plan(new.clone()).unwrap();
+    assert!(
+        plan.downtime_available,
+        "old produces → downtime is computable"
+    );
+    assert!(
+        plan.unavailable_reason.is_none(),
+        "no reason when available"
+    );
+    // baseline screw ≈ 40; the Switch boundary tears old down before new is up.
+    assert!(plan.baseline.get(SCREW).copied().unwrap_or(0.0) > 1.0);
+    assert!(
+        !plan.dips.is_empty(),
+        "the switch boundary yields a real dip"
+    );
+    assert!(plan.dips.iter().any(|d| d.item == SCREW));
+}
+
 /// Node reuse: the new ◇ claims a node the old ◆ still holds → hard flag set (and
 /// the shared node lights the existing conflict marker).
 #[test]

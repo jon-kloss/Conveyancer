@@ -18,11 +18,16 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
   const dispatch = useStore((s) => s.dispatch);
   const planReplacement = useStore((s) => s.planReplacement);
   const [editingName, setEditingName] = useState(false);
+  // Replacement infeasibility is an EXPECTED outcome — surface it as a clear,
+  // dismissible inline notice at the button, not just the status-bar chip.
+  const [infeasible, setInfeasible] = useState<string | null>(null);
 
   const df = derived.factories[factory.id];
   const ports = factory.ports.map((id) => plan.ports[id]).filter(Boolean);
   const outputs = ports.filter((p) => p.direction === "out");
   const inputs = ports.filter((p) => p.direction === "in");
+  // Distinct product lines this factory ships — drives the multi-output guidance.
+  const outputLines = new Set(outputs.map((p) => p.item)).size;
   const projected = factory.status === "planned" ? "projected" : "";
 
   return (
@@ -209,10 +214,33 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
             className="btn btn-ghost"
             style={{ width: "100%", height: 32 }}
             data-testid="btn-plan-replacement"
-            onClick={() => void planReplacement(factory.id)}
+            onClick={() => {
+              setInfeasible(null);
+              void planReplacement(factory.id).then((reason) => setInfeasible(reason));
+            }}
           >
             PLAN REPLACEMENT
           </button>
+          {infeasible && (
+            <div className="refactor-infeasible" data-testid="refactor-infeasible">
+              <div className="refactor-infeasible-head">
+                <span className="mono warn">CAN'T REPLAN — {infeasible}</span>
+                <button
+                  className="drawer-close"
+                  onClick={() => setInfeasible(null)}
+                  aria-label="Dismiss"
+                >
+                  ×
+                </button>
+              </div>
+              {outputLines > 1 && (
+                <div className="mono refactor-infeasible-hint">
+                  This factory produces {outputLines} product lines — refactoring
+                  one at a time may fit your node budget.
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
 

@@ -140,8 +140,10 @@ export interface AppStore {
       to derived with `null` — one undoable step (SetBuildDone). */
   markBuildDone(id: Id, done: boolean | null): Promise<void>;
   /** W2a: plan a whole-factory replacement → stores a Draft Refactor proposal
-      and opens it in the review surface. */
-  planReplacement(factoryId: Id): Promise<void>;
+      and opens it in the review surface. Returns null on success, or the
+      infeasibility/error reason string on failure so the caller can surface a
+      clear inline notice at the point of action (not just the status chip). */
+  planReplacement(factoryId: Id): Promise<string | null>;
   /** W2a: fetch a cutover's scratch-solved downtime on demand (or null on
       refusal — recorded in cmdError). */
   cutoverPlan(factoryId: Id): Promise<CutoverPlan | null>;
@@ -335,8 +337,10 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       res = await backend.planReplacement(factoryId);
     } catch (e) {
-      get().reportCmdError(errText(e));
-      return;
+      // Replacement infeasibility is an EXPECTED planning outcome, not a fault:
+      // hand the reason back so the drawer can show a clear, actionable inline
+      // notice at the button. The terse status-bar chip alone is insufficient.
+      return errText(e);
     }
     const resp = res.response;
     set((s) => ({
@@ -352,6 +356,7 @@ export const useStore = create<AppStore>((set, get) => ({
       settled: new Set(resp.patches.map((p) => p.path)),
       cmdError: null,
     }));
+    return null;
   },
 
   async cutoverPlan(factoryId) {

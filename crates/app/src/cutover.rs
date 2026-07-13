@@ -126,6 +126,16 @@ pub struct CutoverPlan {
     pub dips: Vec<Dip>,
     /// Node-reuse: unavoidable downtime for the build window — surfaced loudly.
     pub hard: bool,
+    /// Whether the downtime could actually be COMPUTED. False when the old
+    /// factory declares positive output (its Out ports carry a positive rate)
+    /// but the scratch-solve yields ~0 baseline for those items — an imported /
+    /// unsolved / starved factory that does not produce in the current solve.
+    /// A silent-empty `dips` is dishonest; this discriminates "no impact" (true,
+    /// empty dips) from "can't compute" (false, with a reason). Transient — a
+    /// derived result field, never persisted into plan state.
+    pub downtime_available: bool,
+    /// Human-readable reason set when `downtime_available` is false (else None).
+    pub unavailable_reason: Option<String>,
 }
 
 /// Ordering stamp for a cutover's steps: the proposal that created the new ◇

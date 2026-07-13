@@ -392,6 +392,29 @@
   border: 1px solid var(--flow-crit-dark);
   border-radius: var(--radius);
 }
+/* Replacement infeasible — an EXPECTED planning outcome, warn (not crit). */
+.refactor-infeasible {
+  margin-top: 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--flow-warn);
+  background: var(--steel-800);
+  border: 1px solid var(--flow-warn-dark);
+  border-radius: var(--radius);
+}
+.refactor-infeasible-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.refactor-infeasible-head > span {
+  flex: 1;
+}
+.refactor-infeasible-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--ink-500);
+}
 .minibar {
   width: 44px;
   height: 5px;

@@ -74,6 +74,10 @@
 .dash-line.dim {
   color: var(--ink-faint);
 }
+/* Informational note (e.g. downtime unavailable) — ink, never an error colour. */
+.dash-line.info {
+  color: var(--ink-500);
+}
 .dash-line .warn {
   color: var(--flow-warn);
 }
