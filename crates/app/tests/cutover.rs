@@ -22,6 +22,7 @@ fn mach(class: &str, recipe: &str, x: f64, y: f64) -> ImportMachine {
         x,
         y,
         z: 0.0,
+        ..Default::default()
     }
 }
 

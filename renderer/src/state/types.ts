@@ -233,6 +233,8 @@ export interface GameData {
   machines: Record<string, GameMachine>;
   belts: Record<string, GameBelt>;
   buildables: Record<string, GameBuildable>;
+  /** Schematic class → recipe classes it unlocks (W2b; empty on trimmed catalogs). */
+  schematics?: Record<string, string[]>;
   buildVersion: string;
 }
 
@@ -672,6 +674,16 @@ export interface ImportMachine {
   x: number;
   y: number;
   z?: number;
+  /** Extractors only (W2b node context): stable ref to the resource node /
+   *  water volume this sits on, for re-match on re-import. */
+  nodeActorId?: string;
+  /** Resource item (Desc_…) — not carried in the save; null until the world
+   *  catalog supplies it downstream. */
+  resource?: string | null;
+  /** Node purity — not carried in the save; null (snapshot-primary purity). */
+  purity?: string | null;
+  /** Extraction rate items/min — not exposed by the parser; absent. */
+  extractionRate?: number;
 }
 
 export interface ImportSnapshot {
@@ -679,6 +691,9 @@ export interface ImportSnapshot {
   buildVersion?: string;
   machines: ImportMachine[];
   extractors?: ImportMachine[];
+  /** Purchased/unlocked schematic class names (W2b alt-awareness); [] if the
+   *  schematic manager actor is absent. */
+  unlockedSchematics: string[];
   belts?: Record<string, number>;
   rails?: number;
   powerLines?: number;

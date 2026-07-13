@@ -285,6 +285,7 @@ fn built_group_delta_feeds_the_solver_and_survives_write_back() {
         x,
         y: 0.0,
         z: 0.0,
+        ..Default::default()
     };
     s.import_save(app::import::ImportSnapshot {
         save_name: "TEST-01".into(),
@@ -2214,6 +2215,7 @@ fn import_built_ingot(s: &mut Session, x: f64) -> Id {
         x,
         y: 0.0,
         z: 0.0,
+        ..Default::default()
     };
     s.import_save(app::import::ImportSnapshot {
         save_name: "OLD-INGOT".into(),

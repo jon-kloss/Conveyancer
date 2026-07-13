@@ -13,7 +13,7 @@ use planner_core::proposals::*;
 use planner_core::state::{Entity, PlanState};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportMachine {
     pub class: String,
@@ -25,6 +25,22 @@ pub struct ImportMachine {
     pub y: f64,
     #[serde(default)]
     pub z: f64,
+    /// Extractors only (W2b node context): stable ref to the resource node /
+    /// water volume this extractor sits on (the save's level instance name),
+    /// for re-match on re-import. `None` for manufacturers/generators.
+    #[serde(default)]
+    pub node_actor_id: Option<String>,
+    /// Resource item (Desc_…). The save does not carry it — `None` until the
+    /// world catalog supplies it (W2b-C).
+    #[serde(default)]
+    pub resource: Option<String>,
+    /// Node purity. Not carried in the save — `None` (snapshot-primary purity:
+    /// the bundled world catalog is the trusted source, W2b-C).
+    #[serde(default)]
+    pub purity: Option<String>,
+    /// Extraction rate items/min. Not exposed by the parser — `None`.
+    #[serde(default)]
+    pub extraction_rate: Option<f64>,
 }
 
 fn one() -> f64 {
@@ -42,6 +58,10 @@ pub struct ImportSnapshot {
     /// Miners/pumps — counted per cluster, become node-claim context later.
     #[serde(default)]
     pub extractors: Vec<ImportMachine>,
+    /// Purchased/unlocked schematic class names (W2b unlocked-alt awareness).
+    /// Empty when the schematic manager actor is absent (old snapshots).
+    #[serde(default)]
+    pub unlocked_schematics: Vec<String>,
     /// Infrastructure counts (belts by class, rails, power lines, trains).
     #[serde(default)]
     pub belts: BTreeMap<String, u32>,
