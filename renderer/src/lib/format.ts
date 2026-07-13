@@ -35,3 +35,12 @@ export function flowLevel(saturation: number): FlowLevel {
   if (saturation >= 0.7) return "warn";
   return "ok";
 }
+
+/** Honest fallback for item classes the bundled catalog doesn't know:
+ *  Desc_SteelIngot_C → "Steel Ingot" (never leak raw class names to chips). */
+export function prettyClass(cls: string): string {
+  return cls
+    .replace(/^Desc_/, "")
+    .replace(/_C$/, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+}

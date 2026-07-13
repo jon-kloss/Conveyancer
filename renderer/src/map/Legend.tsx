@@ -33,6 +33,9 @@ export default function Legend() {
             <span className="legend-load warn" /> 70–95
             <span className="legend-load crit" /> ≥95
           </div>
+          <div className="legend-row mono">
+            <span>❯ flow</span> <span>╫ rail</span> <span>▪ truck</span> <span>┄ drone</span>
+          </div>
         </div>
       )}
     </div>

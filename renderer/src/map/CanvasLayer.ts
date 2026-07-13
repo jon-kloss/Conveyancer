@@ -23,6 +23,8 @@ export interface RouteRender {
   saturation: number;
   flow: number;
   capacity: number;
+  /** transport kind — drives the on-line glyph notation (ties, squares, dots) */
+  kind: "belt" | "rail" | "truck" | "drone";
   /** label chip suffix: MK.n for belts, RAIL/TRUCK/DRONE for transports */
   tag: string;
   itemName: string;
@@ -260,8 +262,33 @@ export class MapCanvasLayer extends L.Layer {
 
   /** Flow/route encoding per mock 1e. Planned routes are always
    *  blueprint-dashed; saturation rides the label chip (color + italic). */
+  /** Walk a polyline and invoke fn at every `spacing` px (phase-offset by
+   *  spacing/2 so glyphs stay clear of the endpoints) with the local angle. */
+  private alongLine(
+    pts: L.Point[],
+    spacing: number,
+    fn: (x: number, y: number, angle: number) => void,
+    phase = 0,
+  ) {
+    let carry = spacing / 2 + phase;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i].x - pts[i - 1].x;
+      const dy = pts[i].y - pts[i - 1].y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-3) continue;
+      const angle = Math.atan2(dy, dx);
+      let t = carry;
+      while (t <= len) {
+        fn(pts[i - 1].x + (dx * t) / len, pts[i - 1].y + (dy * t) / len, angle);
+        t += spacing;
+      }
+      carry = t - len;
+    }
+  }
+
   private drawRoutes(ctx: CanvasRenderingContext2D, map: L.Map) {
-    // pass 1: every line
+    // pass 1: every line, with map-notation kind glyphs — the line itself
+    // states direction and transport kind even when its label chip is culled
     for (const r of this.data.routes) {
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
       if (pts.length < 2) continue;
@@ -278,10 +305,57 @@ export class MapCanvasLayer extends L.Layer {
           ? css("--signal-500")
           : css(level === "crit" ? "--flow-crit" : level === "warn" ? "--flow-warn" : "--flow-ok");
         ctx.lineWidth = level === "crit" ? 6 : level === "warn" ? 4 : 2;
-        ctx.setLineDash(level === "ok" ? [] : level === "warn" ? [10, 5] : [6, 4]);
+        // drones read as dotted air routes; saturation grammar overrides
+        ctx.setLineDash(level === "ok" ? (r.kind === "drone" ? [2, 5] : []) : level === "warn" ? [10, 5] : [6, 4]);
       }
       ctx.stroke();
       ctx.setLineDash([]);
+
+      const glyphColor = ctx.strokeStyle as string;
+      const totalLen = pts.reduce((s, p, i) => (i ? s + Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y) : 0), 0);
+      if (totalLen < 24) continue; // too short for notation at this zoom
+      // rail: perpendicular crossties, the classic notation
+      if (r.kind === "rail") {
+        ctx.strokeStyle = glyphColor;
+        ctx.lineWidth = 1.5;
+        this.alongLine(pts, 26, (x, y, a) => {
+          ctx.beginPath();
+          ctx.moveTo(x - Math.sin(a) * 4, y + Math.cos(a) * 4);
+          ctx.lineTo(x + Math.sin(a) * 4, y - Math.cos(a) * 4);
+          ctx.stroke();
+        });
+      }
+      // truck: small cargo squares between the chevrons
+      if (r.kind === "truck") {
+        ctx.fillStyle = glyphColor;
+        this.alongLine(pts, 140, (x, y, a) => {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(a);
+          ctx.fillRect(-2.5, -2.5, 5, 5);
+          ctx.restore();
+        });
+      }
+      // every cargo route: flow-direction chevrons (path order is from → to)
+      ctx.strokeStyle = glyphColor;
+      ctx.lineWidth = 2;
+      const chevronSpacing = Math.min(r.kind === "belt" ? 90 : 140, Math.max(24, totalLen / 2));
+      this.alongLine(
+        pts,
+        chevronSpacing,
+        (x, y, a) => {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(a);
+          ctx.beginPath();
+          ctx.moveTo(-3.5, -4);
+          ctx.lineTo(3.5, 0);
+          ctx.lineTo(-3.5, 4);
+          ctx.stroke();
+          ctx.restore();
+        },
+        r.kind === "truck" ? chevronSpacing / 2 : 0, // interleave with squares
+      );
     }
     // pass 2: label chips, selected first, overlaps culled
     const byPriority = [...this.data.routes].sort((a, b) => Number(b.selected) - Number(a.selected));
@@ -293,23 +367,45 @@ export class MapCanvasLayer extends L.Layer {
       const mid2 = pts[Math.min(pts.length - 1, Math.floor((pts.length - 1) / 2) + 1)];
       const cx = (mid.x + mid2.x) / 2;
       const cy = (mid.y + mid2.y) / 2;
-      const text = `${r.itemName} · ${Math.round(r.flow * 100) / 100}/${r.capacity} · ${Math.round(
+      // computed transport throughputs are long floats — round for the chip
+      const fmtN = (x: number) => (x >= 100 ? Math.round(x) : Math.round(x * 100) / 100);
+      const text = `${r.itemName} · ${fmtN(r.flow)}/${fmtN(r.capacity)} · ${Math.round(
         r.saturation * 100,
       )}%  ${r.tag}`;
       ctx.font = `italic 500 9px ${css("--font-mono")}`;
       const w = ctx.measureText(text).width + 10;
-      if (!this.placeChip(cx - w / 2, cy - 8, w, 16)) continue;
-      ctx.fillStyle = level === "crit" ? css("--flow-crit") : css("--steel-800");
-      ctx.strokeStyle = r.selected ? css("--signal-500") : css("--steel-600");
+      const bg = level === "crit" ? css("--flow-crit") : css("--steel-800");
+      const border = r.selected ? css("--signal-500") : css("--steel-600");
+      const ink = level === "crit" ? css("--on-signal") : level === "warn" ? css("--flow-warn") : css("--bp-400");
+      if (this.placeChip(cx - w / 2, cy - 8, w, 16)) {
+        ctx.fillStyle = bg;
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.rect(cx - w / 2, cy - 8, w, 16);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = ink;
+        ctx.textAlign = "center";
+        ctx.fillText(text, cx, cy + 3);
+        ctx.textAlign = "left";
+        continue;
+      }
+      // degrade, don't vanish: a tag-only micro-chip (MK.2 / RAIL / …) keeps
+      // the transport level readable where the full label can't fit
+      ctx.font = `500 8px ${css("--font-mono")}`;
+      const mw = ctx.measureText(r.tag).width + 8;
+      if (!this.placeChip(cx - mw / 2, cy - 6, mw, 12)) continue;
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = border;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.rect(cx - w / 2, cy - 8, w, 16);
+      ctx.rect(cx - mw / 2, cy - 6, mw, 12);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle =
-        level === "crit" ? css("--on-signal") : level === "warn" ? css("--flow-warn") : css("--bp-400");
+      ctx.fillStyle = ink;
       ctx.textAlign = "center";
-      ctx.fillText(text, cx, cy + 3);
+      ctx.fillText(r.tag, cx, cy + 3);
       ctx.textAlign = "left";
     }
   }
@@ -617,12 +713,17 @@ export class MapCanvasLayer extends L.Layer {
     const crit = css("--flow-crit");
     const canvasBg = css("--map-canvas");
 
+    // 459 real nodes at world zoom are a wall of rings — dots shrink as the
+    // view widens so factories and flows stay the foreground layer
+    const zoom = map.getZoom();
+    const rBase = zoom <= 2 ? 3.5 : zoom <= 3 ? 5 : 7;
+
     for (const node of this.data.world.nodes) {
       const state = this.data.nodeStates[node.id] ?? { claims: 0, conflict: false, claimed: false };
       const p = map.latLngToContainerPoint(toLatLng(node));
-      const r = 7;
       const hovered = this.data.hoveredNode === node.id;
       const selected = this.data.selectedNode === node.id;
+      const r = hovered || selected ? 7 : rBase;
 
       // halo so nodes read over the grid
       ctx.beginPath();
@@ -670,21 +771,24 @@ export class MapCanvasLayer extends L.Layer {
       // claimed = orange center dot; free = hollow
       if (state.claimed) {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, Math.min(3, r - 1.5), 0, Math.PI * 2);
         ctx.fillStyle = state.conflict ? crit : signal;
         ctx.fill();
       }
 
       // mono ghost label under every node (mock 2a: FE PURE #08) — culled
-      // when it would overlap an earlier chip/label (hover/select always wins)
-      ctx.font = `500 9px ${css("--font-mono")}`;
-      const label = this.nodeLabel(node);
-      const lw = ctx.measureText(label).width;
-      if (hovered || selected || this.placeChip(p.x - lw / 2, p.y + r + 3, lw, 12)) {
-        ctx.textAlign = "center";
-        ctx.fillStyle = state.conflict ? crit : hovered || selected ? inkMuted : css("--ink-ghost");
-        ctx.fillText(label, p.x, p.y + r + 12);
-        ctx.textAlign = "left";
+      // when it would overlap an earlier chip/label (hover/select always
+      // wins); at world zoom the dots speak for themselves
+      if (zoom > 2 || hovered || selected || state.conflict) {
+        ctx.font = `500 9px ${css("--font-mono")}`;
+        const label = this.nodeLabel(node);
+        const lw = ctx.measureText(label).width;
+        if (hovered || selected || this.placeChip(p.x - lw / 2, p.y + r + 3, lw, 12)) {
+          ctx.textAlign = "center";
+          ctx.fillStyle = state.conflict ? crit : hovered || selected ? inkMuted : css("--ink-ghost");
+          ctx.fillText(label, p.x, p.y + r + 12);
+          ctx.textAlign = "left";
+        }
       }
 
       if (state.conflict) {

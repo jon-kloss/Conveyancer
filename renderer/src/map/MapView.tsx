@@ -20,7 +20,7 @@ import RoutePopover from "./RoutePopover";
 import Legend from "./Legend";
 import SearchBox from "./SearchBox";
 import ImportModal from "../import/ImportModal";
-import { fmtPower } from "../lib/format";
+import { fmtPower, prettyClass } from "../lib/format";
 import "./map.css";
 
 /** Cargo route kinds drawn with the saturation line grammar (A3.1). Pipe is
@@ -248,8 +248,9 @@ export default function MapView() {
           saturation: d?.saturation ?? 0,
           flow: d?.flow ?? 0,
           capacity: d?.capacity ?? 0,
+          kind: r.kind.kind as "belt" | "rail" | "truck" | "drone",
           tag: r.kind.kind === "belt" ? `MK.${r.kind.tier}` : r.kind.kind.toUpperCase(),
-          itemName: (gamedata.items[itemClass]?.displayName ?? itemClass).toUpperCase(),
+          itemName: (gamedata.items[itemClass]?.displayName ?? prettyClass(itemClass)).toUpperCase(),
           selected: selection?.kind === "route" && selection.id === r.id,
           ...(laneOf.get(r.id) ?? { lane: 0, lanes: 1 }),
         };
