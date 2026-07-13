@@ -88,7 +88,7 @@ export interface AppStore {
   undoLabel: string | null;
   view: ViewMode;
   selection: Selection;
-  overlays: { flows: boolean; nodes: boolean; power: boolean };
+  overlays: { flows: boolean; nodes: boolean; power: boolean; terrain: boolean };
   /** T0 projection during slider drag — rendered italic, replaced on settle. */
   projected: { factoryId: Id; result: DerivedFactory; targetRate: number } | null;
   /** ids whose numbers changed in the last authoritative patch (settle flash). */
@@ -117,7 +117,7 @@ export interface AppStore {
   redo(): Promise<void>;
   setSelection(sel: Selection): void;
   setView(view: ViewMode): void;
-  setOverlay(key: "flows" | "nodes" | "power", on: boolean): void;
+  setOverlay(key: "flows" | "nodes" | "power" | "terrain", on: boolean): void;
   setProjected(p: AppStore["projected"]): void;
   setPlacingFactory(on: boolean): void;
   saveViewState(patch: Partial<ViewState>): void;
@@ -141,7 +141,7 @@ export const useStore = create<AppStore>((set, get) => ({
   undoLabel: null,
   view: { mode: "map" },
   selection: null,
-  overlays: { flows: true, nodes: true, power: true },
+  overlays: { flows: true, nodes: true, power: true, terrain: true },
   projected: null,
   settled: new Set(),
   placingFactory: false,

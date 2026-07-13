@@ -44,6 +44,8 @@ export interface CanvasLayerData {
   hoveredNode: string | null;
   selectedNode: string | null;
   showNodes: boolean;
+  /** real-world terrain underlay (drawn at the bottom of this canvas) */
+  showTerrain: boolean;
   routes: RouteRender[];
   showRoutes: boolean;
   /** power lines (pairs of factory positions) + grid chips at centroids */
@@ -73,6 +75,13 @@ export interface CanvasLayerData {
 const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
+// Real-world terrain calibration (community render; provenance in NOTICE).
+// Standard map bounds: X -324,698.83..+425,301.83 cm, Y ±375,000 cm → meters.
+// Image row 0 = north = -Y (toLatLng puts -y at high lat).
+const TERRAIN_BOUNDS = { minX: -3246.98832031, maxX: 4253.01832031, minY: -3750, maxY: 3750 };
+const TERRAIN_FILTER = "saturate(0.5) brightness(0.55) contrast(1.05)";
+const TERRAIN_URL = "/map/world.webp";
+
 export class MapCanvasLayer extends L.Layer {
   private canvas: HTMLCanvasElement | null = null;
   /** Label-chip rects placed this redraw — later overlapping chips are culled
@@ -80,6 +89,9 @@ export class MapCanvasLayer extends L.Layer {
   private chipRects: { x: number; y: number; w: number; h: number }[] = [];
   private data: CanvasLayerData;
   private mapRef: L.Map | null = null;
+  /** terrain pre-rendered once with the muted design filter baked in */
+  private terrainCanvas: HTMLCanvasElement | null = null;
+  private terrainLoading = false;
 
   constructor(data: CanvasLayerData) {
     super();
@@ -101,6 +113,7 @@ export class MapCanvasLayer extends L.Layer {
     canvas.style.zIndex = "200";
     map.getContainer().appendChild(canvas);
     this.canvas = canvas;
+    void this.loadTerrain();
     map.on("move zoom viewreset resize", this.redraw, this);
     this.redraw();
     return this;
@@ -114,17 +127,25 @@ export class MapCanvasLayer extends L.Layer {
     return this;
   }
 
-  /** Hit-test nodes in container-pixel space (14px circles, 10px slop). */
-  hitTest(point: L.Point): WorldNode | null {
+  /** Hit-test nodes in container-pixel space: NEAREST node within 12px, with
+   *  its distance — callers use the distance to arbitrate against route hits
+   *  (459 real nodes make "first within slop" steal clicks aimed at lines). */
+  hitTestNode(point: L.Point): { node: WorldNode; d: number } | null {
     const map = this.mapRef;
     if (!map || !this.data.showNodes) return null;
+    let best: { node: WorldNode; d: number } | null = null;
     for (const node of this.data.world.nodes) {
       const p = map.latLngToContainerPoint(toLatLng(node));
       const dx = p.x - point.x;
       const dy = p.y - point.y;
-      if (dx * dx + dy * dy <= 12 * 12) return node;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d <= 12 && (!best || d < best.d)) best = { node, d };
     }
-    return null;
+    return best;
+  }
+
+  hitTest(point: L.Point): WorldNode | null {
+    return this.hitTestNode(point)?.node ?? null;
   }
 
   /** Short label for a node: FE PURE, CU NORM, LIME IMP… */
@@ -153,6 +174,7 @@ export class MapCanvasLayer extends L.Layer {
     ctx.clearRect(0, 0, size.x, size.y);
     this.chipRects = [];
 
+    if (this.data.showTerrain) this.drawTerrain(ctx, map, size);
     this.drawRegionTints(ctx, map);
     this.drawGrid(ctx, map, size);
     this.drawRegionLabels(ctx, map);
@@ -477,6 +499,59 @@ export class MapCanvasLayer extends L.Layer {
       }
     }
     return null;
+  }
+
+  /** Decode the terrain render once, bake the muted filter in, then redraw.
+   *  Drawing on THIS canvas (not a Leaflet pane) keeps stacking trivial: the
+   *  map-pane (z 400) with its DOM pins stays above the whole canvas (z 200),
+   *  and terrain/grid/nodes move in lockstep on every pan/zoom frame. */
+  private async loadTerrain() {
+    if (this.terrainCanvas || this.terrainLoading) return;
+    this.terrainLoading = true;
+    try {
+      const blob = await (await fetch(TERRAIN_URL)).blob();
+      // createImageBitmap decodes off the main thread — the sync <img> decode
+      // (~850 ms for the 5000² render) stalled map init and marker placement
+      const bmp = await createImageBitmap(blob);
+      const off = document.createElement("canvas");
+      off.width = bmp.width;
+      off.height = bmp.height;
+      const octx = off.getContext("2d")!;
+      octx.filter = TERRAIN_FILTER;
+      octx.drawImage(bmp, 0, 0);
+      bmp.close();
+      this.terrainCanvas = off;
+      this.redraw();
+    } catch {
+      // terrain stays off — the flat survey canvas is the honest fallback
+    }
+  }
+
+  /** Blit the visible slice of the terrain render under everything else. */
+  private drawTerrain(ctx: CanvasRenderingContext2D, map: L.Map, size: L.Point) {
+    const src = this.terrainCanvas;
+    if (!src) return;
+    const tl = map.latLngToContainerPoint(toLatLng({ x: TERRAIN_BOUNDS.minX, y: TERRAIN_BOUNDS.minY }));
+    const br = map.latLngToContainerPoint(toLatLng({ x: TERRAIN_BOUNDS.maxX, y: TERRAIN_BOUNDS.maxY }));
+    const scaleX = (br.x - tl.x) / src.width;
+    const scaleY = (br.y - tl.y) / src.height;
+    // clamp to the viewport so deep zooms never ask for a giant dest rect
+    const dx0 = Math.max(tl.x, 0);
+    const dy0 = Math.max(tl.y, 0);
+    const dx1 = Math.min(br.x, size.x);
+    const dy1 = Math.min(br.y, size.y);
+    if (dx1 <= dx0 || dy1 <= dy0) return;
+    ctx.drawImage(
+      src,
+      (dx0 - tl.x) / scaleX,
+      (dy0 - tl.y) / scaleY,
+      (dx1 - dx0) / scaleX,
+      (dy1 - dy0) / scaleY,
+      dx0,
+      dy0,
+      dx1 - dx0,
+      dy1 - dy0,
+    );
   }
 
   /** Faint elliptical tint per region — placeholder world-imagery treatment. */

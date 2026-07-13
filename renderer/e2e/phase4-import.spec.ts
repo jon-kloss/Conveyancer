@@ -34,7 +34,13 @@ test("import Dunarr-076 as the built layer; drift renders in DIFF", async ({ pag
   await expect(page.getByTestId("import-done")).toContainText("quarantined");
   await page.locator(".wizard-foot .btn-primary").click();
   expect(await factoryCount()).toBe(before + 13);
+  // 13 clustered pins → the declutter pass may cull this chip at world zoom;
+  // attached proves the ◆ pin exists, search-select proves it wins the cull
+  await expect(page.locator(".pin-chip", { hasText: "IRON INGOT WORKS 1" })).toBeAttached();
+  await page.locator(".searchbox input").fill("iron ingot works 1");
+  await page.keyboard.press("Enter");
   await expect(page.locator(".pin-chip", { hasText: "IRON INGOT WORKS 1" })).toBeVisible();
+  await page.keyboard.press("Escape");
 
   // one undo removes the entire import; redo restores it
   await page.keyboard.press("Control+z");
@@ -81,7 +87,13 @@ test("rail route: the math block is the product", async ({ page }) => {
 
   // right-drag IRON PLATE WORKS (phase-3 site, unbound OUT) → DEPOT SOUTH
   const pin = async (name: string) => {
-    const box = await page.locator(`.pin-wrap:has(.pin-chip:has-text("${name}")) svg`).boundingBox();
+    // poll: a one-shot boundingBox races map init / zoom animation
+    const loc = page.locator(`.pin-wrap:has(.pin-chip:has-text("${name}")) svg`);
+    let box = null;
+    for (let i = 0; i < 25 && !box; i++) {
+      box = await loc.boundingBox().catch(() => null);
+      if (!box) await page.waitForTimeout(200);
+    }
     if (!box) throw new Error(`pin ${name}`);
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   };

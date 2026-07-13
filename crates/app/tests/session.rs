@@ -56,7 +56,7 @@ fn build_modular_frame_factory(s: &mut Session) -> (Id, Id, Id) {
     let r = s
         .edit(vec![Command::ClaimNode {
             factory: fid.clone(),
-            node: "iron-gf-01".into(),
+            node: "bp_resourcenode496".into(),
             extractor: "Build_MinerMk2_C".into(),
             clock: 1.0,
         }])

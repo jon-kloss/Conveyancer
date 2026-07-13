@@ -80,7 +80,13 @@ test("priority switch on the grid: sheds-at + brownout sim", async ({ page }) =>
 
   // select the COAL PLANT → ROD CITY power line by clicking its midpoint
   const pin = async (name: string) => {
-    const box = await page.locator(`.pin-wrap:has(.pin-chip:has-text("${name}")) svg`).boundingBox();
+    // poll: a one-shot boundingBox races map init / zoom animation
+    const loc = page.locator(`.pin-wrap:has(.pin-chip:has-text("${name}")) svg`);
+    let box = null;
+    for (let i = 0; i < 25 && !box; i++) {
+      box = await loc.boundingBox().catch(() => null);
+      if (!box) await page.waitForTimeout(200);
+    }
     if (!box) throw new Error(`pin ${name}`);
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   };

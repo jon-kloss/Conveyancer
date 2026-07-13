@@ -185,6 +185,7 @@ export default function MapView() {
       hoveredNode: null,
       selectedNode: null,
       showNodes: true,
+      showTerrain: useStore.getState().overlays.terrain,
       routes: [],
       showRoutes: true,
       powerLines: [],
@@ -324,6 +325,7 @@ export default function MapView() {
       hoveredNode: hoveredNode?.id ?? null,
       selectedNode: selection?.kind === "node" ? selection.id : null,
       showNodes: overlays.nodes,
+      showTerrain: overlays.terrain,
       routes,
       showRoutes: overlays.flows,
       powerLines,
@@ -339,15 +341,30 @@ export default function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    // One arbitration rule for hover AND click, so the cursor never promises
+    // a different target than a click selects. Nodes keep their 12px comfort
+    // zone in open space, but a line passing through the dense real-node
+    // field must stay clickable: within 8px of a dot the node wins (you're ON
+    // it), farther out a route/switch hit takes precedence.
+    const resolveHit = (pt: L.Point) => {
+      const layer = layerRef.current;
+      const nodeHit = layer?.hitTestNode(pt) ?? null;
+      const switchHit = layer?.hitTestSwitch(pt) ?? null;
+      const routeHit = layer?.hitTestRoute(pt) ?? layer?.hitTestPower(pt) ?? null;
+      const nodeWins = nodeHit && (nodeHit.d <= 8 || (!switchHit && !routeHit));
+      return {
+        node: nodeWins ? nodeHit.node : null,
+        switchHit: nodeWins ? null : switchHit,
+        routeHit: nodeWins || switchHit ? null : routeHit,
+      };
+    };
     const onMove = (e: L.LeafletMouseEvent) => {
       if (routeDraftRef.current) {
         setRouteDraft({ from: routeDraftRef.current.from, cursor: fromLatLng(e.latlng) });
         return;
       }
       const pt = map.latLngToContainerPoint(e.latlng);
-      const hit = layerRef.current?.hitTest(pt) ?? null;
-      const switchHit = hit ? null : layerRef.current?.hitTestSwitch(pt);
-      const routeHit = hit || switchHit ? null : layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
+      const { node: hit, switchHit, routeHit } = resolveHit(pt);
       setHoveredNode(hit);
       map.getContainer().style.cursor = placing ? "crosshair" : hit || switchHit || routeHit ? "pointer" : "";
     };
@@ -368,18 +385,10 @@ export default function MapView() {
         return;
       }
       const pt = map.latLngToContainerPoint(e.latlng);
-      const hit = layerRef.current?.hitTest(pt);
-      if (hit) {
-        setSelection({ kind: "node", id: hit.id });
-        return;
-      }
-      const switchHit = layerRef.current?.hitTestSwitch(pt);
-      if (switchHit) {
-        setSelection({ kind: "switch", id: switchHit });
-        return;
-      }
-      const routeHit = layerRef.current?.hitTestRoute(pt) ?? layerRef.current?.hitTestPower(pt);
-      if (routeHit) setSelection({ kind: "route", id: routeHit });
+      const { node: hit, switchHit, routeHit } = resolveHit(pt);
+      if (hit) setSelection({ kind: "node", id: hit.id });
+      else if (switchHit) setSelection({ kind: "switch", id: switchHit });
+      else if (routeHit) setSelection({ kind: "route", id: routeHit });
       else setSelection(null);
     };
     // right-drag from a pin draws a route (ghost-blue until confirmed).
@@ -488,6 +497,7 @@ export default function MapView() {
       } else if (e.key === "1") setOverlay("flows", !overlays.flows);
       else if (e.key === "2") setOverlay("power", !overlays.power);
       else if (e.key === "4") setOverlay("nodes", !overlays.nodes);
+      else if (e.key === "3") setOverlay("terrain", !overlays.terrain);
       else if (e.key === "f" || e.key === "F") {
         const pts = Object.values(plan.factories).map((f) => toLatLng(f.position));
         if (pts.length && map) map.fitBounds(L.latLngBounds(pts as L.LatLngExpression[]).pad(0.4));
@@ -536,6 +546,13 @@ export default function MapView() {
             title="Resource nodes (4)"
           >
             NODES <span className="key-hint">4</span>
+          </button>
+          <button
+            className={`btn btn-ghost overlay-chip ${overlays.terrain ? "active" : ""}`}
+            onClick={() => setOverlay("terrain", !overlays.terrain)}
+            data-testid="btn-overlay-terrain"
+          >
+            TERRAIN <span className="key-hint">3</span>
           </button>
         </div>
         <div className="map-actions">
