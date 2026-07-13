@@ -11,6 +11,9 @@ export interface NodeRenderState {
   claims: number;
   conflict: boolean;
   claimed: boolean;
+  /** W2b-C: the node sits at a plan-corrected position (save disagreed with the
+   *  catalog) — draw a small drift marker. */
+  drift?: boolean;
 }
 
 export interface RouteRender {
@@ -816,6 +819,22 @@ export class MapCanvasLayer extends L.Layer {
         ctx.arc(p.x, p.y, Math.min(3, r - 1.5), 0, Math.PI * 2);
         ctx.fillStyle = state.conflict ? crit : signal;
         ctx.fill();
+      }
+
+      // W2b-C drift marker: a small hollow diamond off the ring when the node
+      // sits at a plan-corrected (save-reconciled) position.
+      if (state.drift) {
+        const dx = p.x + r + 3;
+        const dy = p.y - r - 1;
+        ctx.beginPath();
+        ctx.moveTo(dx, dy - 3);
+        ctx.lineTo(dx + 3, dy);
+        ctx.lineTo(dx, dy + 3);
+        ctx.lineTo(dx - 3, dy);
+        ctx.closePath();
+        ctx.lineWidth = 1.25;
+        ctx.strokeStyle = signal;
+        ctx.stroke();
       }
 
       // mono ghost label under every node (mock 2a: FE PURE #08) — culled

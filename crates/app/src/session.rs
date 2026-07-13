@@ -83,6 +83,10 @@ pub struct DerivedFactory {
 pub struct DerivedNode {
     pub claims: u32,
     pub conflict: bool,
+    /// A plan-local node override disagrees with the ambient catalog position
+    /// (W2b-C) — the node renders at its corrected coord with a drift marker.
+    /// `conflict` stays double-claim only; this is a separate, orthogonal flag.
+    pub drift: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,7 +310,7 @@ impl Session {
         };
         let gd = gamedata::docs::parse_docs(&text, game_build)
             .map_err(|e| SessionError::Internal(format!("Docs.json parse failed: {e}")))?;
-        let world = gamedata::worldnodes::bundled();
+        let world = gamedata::worldnodes::load();
         let (state, entries, cursor) = file.load()?;
         let undo = UndoLog::hydrate_with_cursor(entries, cursor);
         let mut advisor = AdvisorState::default();
@@ -541,42 +545,43 @@ impl Session {
         let label = format!("accept proposal #{}", p.number);
         let mut tx = Transaction::new(label);
         let mut symbols: BTreeMap<String, Id> = BTreeMap::new();
-        let mut apply_all =
-            |state: &mut PlanState, tx: &mut Transaction| -> Result<(), SessionError> {
-                for item in ordered_included(&p) {
-                    // SaveReimport drift items sync the ◆ Built layer directly
-                    // — the one documented exception to accept-creates-◇-only
-                    if let Some(sync) = &item.sync {
-                        let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
-                            .map_err(|e| SessionError::Internal(e.to_string()))?;
-                        crate::import::apply_sync(state, tx, &op, &p.id, &self.gamedata);
-                        continue;
-                    }
-                    for (idx, cmd) in item.commands.iter().enumerate() {
-                        let resolved =
-                            resolve_aliases(cmd, &symbols).map_err(SessionError::Internal)?;
-                        let t = commands::apply(state, &resolved)?;
-                        if let (Some(Some(alias)), Some(created)) =
-                            (item.aliases.get(idx), t.created.first())
-                        {
-                            symbols.insert(alias.clone(), created.clone());
-                        }
-                        tx.forward.extend(t.forward);
-                        tx.inverse.extend(t.inverse);
-                        tx.created.extend(t.created);
-                    }
+        let mut apply_all = |state: &mut PlanState,
+                             tx: &mut Transaction|
+         -> Result<(), SessionError> {
+            for item in ordered_included(&p) {
+                // SaveReimport drift items sync the ◆ Built layer directly
+                // — the one documented exception to accept-creates-◇-only
+                if let Some(sync) = &item.sync {
+                    let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
+                        .map_err(|e| SessionError::Internal(e.to_string()))?;
+                    crate::import::apply_sync(state, tx, &op, &p.id, &self.gamedata, &self.world);
+                    continue;
                 }
-                let t = commands::apply(
-                    state,
-                    &Command::SetProposalStatus {
-                        id: id.to_string(),
-                        status: ProposalStatus::Accepted,
-                    },
-                )?;
-                tx.forward.extend(t.forward);
-                tx.inverse.extend(t.inverse);
-                Ok(())
-            };
+                for (idx, cmd) in item.commands.iter().enumerate() {
+                    let resolved =
+                        resolve_aliases(cmd, &symbols).map_err(SessionError::Internal)?;
+                    let t = commands::apply(state, &resolved)?;
+                    if let (Some(Some(alias)), Some(created)) =
+                        (item.aliases.get(idx), t.created.first())
+                    {
+                        symbols.insert(alias.clone(), created.clone());
+                    }
+                    tx.forward.extend(t.forward);
+                    tx.inverse.extend(t.inverse);
+                    tx.created.extend(t.created);
+                }
+            }
+            let t = commands::apply(
+                state,
+                &Command::SetProposalStatus {
+                    id: id.to_string(),
+                    status: ProposalStatus::Accepted,
+                },
+            )?;
+            tx.forward.extend(t.forward);
+            tx.inverse.extend(t.inverse);
+            Ok(())
+        };
         if let Err(e) = apply_all(&mut self.state, &mut tx) {
             let mut rollback = tx.inverse.clone();
             rollback.reverse();
@@ -598,6 +603,9 @@ impl Session {
         // same undo entry as the accept.
         if p.items.iter().any(|i| i.sync.is_some()) {
             crate::buildqueue::dissolve_stale_overrides(&mut self.state, &mut tx, &self.gamedata);
+            // Node-position overrides that the save has caught back up to (or
+            // whose claim is gone) auto-dissolve, same undo entry (W2b-C).
+            crate::import::dissolve_stale_node_overrides(&mut self.state, &mut tx, &self.world);
             // Any `replaces` pointing at a now-removed ◆ factory is dangling
             // intent — null it so the cutover reads dismantle-complete (mirrors
             // the override dissolve). Folded into the same undo entry.
@@ -631,6 +639,7 @@ impl Session {
                         &op,
                         &p.id,
                         &self.gamedata,
+                        &self.world,
                     );
                 }
                 continue 'items;
@@ -1036,6 +1045,7 @@ impl Session {
                 &clusters,
                 &import_id,
                 &self.gamedata,
+                &self.world,
             );
             let derived = self.empire_solve(&T0Edit::Recompute, Some(&mut tx));
             let response = self.commit_mutation(tx, derived)?;
@@ -1054,7 +1064,8 @@ impl Session {
             });
         }
         // re-import: diff only, never write
-        let items = crate::import::diff_against_built(&self.state, &self.gamedata, &clusters);
+        let items =
+            crate::import::diff_against_built(&self.state, &self.gamedata, &clusters, &self.world);
         if items.is_empty() {
             self.write_last_import(&snapshot.save_name, "in_sync", 0, 0);
             return Ok(ImportOutcome::InSync);
@@ -1684,17 +1695,44 @@ impl Session {
             }
         }
 
-        // Node claim conflicts (§3.1.3 — representable, rendered CRIT, never prevented).
+        // Node claim conflicts (§3.1.3 — representable, rendered CRIT, never
+        // prevented) + position drift (W2b-C). `conflict` stays double-claim
+        // only; `drift` fires when a plan-local override disagrees with the
+        // ambient catalog coordinate past the correction threshold. Save-only
+        // nodes (absent from the catalog) have nothing to disagree with.
+        const NODE_DRIFT_M: f64 = 30.0;
         let mut by_node: BTreeMap<String, u32> = BTreeMap::new();
         for c in self.state.node_claims.values() {
             *by_node.entry(c.node.clone()).or_insert(0) += 1;
         }
-        for (node, claims) in by_node {
+        let drifted = |node: &str| -> bool {
+            let Some(ov) = self.state.node_overrides.get(node) else {
+                return false;
+            };
+            let Some(pos) = ov.pos else {
+                return false;
+            };
+            self.world
+                .nodes
+                .iter()
+                .find(|n| n.id == node)
+                .map(|n| (n.x - pos.x).hypot(n.y - pos.y) > NODE_DRIFT_M)
+                .unwrap_or(false)
+        };
+        let node_ids: BTreeSet<String> = by_node
+            .keys()
+            .cloned()
+            .chain(self.state.node_overrides.keys().cloned())
+            .collect();
+        for node in node_ids {
+            let claims = by_node.get(&node).copied().unwrap_or(0);
+            let drift = drifted(&node);
             derived.nodes.insert(
                 node,
                 DerivedNode {
                     claims,
                     conflict: claims > 1,
+                    drift,
                 },
             );
         }

@@ -62,6 +62,7 @@ const emptyPlan: Plan = {
   switches: {},
   styleGuides: {},
   buildOverrides: {},
+  nodeOverrides: {},
 };
 
 const emptyDerived: Derived = {

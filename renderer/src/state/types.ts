@@ -159,12 +159,25 @@ export interface PrioritySwitch {
 
 export interface NodeClaim {
   id: Id;
+  /** resolved node id: a bundled-snapshot WorldNode id, or `save:<id>` for a
+   *  miner on no known catalog node (W2b-C). */
   node: string;
   factory: Id;
   extractor: string;
   clock: number;
+  /** the save's stable node ref this claim was bound from (re-match key). */
+  saveNodeId?: string | null;
   status: Status;
   createdBy: CreatedBy;
+}
+
+/** Plan-local correction of a resource node's geometry (W2b-C). Sparse overlay
+ *  keyed by node id; the bundled catalog stays an ambient default (resolved =
+ *  snapshot ⊕ override). Purity is NOT correctable — snapshot-primary. */
+export interface NodeOverride {
+  id: string;
+  pos?: MapPos | null;
+  saveActor?: string | null;
 }
 
 export interface PlanMeta {
@@ -199,6 +212,8 @@ export interface Plan {
   styleGuides: Record<Id, StyleGuide>;
   /** W1c manual build-queue completion overrides (sparse assertion overlay) */
   buildOverrides: Record<Id, BuildOverride>;
+  /** W2b-C plan-local resource-node corrections (snapshot ⊕ override) */
+  nodeOverrides: Record<string, NodeOverride>;
 }
 
 /** Manual completion assertion for a build-queue step (W1c) — present only
@@ -439,7 +454,7 @@ export interface CutoverPlan {
 
 export interface Derived {
   factories: Record<Id, DerivedFactory>;
-  nodes: Record<string, { claims: number; conflict: boolean }>;
+  nodes: Record<string, { claims: number; conflict: boolean; drift: boolean }>;
   routes: Record<Id, DerivedRoute>;
   deficits: DeficitRow[];
   circuits: DerivedCircuit[];
@@ -661,7 +676,8 @@ export type Command =
   | { type: "delete_style_guide"; id: Id }
   | { type: "set_factory_theme"; factory: Id; styleGuide: Id | null }
   | { type: "set_build_done"; id: Id; done: boolean | null }
-  | { type: "set_factory_replaces"; id: Id; replaces: Id | null };
+  | { type: "set_factory_replaces"; id: Id; replaces: Id | null }
+  | { type: "set_node_override"; id: string; nodeOverride: NodeOverride | null };
 
 export const BELT_CAPACITY = [60, 120, 270, 480, 780, 1200];
 export const beltCapacity = (tier: number) => BELT_CAPACITY[Math.min(6, Math.max(1, tier)) - 1];

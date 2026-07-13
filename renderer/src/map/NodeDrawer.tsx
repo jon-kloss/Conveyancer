@@ -23,6 +23,11 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   const region = world.regions.find((r) => r.id === node.region)?.name ?? node.region;
   const claims = Object.values(plan.nodeClaims).filter((c) => c.node === node.id);
   const conflict = derived.nodes[node.id]?.conflict ?? false;
+  // W2b-C: plan-local position correction (snapshot ⊕ override). The bundled
+  // catalog coordinate is the honest "was"; save-only nodes have no catalog row.
+  const override = plan.nodeOverrides[node.id];
+  const catalogNode = world.nodes.find((n) => n.id === node.id);
+  const saveOnly = node.id.startsWith("save:");
   const rate = extractionRate(gamedata.machines[extractor], node.purity, 1.0);
 
   const claim = () => {
@@ -57,6 +62,21 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
           ×
         </button>
       </header>
+
+      {override?.pos && (catalogNode || saveOnly) && (
+        <section className="drawer-section">
+          <h3 className="t-label">POSITION</h3>
+          <div className="insp-note" data-testid="node-corrected">
+            {saveOnly ? (
+              <>Save-only node — reconciled from the save at ({Math.round(node.x)}, {Math.round(node.y)}); it sits on no bundled catalog node.</>
+            ) : (
+              <>
+                Save-corrected — was ({Math.round(catalogNode!.x)}, {Math.round(catalogNode!.y)}) in the bundled catalog, now ({Math.round(node.x)}, {Math.round(node.y)}) from the save. The catalog stays a trusted ambient default; only the plan holds this correction.
+              </>
+            )}
+          </div>
+        </section>
+      )}
 
       {node.zone === "cave" && node.entrance && (
         <section className="drawer-section">

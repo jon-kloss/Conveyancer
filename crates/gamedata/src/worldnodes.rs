@@ -74,6 +74,30 @@ pub fn bundled() -> WorldSnapshot {
     serde_json::from_str(BUNDLED).expect("bundled world-nodes.json must parse")
 }
 
+/// Ambient world catalog for a session (W2b-C). Reads `$FICSIT_WORLD_NODES` when
+/// set — a CATALOG SWAP, layered UNDER the plan-local node overrides, so the
+/// compiled-in asset is never mutated. Any failure (unset, unreadable, or
+/// unparseable) falls back to [`bundled`] with a logged warning — the app must
+/// never panic on a bad override path (mirrors `FICSIT_DOCS_JSON`).
+pub fn load() -> WorldSnapshot {
+    match std::env::var("FICSIT_WORLD_NODES") {
+        Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<WorldSnapshot>(&text) {
+                Ok(snap) => snap,
+                Err(e) => {
+                    eprintln!("FICSIT_WORLD_NODES: parse failed ({e}); using the bundled catalog");
+                    bundled()
+                }
+            },
+            Err(e) => {
+                eprintln!("FICSIT_WORLD_NODES: read failed ({e}); using the bundled catalog");
+                bundled()
+            }
+        },
+        _ => bundled(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -124,6 +148,49 @@ mod tests {
         assert_eq!(n.zone, "cave");
         let e = n.entrance.unwrap();
         assert!(n.z < e.z);
+    }
+
+    #[test]
+    fn ficsit_world_nodes_load_overrides_then_falls_back() {
+        // A valid override JSON is loaded verbatim (catalog swap); a missing or
+        // invalid path degrades to bundled() with no panic, and the compiled-in
+        // asset stays byte-identical throughout.
+        let bundled_before = super::BUNDLED.to_string();
+        let dir = std::env::temp_dir();
+        let good = dir.join(format!("fwn-good-{}.json", std::process::id()));
+        std::fs::write(
+            &good,
+            r#"{"version":99,"source":"override","bounds":{"minX":0.0,"minY":0.0,"maxX":1.0,"maxY":1.0},
+                "regions":[{"id":"r","name":"R","labelX":0.0,"labelY":0.0}],
+                "nodes":[{"id":"ov1","item":"Desc_OreIron_C","purity":"pure","x":0.5,"y":0.5,"region":"r"}]}"#,
+        )
+        .unwrap();
+
+        std::env::set_var("FICSIT_WORLD_NODES", &good);
+        let loaded = super::load();
+        assert_eq!(loaded.version, 99, "valid override is loaded");
+        assert_eq!(loaded.source, "override");
+        assert_eq!(loaded.nodes.len(), 1);
+
+        // Invalid path → bundled fallback, no panic.
+        std::env::set_var("FICSIT_WORLD_NODES", dir.join("does-not-exist.json"));
+        let fb = super::load();
+        assert_eq!(fb.version, super::bundled().version);
+        assert!(fb.nodes.len() >= 20);
+
+        // Malformed JSON → bundled fallback, no panic.
+        let bad = dir.join(format!("fwn-bad-{}.json", std::process::id()));
+        std::fs::write(&bad, "{ not json").unwrap();
+        std::env::set_var("FICSIT_WORLD_NODES", &bad);
+        assert_eq!(super::load().version, super::bundled().version);
+
+        // Unset → bundled.
+        std::env::remove_var("FICSIT_WORLD_NODES");
+        assert_eq!(super::load().source, super::bundled().source);
+
+        std::fs::remove_file(&good).ok();
+        std::fs::remove_file(&bad).ok();
+        assert_eq!(super::BUNDLED, bundled_before, "bundled asset unchanged");
     }
 
     #[test]

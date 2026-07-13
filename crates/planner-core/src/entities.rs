@@ -243,14 +243,43 @@ pub struct BeltEdge {
 #[serde(rename_all = "camelCase")]
 pub struct NodeClaim {
     pub id: Id,
-    /// WorldNodeId from the bundled static snapshot.
+    /// Resolved node id: a bundled-snapshot [`crate::...`] WorldNode id, or a
+    /// plan-local `"save:<nodeActorId>"` when the extractor sits on no known
+    /// snapshot node (W2b-C).
     pub node: String,
     pub factory: Id,
     /// Extractor machine class.
     pub extractor: String,
     pub clock: f64,
+    /// The save's STABLE node reference (`mExtractableResource` pathName) this
+    /// claim was bound from — the re-match key on re-import, so binding survives
+    /// position noise (W2b-C). `None` for manually-drawn claims. serde-default so
+    /// plan files predating W2b-C load unchanged (no migration).
+    #[serde(default)]
+    pub save_node_id: Option<String>,
     pub status: Status,
     pub created_by: CreatedBy,
+}
+
+/// Plan-local correction of a resource node's geometry (W2b-C). Sparse overlay
+/// keyed by node id (`"<snapshot id>"` or `"save:<nodeActorId>"`): the bundled
+/// world catalog (and any `FICSIT_WORLD_NODES` swap) stays an ambient, never-
+/// mutated default — a node's RESOLVED position is `snapshot ⊕ override`. Purity
+/// is deliberately NOT correctable: the save carries none, so the snapshot is
+/// the trusted source (snapshot-primary). Save-only nodes (`"save:<id>"`, absent
+/// from every catalog) synthesize into the resolved set from `pos` alone.
+/// serde-default so plan files predating W2b-C load unchanged (no migration).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeOverride {
+    /// Node id this correction applies to (matches [`NodeClaim::node`]).
+    pub id: String,
+    /// Corrected world position; `None` leaves the catalog coordinate intact.
+    #[serde(default)]
+    pub pos: Option<MapPos>,
+    /// The save's stable node actor id this correction was reconciled from.
+    #[serde(default)]
+    pub save_actor: Option<String>,
 }
 
 // ---- Later-phase entities: full data-model shape from day one (HANDOFF mandate).

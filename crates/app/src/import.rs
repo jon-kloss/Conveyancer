@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use gamedata::worldnodes::WorldSnapshot;
 use planner_core::entities::*;
 use planner_core::proposals::*;
 use planner_core::state::{Entity, PlanState};
@@ -89,6 +90,23 @@ pub struct Cluster {
     /// (machine class, recipe class) → (count, mean clock)
     pub groups: Vec<ClusterGroup>,
     pub extractor_count: u32,
+    /// Miners/pumps attributed to this cluster (each extractor to its nearest
+    /// centroid) — carry the position + stable node ref so [`write_built_layer`]
+    /// can bind ◆ NodeClaims to real save nodes (W2b-C). serde-default so drift
+    /// proposals persisted before W2b-C (SyncOp::CreateCluster) still load.
+    #[serde(default)]
+    pub extractors: Vec<ClusterExtractor>,
+}
+
+/// One miner/pump attributed to a cluster, with the geometry + stable node ref
+/// needed to reconcile it against the world catalog (W2b-C).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterExtractor {
+    pub class: String,
+    pub position: MapPos,
+    #[serde(default)]
+    pub node_actor_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +125,137 @@ pub(crate) const REMATCH_M: f64 = 250.0;
 /// not player intent: cluster mean clocks are rounded to 3 decimals (≤ 5e-4
 /// error), while deliberate in-game reclocks move in ≥ 1% steps.
 const CLOCK_EPS: f64 = 0.005;
+/// Generous tolerance for binding a miner to a bundled world node (W2b-C): the
+/// community catalog's coordinates and the save's differ by tens of meters, and
+/// a miner's footprint spans the node. Beyond this, the miner is on no known
+/// node → a plan-local `"save:<id>"` claim. Reuses the [`REMATCH_M`] site idiom.
+const NODE_MATCH_M: f64 = REMATCH_M;
+/// A miner whose position differs from its bound snapshot node by MORE than this
+/// is the ground truth — write a plan-local corrected position. Chosen above the
+/// community-extraction coordinate noise so normal binding stays silent.
+const NODE_DRIFT_M: f64 = 30.0;
+
+/// The plan-local id a save-only node (no catalog match) claims under.
+fn save_node_key(e: &ClusterExtractor) -> String {
+    match &e.node_actor_id {
+        Some(a) => format!("save:{a}"),
+        None => format!("save:{:.0},{:.0}", e.position.x, e.position.y),
+    }
+}
+
+/// One extractor's reconciliation against the world catalog: the resolved node
+/// id, the stable save ref to re-match on, and any plan-local geometry override.
+struct BoundNode {
+    node: String,
+    save_node_id: Option<String>,
+    node_override: Option<NodeOverride>,
+}
+
+/// Bind a batch of extractors to real world nodes by position (W2b-C). Greedy
+/// nearest wins so a shared node goes to its closest miner; nodes already
+/// claimed in `state` are off-limits (no phantom conflicts on a fresh import).
+/// A miner beyond [`NODE_MATCH_M`] of every free node becomes a `"save:<id>"`
+/// plan-local node synthesized from its override alone. A snapshot match whose
+/// position drifts past [`NODE_DRIFT_M`] carries a corrected-position override.
+fn bind_extractors(
+    state: &PlanState,
+    world: &WorldSnapshot,
+    exts: &[ClusterExtractor],
+) -> Vec<BoundNode> {
+    let mut taken: std::collections::BTreeSet<String> =
+        state.node_claims.values().map(|c| c.node.clone()).collect();
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for (ei, e) in exts.iter().enumerate() {
+        for (ni, n) in world.nodes.iter().enumerate() {
+            let d = (n.x - e.position.x).hypot(n.y - e.position.y);
+            if d <= NODE_MATCH_M {
+                pairs.push((d, ei, ni));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let mut assigned: Vec<Option<usize>> = vec![None; exts.len()];
+    for (_, ei, ni) in pairs {
+        let nid = &world.nodes[ni].id;
+        if assigned[ei].is_none() && !taken.contains(nid) {
+            assigned[ei] = Some(ni);
+            taken.insert(nid.clone());
+        }
+    }
+    // save-only ids must be unique per miner: many water pumps share one water
+    // volume's actor ref, so a bare `save:<actor>` would collapse them into one
+    // node (a false conflict). Disambiguate against ids already in use.
+    let mut used_save: std::collections::BTreeSet<String> = state
+        .node_claims
+        .values()
+        .map(|c| c.node.clone())
+        .filter(|n| n.starts_with("save:"))
+        .collect();
+    let mut out = Vec::with_capacity(exts.len());
+    for (ei, e) in exts.iter().enumerate() {
+        match assigned[ei] {
+            Some(ni) => {
+                let n = &world.nodes[ni];
+                let d = (n.x - e.position.x).hypot(n.y - e.position.y);
+                let node_override = (d > NODE_DRIFT_M).then(|| NodeOverride {
+                    id: n.id.clone(),
+                    pos: Some(e.position),
+                    save_actor: e.node_actor_id.clone(),
+                });
+                out.push(BoundNode {
+                    node: n.id.clone(),
+                    save_node_id: e.node_actor_id.clone(),
+                    node_override,
+                });
+            }
+            None => {
+                let base = save_node_key(e);
+                let mut key = base.clone();
+                let mut n = 2;
+                while used_save.contains(&key) {
+                    key = format!("{base}#{n}");
+                    n += 1;
+                }
+                used_save.insert(key.clone());
+                out.push(BoundNode {
+                    node: key.clone(),
+                    save_node_id: e.node_actor_id.clone(),
+                    node_override: Some(NodeOverride {
+                        id: key,
+                        pos: Some(e.position),
+                        save_actor: e.node_actor_id.clone(),
+                    }),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Resolved world position of a node id under the plan-local overlay: the
+/// catalog coordinate corrected by any override, or the override's own position
+/// for a save-only node. `None` when nothing knows where the node is.
+pub fn resolved_node_pos(
+    world: &WorldSnapshot,
+    overrides: &BTreeMap<String, NodeOverride>,
+    node: &str,
+) -> Option<MapPos> {
+    if let Some(ov) = overrides.get(node) {
+        if let Some(pos) = ov.pos {
+            return Some(pos);
+        }
+    }
+    world.nodes.iter().find(|n| n.id == node).map(|n| MapPos {
+        x: n.x,
+        y: n.y,
+        z: n.z,
+    })
+}
 
 /// DBSCAN (min_pts 1 ⇒ every machine belongs somewhere) over machine XY.
 pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<Cluster> {
@@ -166,7 +315,15 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
         }
     }
 
-    let mut clusters: Vec<Cluster> = Vec::new();
+    // First pass: centroid + machine groups + name per cluster. Centroids are
+    // needed up front so each extractor can be attributed to its NEAREST cluster
+    // (a shared miner near two banks belongs to exactly one — no double-claims).
+    struct Pre {
+        centroid: MapPos,
+        groups: Vec<ClusterGroup>,
+        name: String,
+    }
+    let mut pre: Vec<Pre> = Vec::new();
     for id in 0..n_clusters {
         let members: Vec<&ImportMachine> = pts
             .iter()
@@ -197,12 +354,6 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
                 clock: (clock_sum / count as f64 * 1000.0).round() / 1000.0,
             })
             .collect();
-        // extractors near the centroid count toward the cluster
-        let extractor_count = snapshot
-            .extractors
-            .iter()
-            .filter(|e| (e.x - cx).hypot(e.y - cy) <= DBSCAN_EPS_M * 3.0)
-            .count() as u32;
         // name by dominant output: biggest group's recipe product
         let dominant = groups.iter().max_by_key(|g| g.count);
         let name = dominant
@@ -216,17 +367,52 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
                     .map(|m| m.display_name.to_uppercase())
             })
             .unwrap_or_else(|| "IMPORTED".into());
-        clusters.push(Cluster {
-            name,
-            position: MapPos {
+        pre.push(Pre {
+            centroid: MapPos {
                 x: cx,
                 y: cy,
                 z: cz,
             },
             groups,
-            extractor_count,
+            name,
         });
     }
+
+    // Second pass: attribute each extractor to its nearest cluster centroid
+    // within the same generous radius the count used, so each miner claims one
+    // node under exactly one factory.
+    let mut attributed: Vec<Vec<ClusterExtractor>> = vec![Vec::new(); pre.len()];
+    for e in &snapshot.extractors {
+        let nearest = pre
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, (p.centroid.x - e.x).hypot(p.centroid.y - e.y)))
+            .filter(|(_, d)| *d <= DBSCAN_EPS_M * 3.0)
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some((i, _)) = nearest {
+            attributed[i].push(ClusterExtractor {
+                class: e.class.clone(),
+                position: MapPos {
+                    x: e.x,
+                    y: e.y,
+                    z: e.z,
+                },
+                node_actor_id: e.node_actor_id.clone(),
+            });
+        }
+    }
+
+    let mut clusters: Vec<Cluster> = pre
+        .into_iter()
+        .zip(attributed)
+        .map(|(p, extractors)| Cluster {
+            name: p.name,
+            position: p.centroid,
+            groups: p.groups,
+            extractor_count: extractors.len() as u32,
+            extractors,
+        })
+        .collect();
     // stable numbering per name: IRON ROD WORKS 1, 2, …
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     for c in clusters.iter_mut() {
@@ -279,6 +465,7 @@ pub fn write_built_layer(
     clusters: &[Cluster],
     import_id: &str,
     gd: &gamedata::docs::GameData,
+    world: &WorldSnapshot,
 ) -> Vec<Id> {
     use planner_core::layout::{layered_layout, LKind, LNode};
     let mut created = Vec::new();
@@ -457,12 +644,37 @@ pub fn write_built_layer(
             tx.record(state.upsert(Entity::Edge(e)));
         }
 
+        // Bind ◆ node claims to real save nodes (W2b-C). Each attributed miner
+        // reconciles to the nearest free bundled node (or a plan-local
+        // `"save:<id>"`); a position past the drift threshold writes a silent
+        // ground-truth correction into the node-overrides overlay. THIS is the
+        // first time import creates ◆ claims — closing the "zero claims" gap.
+        let mut claim_ids = Vec::new();
+        let bound = bind_extractors(state, world, &c.extractors);
+        for (e, b) in c.extractors.iter().zip(bound) {
+            if let Some(ov) = b.node_override {
+                tx.record(state.upsert(Entity::NodeOverride(ov)));
+            }
+            let claim = NodeClaim {
+                id: new_id(),
+                node: b.node,
+                factory: fid.clone(),
+                extractor: e.class.clone(),
+                clock: 1.0,
+                save_node_id: b.save_node_id,
+                status: Status::Built,
+                created_by: CreatedBy::Import(import_id.to_string()),
+            };
+            claim_ids.push(claim.id.clone());
+            tx.record(state.upsert(Entity::NodeClaim(claim)));
+        }
+
         tx.record(state.upsert(Entity::Factory(Factory {
             id: fid.clone(),
             name: c.name.clone(),
             position: c.position,
             region: String::new(),
-            node_claims: vec![],
+            node_claims: claim_ids,
             groups: group_ids,
             ports: port_ids,
             style_guide: None,
@@ -496,6 +708,16 @@ pub enum SyncOp {
     RemoveFactory {
         factory: Id,
     },
+    /// A claimed node moved in game past the drift threshold (W2b-C): accepting
+    /// writes the corrected position into the plan-local node-overrides overlay
+    /// (the bundled catalog is never mutated). One undo entry, like the other
+    /// ◆-sync ops.
+    CorrectNodePosition {
+        node: String,
+        x: f64,
+        y: f64,
+        z: f64,
+    },
 }
 
 /// Re-import: diff clusters against the current Built layer → drift items.
@@ -503,6 +725,7 @@ pub fn diff_against_built(
     state: &PlanState,
     gd: &gamedata::docs::GameData,
     clusters: &[Cluster],
+    world: &WorldSnapshot,
 ) -> Vec<ProposalItem> {
     let item_name = |recipe: &str| -> String {
         gd.recipes
@@ -641,6 +864,70 @@ pub fn diff_against_built(
                         ));
                     }
                 }
+                // Node-position drift (W2b-C): re-match a miner to its ◆ claim by
+                // the STABLE save node id, then compare the save's position to the
+                // node's RESOLVED position (snapshot ⊕ existing override). A move
+                // past the drift threshold is a reviewable correction — never
+                // auto-applied. We only reconcile an UNAMBIGUOUS 1:1 match — one
+                // miner and one claim under a given save ref: real saves reuse a
+                // ref for a whole water volume / SAM cluster (many extractors), and
+                // guessing which pump a shared ref means invents drift every time.
+                let mut claims_by_save: BTreeMap<&String, Vec<&NodeClaim>> = BTreeMap::new();
+                for cl in f
+                    .node_claims
+                    .iter()
+                    .filter_map(|cid| state.node_claims.get(cid))
+                {
+                    if let Some(sid) = &cl.save_node_id {
+                        claims_by_save.entry(sid).or_default().push(cl);
+                    }
+                }
+                let mut miners_by_save: BTreeMap<&String, Vec<&ClusterExtractor>> = BTreeMap::new();
+                for e in &c.extractors {
+                    if let Some(sid) = &e.node_actor_id {
+                        miners_by_save.entry(sid).or_default().push(e);
+                    }
+                }
+                for (sid, miners) in &miners_by_save {
+                    if miners.len() != 1 {
+                        continue; // shared save ref — ambiguous, skip
+                    }
+                    let Some(claims) = claims_by_save.get(sid) else {
+                        continue;
+                    };
+                    if claims.len() != 1 {
+                        continue;
+                    }
+                    let claim = claims[0];
+                    let e = miners[0];
+                    // Only catalog nodes reconcile a position: a `save:<id>` node
+                    // IS wherever its miner is (no catalog to drift from).
+                    if claim.node.starts_with("save:") {
+                        continue;
+                    }
+                    let resolved = resolved_node_pos(world, &state.node_overrides, &claim.node);
+                    let moved = resolved
+                        .map(|r| (r.x - e.position.x).hypot(r.y - e.position.y))
+                        .unwrap_or(f64::INFINITY);
+                    if moved > NODE_DRIFT_M {
+                        let was = resolved
+                            .map(|r| format!("({:.0}, {:.0})", r.x, r.y))
+                            .unwrap_or_else(|| "unknown".into());
+                        items.push(drift_item(
+                            format!("Δ {} — node {} moved in game", f.name, claim.node),
+                            format!(
+                                "was {was} → ({:.0}, {:.0}) in save",
+                                e.position.x, e.position.y
+                            ),
+                            SyncOp::CorrectNodePosition {
+                                node: claim.node.clone(),
+                                x: e.position.x,
+                                y: e.position.y,
+                                z: e.position.z,
+                            },
+                        ));
+                    }
+                }
             }
             None => {
                 let machines: u32 = c.groups.iter().map(|g| g.count).sum();
@@ -688,6 +975,44 @@ pub fn diff_against_built(
     items
 }
 
+/// Auto-dissolve node overrides that no longer earn their place (W2b-C), mirror
+/// of [`crate::buildqueue::dissolve_stale_overrides`]. Called after a re-import
+/// drift accept: an override whose catalog node now AGREES with it (the node
+/// moved back within the drift threshold) is redundant, and an override whose
+/// node no longer has any claim is dangling — both are removed as one undoable
+/// move. Save-only overrides (no catalog node) are the sole record of that
+/// node's position, so they survive as long as a claim references them.
+pub fn dissolve_stale_node_overrides(
+    state: &mut PlanState,
+    tx: &mut planner_core::commands::Transaction,
+    world: &WorldSnapshot,
+) {
+    use planner_core::state::COLL_NODE_OVERRIDES;
+    let claimed: std::collections::BTreeSet<&String> =
+        state.node_claims.values().map(|c| &c.node).collect();
+    let stale: Vec<String> = state
+        .node_overrides
+        .values()
+        .filter(|ov| {
+            // dangling: nothing claims this node anymore
+            if !claimed.contains(&ov.id) {
+                return true;
+            }
+            // redundant: the catalog node exists and the correction now agrees
+            match (ov.pos, world.nodes.iter().find(|n| n.id == ov.id)) {
+                (Some(pos), Some(n)) => (n.x - pos.x).hypot(n.y - pos.y) <= NODE_DRIFT_M,
+                _ => false,
+            }
+        })
+        .map(|ov| ov.id.clone())
+        .collect();
+    for id in stale {
+        if let Some(ops) = state.remove(COLL_NODE_OVERRIDES, &id) {
+            tx.record(ops);
+        }
+    }
+}
+
 fn drift_item(label: String, detail: String, op: SyncOp) -> ProposalItem {
     ProposalItem {
         id: new_id(),
@@ -710,10 +1035,43 @@ pub fn apply_sync(
     op: &SyncOp,
     import_id: &str,
     gd: &gamedata::docs::GameData,
+    world: &WorldSnapshot,
 ) {
     match op {
         SyncOp::CreateCluster { cluster } => {
-            write_built_layer(state, tx, std::slice::from_ref(cluster), import_id, gd);
+            write_built_layer(
+                state,
+                tx,
+                std::slice::from_ref(cluster),
+                import_id,
+                gd,
+                world,
+            );
+        }
+        SyncOp::CorrectNodePosition { node, x, y, z } => {
+            // Plan-local overlay write (the one documented ◆-sync exception) —
+            // the bundled catalog stays untouched. Preserve any save actor ref
+            // the binding recorded so the node keeps re-matching by stable id.
+            let save_actor = state
+                .node_overrides
+                .get(node)
+                .and_then(|o| o.save_actor.clone())
+                .or_else(|| {
+                    state
+                        .node_claims
+                        .values()
+                        .find(|c| &c.node == node)
+                        .and_then(|c| c.save_node_id.clone())
+                });
+            tx.record(state.upsert(Entity::NodeOverride(NodeOverride {
+                id: node.clone(),
+                pos: Some(MapPos {
+                    x: *x,
+                    y: *y,
+                    z: *z,
+                }),
+                save_actor,
+            })));
         }
         SyncOp::UpdateGroup {
             factory,

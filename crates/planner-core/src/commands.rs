@@ -256,6 +256,15 @@ pub enum Command {
         id: Id,
         replaces: Option<Id>,
     },
+    /// Upsert (or clear) a plan-local resource-node correction (W2b-C).
+    /// `Some(ov)` writes the override; `None` removes it, reverting the node to
+    /// its ambient catalog geometry. Plan-local metadata, not a ◆ mutation — no
+    /// `require_planned` (same species as [`Command::SetBuildDone`]); undo is
+    /// free via the standard upsert/remove patch-pair.
+    SetNodeOverride {
+        id: String,
+        node_override: Option<NodeOverride>,
+    },
 }
 
 impl Command {
@@ -304,6 +313,7 @@ impl Command {
             Command::SetFactoryTheme { .. } => "set factory theme",
             Command::SetBuildDone { .. } => "mark build done",
             Command::SetFactoryReplaces { .. } => "link replacement",
+            Command::SetNodeOverride { .. } => "correct node position",
         }
     }
 }
@@ -1271,6 +1281,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 factory: factory.clone(),
                 extractor: extractor.clone(),
                 clock: clamp_clock(*clock)?,
+                save_node_id: None,
                 status: Status::Planned,
                 created_by: CreatedBy::Manual,
             };
@@ -1493,6 +1504,24 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 }))),
                 None => {
                     if let Some(ops) = state.remove(COLL_BUILD_OVERRIDES, id) {
+                        tx.record(ops);
+                    }
+                }
+            }
+        }
+        Command::SetNodeOverride { id, node_override } => {
+            // Sparse plan-local overlay routed through the same upsert/remove
+            // machinery as every other entity, so it undoes in one step. No
+            // `require_planned`: the bundled/ambient catalog is never mutated —
+            // this only records a plan-side correction of node geometry.
+            match node_override {
+                Some(ov) => {
+                    let mut ov = ov.clone();
+                    ov.id = id.clone();
+                    tx.record(state.upsert(Entity::NodeOverride(ov)));
+                }
+                None => {
+                    if let Some(ops) = state.remove(COLL_NODE_OVERRIDES, id) {
                         tx.record(ops);
                     }
                 }

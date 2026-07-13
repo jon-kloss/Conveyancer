@@ -127,9 +127,40 @@ export default function MapView() {
   // one-shot: swallow the contextmenu that follows a route-drag release
   const suppressCtxRef = useRef(false);
 
+  // Resolved node set (W2b-C): catalog nodes at their plan-corrected position,
+  // plus save-only nodes (`save:<id>`, absent from every catalog) synthesized
+  // from their override alone. The bundled asset stays an ambient default —
+  // this overlay never mutates `world.nodes`.
+  const resolvedNodes = useMemo(() => {
+    const catalog = new Set(world.nodes.map((n) => n.id));
+    const out = world.nodes.map((n) => {
+      const ov = plan.nodeOverrides[n.id];
+      return ov?.pos ? { ...n, x: ov.pos.x, y: ov.pos.y, z: ov.pos.z ?? n.z } : n;
+    });
+    for (const [id, ov] of Object.entries(plan.nodeOverrides)) {
+      if (!catalog.has(id) && ov.pos) {
+        out.push({
+          id,
+          item: "",
+          purity: "normal",
+          x: ov.pos.x,
+          y: ov.pos.y,
+          z: ov.pos.z ?? 0,
+          zone: "surface",
+          region: "",
+        });
+      }
+    }
+    return out;
+  }, [world.nodes, plan.nodeOverrides]);
+  const resolvedWorld = useMemo(
+    () => ({ ...world, nodes: resolvedNodes }),
+    [world, resolvedNodes],
+  );
+
   const claimLinks = useMemo(() => {
     const nodeById: Record<string, { x: number; y: number }> = {};
-    for (const n of world.nodes) nodeById[n.id] = { x: n.x, y: n.y };
+    for (const n of resolvedNodes) nodeById[n.id] = { x: n.x, y: n.y };
     const links: CanvasLayerData["claimLinks"] = [];
     for (const c of Object.values(plan.nodeClaims)) {
       const node = nodeById[c.node];
@@ -148,7 +179,7 @@ export default function MapView() {
       });
     }
     return links;
-  }, [plan.nodeClaims, plan.factories, world.nodes, derived.nodes, selection, hoveredNode]);
+  }, [plan.nodeClaims, plan.factories, resolvedNodes, derived.nodes, selection, hoveredNode]);
 
   // Refactor tethers (W2a): old ◆ → new ◇ links from every `replaces`. Highlight
   // when either endpoint is the selected factory ("orange is a verb").
@@ -174,16 +205,17 @@ export default function MapView() {
     for (const c of Object.values(plan.nodeClaims)) {
       claimsByNode[c.node] = (claimsByNode[c.node] ?? 0) + 1;
     }
-    for (const n of world.nodes) {
+    for (const n of resolvedNodes) {
       const claims = claimsByNode[n.id] ?? 0;
       out[n.id] = {
         claims,
         claimed: claims > 0,
         conflict: derived.nodes[n.id]?.conflict ?? false,
+        drift: derived.nodes[n.id]?.drift ?? false,
       };
     }
     return out;
-  }, [plan.nodeClaims, world.nodes, derived.nodes]);
+  }, [plan.nodeClaims, resolvedNodes, derived.nodes]);
 
   // ---- map init (once) ----
   useEffect(() => {
@@ -347,7 +379,7 @@ export default function MapView() {
     }
     const src = routeDraft ? plan.factories[routeDraft.from] : null;
     layerRef.current?.setData({
-      world,
+      world: resolvedWorld,
       nodeStates,
       claimLinks,
       replacesLinks,
@@ -364,7 +396,7 @@ export default function MapView() {
       ghost: src && routeDraft ? { from: src.position, to: routeDraft.cursor } : null,
       review,
     });
-  }, [world, nodeStates, claimLinks, replacesLinks, hoveredNode, selection, overlays, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal]);
+  }, [resolvedWorld, nodeStates, claimLinks, replacesLinks, hoveredNode, selection, overlays, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal]);
 
   // ---- pointer interactions (hover + click on canvas nodes, placement) ----
   useEffect(() => {
@@ -550,7 +582,7 @@ export default function MapView() {
   const zoomBy = (d: number) => mapRef.current?.setZoom((mapRef.current?.getZoom() ?? 2) + d);
 
   const selectedFactory = selection?.kind === "factory" ? plan.factories[selection.id] : null;
-  const selectedNode = selection?.kind === "node" ? world.nodes.find((n) => n.id === selection.id) : null;
+  const selectedNode = selection?.kind === "node" ? resolvedNodes.find((n) => n.id === selection.id) : null;
 
   return (
     <div className={`map-root ${reviewing ? "reviewing" : ""}`} data-testid="map-root">
