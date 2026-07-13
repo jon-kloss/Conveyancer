@@ -1,13 +1,33 @@
 //! Domain entities per SDD §3. The full shape ships from day one — Phase 1 only
 //! creates Planned/Manual entities, but `status` and `created_by` are always present.
 
+use std::cell::RefCell;
+
 use serde::{Deserialize, Serialize};
 
 /// Ulid rendered as its canonical string — JSON- and SQLite-friendly.
 pub type Id = String;
 
+thread_local! {
+    // Monotonic generator: ids minted within the same millisecond keep
+    // ascending order (the random component is incremented, not re-rolled).
+    // Plain `Ulid::new()` re-randomizes each call, so ids created in one burst
+    // — an import or a proposal accept mints many at once — sorted in random
+    // order, which the build-queue "chronological within a bucket" ordering
+    // relies on. Thread-local because every logical plan operation runs on a
+    // single thread; cross-thread ordering is not a chronology we promise.
+    static GEN: RefCell<ulid::Generator> = const { RefCell::new(ulid::Generator::new()) };
+}
+
 pub fn new_id() -> Id {
-    ulid::Ulid::new().to_string()
+    GEN.with(|g| {
+        // `generate` only errors on random-component overflow within a
+        // millisecond (>1.2e24 ids) — impossible here; fall back if it ever does.
+        g.borrow_mut()
+            .generate()
+            .unwrap_or_else(|_| ulid::Ulid::new())
+            .to_string()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
