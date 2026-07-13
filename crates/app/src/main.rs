@@ -185,6 +185,24 @@ fn cutover_downtime(
     state.0.lock().unwrap().cutover_plan(factory)
 }
 
+/// W2b-D: empire-wide alternate-recipe optimizer — a derived, read-only ranking
+/// of adopt-everywhere opportunities (no mutation).
+#[tauri::command]
+fn optimize_empire(state: State<AppState>) -> Vec<app::altopt::AltOpportunity> {
+    let s = state.0.lock().unwrap();
+    app::altopt::empire_optimize(&s.state, &s.gamedata, &s.unlocked)
+}
+
+/// W2b-D: adopt an alternate empire-wide → draft the review proposal(s) (T2 for
+/// ◇, W2a Refactor for ◆). The ◆ built layer is never mutated.
+#[tauri::command]
+fn optimize_adopt(
+    state: State<AppState>,
+    recipe: String,
+) -> Result<app::session::AdoptOutcome, SessionError> {
+    state.0.lock().unwrap().optimize_adopt(&recipe)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -222,7 +240,9 @@ fn main() {
             proposal_accept,
             proposal_eval,
             cutover_plan,
-            cutover_downtime
+            cutover_downtime,
+            optimize_empire,
+            optimize_adopt
         ])
         .run(tauri::generate_context!())
         .expect("error while running FICSIT Planner");

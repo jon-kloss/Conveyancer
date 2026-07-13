@@ -3,7 +3,9 @@
 // state in both — the renderer only ever sees patches (SDD §4).
 
 import type {
+  AdoptOutcome,
   AdvisorFeed,
+  AltOpportunity,
   ChatReply,
   ChatScope,
   Command,
@@ -44,6 +46,10 @@ export interface Backend {
   planReplacement(factory: string): Promise<PlanReplacementResult>;
   /** W2a: price a cutover's downtime on demand (scratch-solved, ripple-inclusive). */
   cutoverPlan(factory: string): Promise<CutoverPlan>;
+  /** W2b-D: empire alternate-recipe optimizer — a derived, read-only ranking. */
+  optimizeEmpire(): Promise<AltOpportunity[]>;
+  /** W2b-D: adopt an alternate empire-wide → draft review proposal(s) (◆ never mutated). */
+  optimizeAdopt(recipe: string): Promise<AdoptOutcome>;
   importRun(snapshot: ImportSnapshot): Promise<ImportOutcome>;
   advisorDismiss(id: string): Promise<AdvisorFeed>;
   advisorUnmute(rule: string): Promise<AdvisorFeed>;
@@ -99,6 +105,12 @@ class TauriBackend implements Backend {
   }
   cutoverPlan(factory: string) {
     return this.invoke<CutoverPlan>("cutover_downtime", { factory });
+  }
+  optimizeEmpire() {
+    return this.invoke<AltOpportunity[]>("optimize_empire");
+  }
+  optimizeAdopt(recipe: string) {
+    return this.invoke<AdoptOutcome>("optimize_adopt", { recipe });
   }
   importRun(snapshot: ImportSnapshot) {
     return this.invoke<ImportOutcome>("import_run", { snapshot });
@@ -178,6 +190,12 @@ class BridgeBackend implements Backend {
   }
   cutoverPlan(factory: string) {
     return this.call<CutoverPlan>("cutover/downtime", { method: "POST", body: JSON.stringify({ factory }) });
+  }
+  optimizeEmpire() {
+    return this.call<AltOpportunity[]>("optimize/empire");
+  }
+  optimizeAdopt(recipe: string) {
+    return this.call<AdoptOutcome>("optimize/adopt", { method: "POST", body: JSON.stringify({ recipe }) });
   }
   importRun(snapshot: ImportSnapshot) {
     return this.call<ImportOutcome>("import/run", { method: "POST", body: JSON.stringify(snapshot) });

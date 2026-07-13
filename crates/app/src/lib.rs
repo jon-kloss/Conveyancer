@@ -3,6 +3,7 @@
 //! state in every mode (SDD §4 — no state forking).
 
 pub mod advisor;
+pub mod altopt;
 pub mod buildqueue;
 pub mod chat;
 pub mod cutover;

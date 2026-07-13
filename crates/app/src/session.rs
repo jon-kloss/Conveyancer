@@ -205,6 +205,23 @@ pub struct ProposalConsequence {
     pub circuit_impacts: Vec<CircuitImpact>,
 }
 
+/// Result of adopting an alternate empire-wide (W2b-D CTA). The optimizer is
+/// advisory: this drafts the proposal(s) that carry the change into the existing
+/// review surface — a T2 `SetGroupRecipe` proposal for an all-◇ opportunity, or
+/// a W2a Refactor per ◆ built factory (the ◆ layer is never mutated). Any
+/// per-factory infeasibility is relayed in `note`, never silently dropped.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptOutcome {
+    /// Drafted-and-stored proposal ids (open these in review).
+    pub proposals: Vec<Id>,
+    /// `"t2"` (all ◇ planned) or `"refactor"` (any ◆ built).
+    pub route: String,
+    /// Relayed infeasibility reason(s) for a built factory that could not be
+    /// replaced (e.g. node budget) — surfaced in the row, not swallowed.
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "outcome")]
 pub enum ImportOutcome {
@@ -1006,6 +1023,93 @@ impl Session {
             hard: cutover.node_reuse,
             downtime_available,
             unavailable_reason,
+        })
+    }
+
+    /// Route an empire-wide alternate adoption (W2b-D) into the existing review
+    /// surface, preserving the contract pivot: an opportunity touching only ◇
+    /// planned groups drafts a T2 `SetGroupRecipe` proposal (legal on planned);
+    /// an opportunity touching ANY ◆ built factory drafts a W2a Refactor per
+    /// built factory via `plan_replacement` (so downtime/cutover engage and the
+    /// ◆ layer is never mutated). Read the affected split off canonical state so
+    /// the decision matches the ranked row exactly. Each drafted proposal is
+    /// stored (one edit each); the ids come back for the renderer to open.
+    pub fn optimize_adopt(&mut self, recipe: &str) -> Result<AdoptOutcome, SessionError> {
+        let target = self
+            .gamedata
+            .recipes
+            .get(recipe)
+            .cloned()
+            .ok_or_else(|| SessionError::Internal(format!("unknown recipe {recipe}")))?;
+        let product = target
+            .products
+            .first()
+            .map(|(i, _)| i.clone())
+            .ok_or_else(|| SessionError::Internal("recipe has no product".into()))?;
+        // Distinct ◆ built factories whose primary-product-on-a-different-recipe
+        // group would adopt the alt — the presence of any routes to Refactor.
+        let mut built_factories: Vec<Id> = self
+            .state
+            .groups
+            .values()
+            .filter(|g| g.status == Status::Built && g.recipe != target.class_name)
+            .filter(|g| {
+                self.gamedata
+                    .recipes
+                    .get(&g.recipe)
+                    .and_then(|r| r.products.first())
+                    .map(|(i, _)| i == &product)
+                    .unwrap_or(false)
+            })
+            .map(|g| g.factory.clone())
+            .collect();
+        built_factories.sort();
+        built_factories.dedup();
+
+        if built_factories.is_empty() {
+            // All ◇ planned → a single T2-style adopt proposal (SetGroupRecipe).
+            let mut proposal = crate::altopt::optimize_to_recipe(
+                &self.state,
+                &self.gamedata,
+                &self.unlocked,
+                recipe,
+            )
+            .ok_or_else(|| {
+                SessionError::Internal("no planned group can adopt this alternate".into())
+            })?;
+            proposal.input_hash = self.plan_hash();
+            proposal.snapshot_time = crate::jobs::now_rfc3339();
+            let resp = self.edit(vec![Command::CreateProposal { proposal }])?;
+            return Ok(AdoptOutcome {
+                proposals: resp.created,
+                route: "t2".into(),
+                note: None,
+            });
+        }
+
+        // Any ◆ built → a W2a Refactor per built factory. plan_replacement only
+        // PLANS a ◇ replacement bound by `replaces`; it never touches the ◆.
+        let mut proposals: Vec<Id> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        for fid in built_factories {
+            let name = self
+                .state
+                .factories
+                .get(&fid)
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| fid.clone());
+            match self.plan_replacement(fid) {
+                Ok(proposal) => {
+                    let resp = self.edit(vec![Command::CreateProposal { proposal }])?;
+                    proposals.extend(resp.created);
+                }
+                Err(e) => notes.push(format!("{name}: {e}")),
+            }
+        }
+        Ok(AdoptOutcome {
+            proposals,
+            route: "refactor".into(),
+            note: (!notes.is_empty()).then(|| notes.join("; ")),
         })
     }
 

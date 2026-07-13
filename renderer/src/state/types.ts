@@ -452,6 +452,34 @@ export interface CutoverPlan {
   unavailableReason: string | null;
 }
 
+/** W2b-D empire alternate-recipe optimizer: one ranked adopt-everywhere
+ *  opportunity. Derived/advisory — fetched via optimizeEmpire(), never part of
+ *  the per-edit derived, and empty in the fixture (no unlocked alternates). */
+export interface AltOpportunity {
+  recipe: string;
+  recipeName: string;
+  product: string;
+  productName: string;
+  /** Σ machines current − Σ machines alt (positive = the alt is cheaper). */
+  machinesSaved: number;
+  powerSavedMw: number;
+  /** net per-input change (positive = the alt consumes more of that item). */
+  inputDeltas: [string, number][];
+  /** ◇ planned group ids retooled in place; ◆ built group ids route to Refactor. */
+  affectedPlanned: Id[];
+  affectedBuilt: Id[];
+  retoolEstHours: number;
+  nodeReuse: boolean;
+}
+
+/** Result of adopting an alternate empire-wide: the drafted review proposal(s)
+ *  (T2 for ◇, W2a Refactor for ◆), plus any relayed infeasibility. */
+export interface AdoptOutcome {
+  proposals: Id[];
+  route: "t2" | "refactor";
+  note: string | null;
+}
+
 export interface Derived {
   factories: Record<Id, DerivedFactory>;
   nodes: Record<string, { claims: number; conflict: boolean; drift: boolean }>;

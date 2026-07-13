@@ -197,6 +197,24 @@ fn main() -> anyhow::Result<()> {
                         Err(e) => err(422, e),
                     }
                 }
+                // ---- W2b-D empire alternate-recipe optimizer ----
+                // Read-only ranked opportunities (empty in the fixture — no
+                // unlocked alternates, honest degradation).
+                (Method::Get, "/api/optimize/empire") => ok(&app::altopt::empire_optimize(
+                    &s.state,
+                    &s.gamedata,
+                    &s.unlocked,
+                )),
+                // Adopt one alternate empire-wide → draft the review proposal(s)
+                // (T2 for ◇, W2a Refactor for ◆; ◆ never mutated).
+                (Method::Post, "/api/optimize/adopt") => {
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let recipe = req["recipe"].as_str().unwrap_or_default().to_string();
+                    match s.optimize_adopt(&recipe) {
+                        Ok(outcome) => ok(&outcome),
+                        Err(e) => err(422, e),
+                    }
+                }
                 (Method::Post, "/api/proposal/eval") => {
                     let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     match s.eval_proposal(req["id"].as_str().unwrap_or_default()) {

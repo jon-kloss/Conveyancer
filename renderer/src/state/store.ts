@@ -4,7 +4,9 @@ import { create } from "zustand";
 import { backend } from "./backend";
 import { applyPatches } from "./patch";
 import type {
+  AdoptOutcome,
   AdvisorFeed,
+  AltOpportunity,
   Command,
   CutoverPlan,
   Derived,
@@ -151,6 +153,12 @@ export interface AppStore {
   /** W2a: fetch a cutover's scratch-solved downtime on demand (or null on
       refusal — recorded in cmdError). */
   cutoverPlan(factoryId: Id): Promise<CutoverPlan | null>;
+  /** W2b-D: fetch the empire alternate-recipe ranking (read-only; [] on refusal
+      or when nothing is unlocked). */
+  optimizeEmpire(): Promise<AltOpportunity[]>;
+  /** W2b-D: adopt an alternate empire-wide → drafts the review proposal(s) and
+      opens the first in review. Returns the outcome, or null on refusal. */
+  optimizeAdopt(recipe: string): Promise<AdoptOutcome | null>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -372,6 +380,34 @@ export const useStore = create<AppStore>((set, get) => ({
       get().reportCmdError(errText(e));
       return null;
     }
+  },
+
+  // W2b-D: the optimizer is derived/advisory — a read-only fetch, never a
+  // mutation. Empty in the fixture (no unlocked alternates) — honest.
+  async optimizeEmpire() {
+    try {
+      return await backend.optimizeEmpire();
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return [];
+    }
+  },
+
+  // Adopt = draft the review proposal(s) (◇→T2, ◆→Refactor; ◆ never mutated),
+  // re-hydrate so the new proposals land, and open the first in review.
+  async optimizeAdopt(recipe) {
+    let outcome: AdoptOutcome;
+    try {
+      outcome = await backend.optimizeAdopt(recipe);
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return null;
+    }
+    await get().hydrate();
+    const first = outcome.proposals[0] ?? null;
+    set({ reviewing: first, selection: null });
+    if (outcome.note) get().reportCmdError(outcome.note);
+    return outcome;
   },
 
   // Accept = one backend transaction, one undo entry, ◇ entities only.

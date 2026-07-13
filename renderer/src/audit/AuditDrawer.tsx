@@ -2,13 +2,14 @@
 // TAB toggles it as a HUD. Tabs carry live count badges; rows re-audit on
 // every change (the store is already event-sourced, so rows are always live).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtPercent, fmtPower, fmtRate, flowLevel, circuitHeadroom, powerLevel } from "../lib/format";
 import { beltCapacity } from "../state/types";
+import type { AltOpportunity } from "../state/types";
 import "./audit.css";
 
-type Tab = "saturation" | "deficits" | "power" | "drift";
+type Tab = "saturation" | "deficits" | "power" | "drift" | "optimizer";
 
 /** Cargo route kinds audited for saturation (A3.1): throughput vs demand.
  *  Pipe is excluded — not creatable in the UI, no derived flow/capacity. */
@@ -76,6 +77,79 @@ function DriftTab() {
       {hasBuilt && !reimport && planned + plannedGroups === 0 && (
         <div className="drawer-empty">Built layer in sync — re-import a save to check for game drift.</div>
       )}
+    </>
+  );
+}
+
+// ALT OPTIMIZER (W2b-D): the empire-wide alternate-recipe ranking. Derived and
+// advisory — a read-only fetch off canonical state, empty in the fixture (no
+// unlocked alternates). Each row's REVIEW CTA drafts the change into the
+// existing review surface: an all-◇ opportunity → a T2 SetGroupRecipe proposal;
+// any ◆ built factory → a W2a Refactor (the ◆ layer is never mutated).
+function OptimizerTab() {
+  const optimizeEmpire = useStore((s) => s.optimizeEmpire);
+  const optimizeAdopt = useStore((s) => s.optimizeAdopt);
+  const gamedata = useStore((s) => s.gamedata);
+  const planHash = useStore((s) => s.planHash);
+  const [rows, setRows] = useState<AltOpportunity[] | null>(null);
+  const itemName = (cls: string) => gamedata.items[cls]?.displayName ?? cls;
+
+  // Re-fetch whenever the plan content changes (planHash) — the ranking is a
+  // pure function of state + gamedata + unlocked, so it re-audits like the rest.
+  useEffect(() => {
+    let live = true;
+    void optimizeEmpire().then((r) => {
+      if (live) setRows(r);
+    });
+    return () => {
+      live = false;
+    };
+  }, [optimizeEmpire, planHash]);
+
+  if (rows === null) return <div className="drawer-empty">Ranking alternates…</div>;
+  if (rows.length === 0) {
+    return (
+      <div className="drawer-empty">
+        No unlocked alternates to weigh — import a save with hard-drive unlocks and the optimizer ranks the
+        machine/power savings of adopting them empire-wide.
+      </div>
+    );
+  }
+  return (
+    <>
+      {rows.map((o) => (
+        <div className="audit-row" key={o.recipe} data-testid="optimizer-row">
+          <span className="audit-name">
+            {o.recipeName} · {o.productName}
+          </span>
+          <span className="mono audit-tier">ALT · {o.retoolEstHours > 0 ? `~${o.retoolEstHours.toFixed(1)}H RETOOL` : "◇ FREE"}</span>
+          <span className="mono audit-load ok">
+            −{o.machinesSaved} machines / −{fmtPower(o.powerSavedMw)}
+          </span>
+          <span className="audit-bar" />
+          <span className="mono audit-proj projected">
+            {o.affectedPlanned.length > 0 && <>◇ {o.affectedPlanned.length} planned </>}
+            {o.affectedBuilt.length > 0 && <>◆ {o.affectedBuilt.length} built </>}
+            {o.inputDeltas.map(([item, delta]) => (
+              <span className={`chip ${delta > 0 ? "warn" : ""}`} key={item} style={{ marginLeft: 4 }}>
+                {delta > 0 ? "+" : "−"}
+                {fmtRate(Math.abs(delta))} {itemName(item)}
+              </span>
+            ))}
+            {o.nodeReuse && (
+              <span className="chip warn" style={{ marginLeft: 4 }}>
+                ⚠ NODE REUSE — build-window downtime
+              </span>
+            )}
+          </span>
+          <span className="mono audit-trend">—</span>
+          <span className="audit-actions">
+            <button className="chip warn" onClick={() => void optimizeAdopt(o.recipe)}>
+              REVIEW
+            </button>
+          </span>
+        </div>
+      ))}
     </>
   );
 }
@@ -195,6 +269,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
             ["deficits", `DEFICITS`, deficitCount],
             ["power", `POWER`, powerBadge],
             ["drift", `PLAN DRIFT`, 0],
+            ["optimizer", `ALT OPTIMIZER`, 0],
           ] as const
         ).map(([id, label, count]) => (
           <button key={id} className={`audit-tab t-label ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
@@ -443,6 +518,8 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         )}
 
         {tab === "drift" && <DriftTab />}
+
+        {tab === "optimizer" && <OptimizerTab />}
       </div>
       <footer className="audit-foot mono">sorted by severity · rows re-audit live</footer>
     </div>
