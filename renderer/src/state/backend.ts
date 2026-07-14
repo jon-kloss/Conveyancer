@@ -19,6 +19,8 @@ import type {
   JobProgress,
   Proposal,
   ProposalConsequence,
+  RouteKind,
+  TrainAnswer,
   ViewState,
   WizardGoal,
 } from "./types";
@@ -56,6 +58,15 @@ export interface Backend {
   advisorPause(paused: boolean): Promise<AdvisorFeed>;
   chatSend(scope: ChatScope, message: string): Promise<ChatReply>;
   chatContext(scope: ChatScope): Promise<ContextSnapshot>;
+  /** Task #49: read-only trains-needed answer for a PROSPECTIVE route between
+   *  two factories (creates nothing). Null for belt/pipe or unknown factories. */
+  routeCalc(
+    from: Id,
+    to: Id,
+    kind: RouteKind,
+    demandPerMin: number,
+    item: string | null,
+  ): Promise<TrainAnswer | null>;
 }
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -129,6 +140,9 @@ class TauriBackend implements Backend {
   }
   chatContext(scope: ChatScope) {
     return this.invoke<ContextSnapshot>("chat_context", { scope });
+  }
+  routeCalc(from: Id, to: Id, kind: RouteKind, demandPerMin: number, item: string | null) {
+    return this.invoke<TrainAnswer | null>("route_calc", { from, to, kind, demandPerMin, item });
   }
 }
 
@@ -214,6 +228,12 @@ class BridgeBackend implements Backend {
   }
   chatContext(scope: ChatScope) {
     return this.call<ContextSnapshot>("context", { method: "POST", body: JSON.stringify(scope) });
+  }
+  routeCalc(from: Id, to: Id, kind: RouteKind, demandPerMin: number, item: string | null) {
+    return this.call<TrainAnswer | null>("route/calc", {
+      method: "POST",
+      body: JSON.stringify({ from, to, kind, demandPerMin, item }),
+    });
   }
 }
 

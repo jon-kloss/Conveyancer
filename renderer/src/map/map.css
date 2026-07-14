@@ -503,3 +503,44 @@
   text-align: right;
   font-size: 10px;
 }
+
+/* ---- task #49 train answer-sheet (trains-needed, headline answer) ---- */
+.train-answer {
+  margin-top: 8px;
+}
+.ta-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ta-count {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink-100);
+  line-height: 1;
+}
+.ta-count.warn {
+  color: var(--flow-warn);
+}
+.ta-count.ok {
+  color: var(--flow-ok);
+}
+.ta-unit {
+  font-size: 11px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+}
+.ta-math .math-row.math-total.warn {
+  color: var(--flow-warn);
+}
+.ta-math .math-row.math-total.ok {
+  color: var(--flow-ok);
+}
+.ta-demand {
+  width: 56px;
+}
+.ta-copy {
+  margin-top: 8px;
+  width: 100%;
+}

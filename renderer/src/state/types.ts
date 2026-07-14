@@ -318,6 +318,22 @@ export interface TransportMath {
   fuelItem: string | null;
 }
 
+/** Task #49 train answer-sheet — trains-needed for a route, from the same
+ *  transport math. Returned by the read-only `routeCalc` backend call for a
+ *  PROSPECTIVE route, and composed client-side for an existing one. */
+export interface TrainAnswer {
+  math: TransportMath;
+  /** Throughput of ONE consist/truck/drone at these specs (items/min). */
+  perTrainPerMin: number;
+  /** ceil(demand ÷ per-train) — the headline answer. */
+  trainsNeeded: number;
+  demandPerMin: number;
+  /** Throughput at the configured unit count − demand; negative ⇒ short. */
+  surplusPerMin: number;
+  /** The configured fleet can't meet demand. */
+  short: boolean;
+}
+
 export interface DerivedRoute {
   flow: number;
   supplied: number;

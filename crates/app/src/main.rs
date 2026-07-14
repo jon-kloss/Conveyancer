@@ -203,6 +203,24 @@ fn optimize_adopt(
     state.0.lock().unwrap().optimize_adopt(&recipe)
 }
 
+/// Task #49: read-only trains-needed answer for a PROSPECTIVE route (no route
+/// is created). Reuses the canonical transport math from the two factory pins.
+#[tauri::command]
+fn route_calc(
+    state: State<AppState>,
+    from: String,
+    to: String,
+    kind: planner_core::entities::RouteKind,
+    demand_per_min: f64,
+    item: Option<String>,
+) -> Option<planner_core::transport::TrainAnswer> {
+    state
+        .0
+        .lock()
+        .unwrap()
+        .route_calc(&from, &to, &kind, demand_per_min, item.as_deref())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -242,7 +260,8 @@ fn main() {
             cutover_plan,
             cutover_downtime,
             optimize_empire,
-            optimize_adopt
+            optimize_adopt,
+            route_calc
         ])
         .run(tauri::generate_context!())
         .expect("error while running FICSIT Planner");

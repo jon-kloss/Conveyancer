@@ -79,7 +79,8 @@ test("import Dunarr-076 as the built layer; drift renders in DIFF", async ({ pag
   await page.keyboard.press("Tab");
 });
 
-test("rail route: the math block is the product", async ({ page }) => {
+test("rail route: the math block is the product", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
   await expect(page.getByTestId("map-root")).toBeVisible();
   await page.keyboard.press("f");
@@ -105,6 +106,21 @@ test("rail route: the math block is the product", async ({ page }) => {
   await page.mouse.up({ button: "right" });
   await expect(page.getByTestId("route-popover")).toBeVisible();
   await page.selectOption('[data-testid="popover-transport"]', "rail");
+
+  // ---- task #49: the pre-build TRAIN ANSWER answers "how many trains?" in the
+  // popover, before the route is committed. Enter a target rate → a real
+  // trains-needed number → COPY puts the answer on the clipboard. ----
+  const popAnswer = page.getByTestId("train-answer");
+  await expect(popAnswer).toBeVisible();
+  await expect(popAnswer).toContainText("TRAINS NEEDED");
+  await page.getByTestId("train-answer-demand").fill("500");
+  await expect(page.getByTestId("train-answer-count")).toContainText(/\d+×/);
+  await page.getByTestId("btn-train-answer-copy").click();
+  await expect(page.getByTestId("btn-train-answer-copy")).toContainText("COPIED");
+  const popClip = await page.evaluate(() => navigator.clipboard.readText());
+  expect(popClip).toContain("TRAINS NEEDED");
+  expect(popClip).toMatch(/TRAINS NEEDED\s+\d+×/);
+
   await page.getByTestId("btn-route-confirm").click();
 
   // the inspector opens on the rail route with the visible math block
@@ -116,6 +132,9 @@ test("rail route: the math block is the product", async ({ page }) => {
   await expect(math).toContainText("RTT");
   await expect(math).toContainText("THROUGHPUT");
   await expect(math).toContainText("DEMAND");
+
+  // the TRAINS NEEDED headline also rides the inspector, from the same math
+  await expect(page.getByTestId("train-answer")).toContainText("TRAINS NEEDED");
 
   // +1 consist doubles throughput (1 → 2)
   const throughput = async () =>

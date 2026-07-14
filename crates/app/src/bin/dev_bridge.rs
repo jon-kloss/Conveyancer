@@ -215,6 +215,30 @@ fn main() -> anyhow::Result<()> {
                         Err(e) => err(422, e),
                     }
                 }
+                // ---- task #49 train answer-sheet ----
+                // Read-only trains-needed calc for a PROSPECTIVE route (no
+                // route is created). Mirrors the Tauri `route_calc` command.
+                (Method::Post, "/api/route/calc") => {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct Req {
+                        from: String,
+                        to: String,
+                        kind: planner_core::entities::RouteKind,
+                        demand_per_min: f64,
+                        item: Option<String>,
+                    }
+                    match serde_json::from_str::<Req>(&body) {
+                        Ok(req) => ok(&s.route_calc(
+                            &req.from,
+                            &req.to,
+                            &req.kind,
+                            req.demand_per_min,
+                            req.item.as_deref(),
+                        )),
+                        Err(e) => err(400, e),
+                    }
+                }
                 (Method::Post, "/api/proposal/eval") => {
                     let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     match s.eval_proposal(req["id"].as_str().unwrap_or_default()) {

@@ -2011,6 +2011,37 @@ impl Session {
     pub fn solve_all_readonly(&mut self) -> Derived {
         self.empire_solve(&T0Edit::Recompute, None)
     }
+
+    /// Read-only train answer-sheet for a PROSPECTIVE route (task #49): given
+    /// two factories, a transport kind, a demand rate, and the moved item,
+    /// return the trains-needed answer from the canonical transport math. The
+    /// route length is the straight line between the two factory pins (the same
+    /// path a confirmed route would take). Creates and mutates nothing; belt/
+    /// pipe kinds have no consist math and return None.
+    pub fn route_calc(
+        &self,
+        from: &str,
+        to: &str,
+        kind: &RouteKind,
+        demand_per_min: f64,
+        item: Option<&str>,
+    ) -> Option<planner_core::transport::TrainAnswer> {
+        let a = self.state.factories.get(from)?;
+        let b = self.state.factories.get(to)?;
+        let path = [a.position, b.position];
+        let (_, math) = cargo_capacity(&self.gamedata, kind, polyline_length(&path), item)?;
+        let math = math?;
+        let units = match kind {
+            RouteKind::Rail { spec } => spec.consists as u32,
+            RouteKind::Truck { spec } => spec.trucks as u32,
+            _ => 1,
+        };
+        Some(planner_core::transport::train_answer(
+            math,
+            units,
+            demand_per_min,
+        ))
+    }
 }
 
 fn to_node_ref(end: &EdgeEnd, state: &PlanState) -> NodeRef {
