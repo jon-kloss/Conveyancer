@@ -134,14 +134,22 @@ export default function WizardModal() {
     [item, rate, total, totalOn, constraints, dispatch, setReviewing, setWizard],
   );
 
-  // ⏎ solves from step 1; ESC closes
+  // ⏎ solves from step 1; ESC closes. Capture phase on purpose — MapView's
+  // bubble-phase Escape ordering depends on it — which means this runs BEFORE
+  // the ItemCombobox's own onKeyDown. While the combobox list is open it owns
+  // both keys (Escape dismisses the list, Enter picks the highlighted option),
+  // so yield to it explicitly instead of moving off capture.
   useEffect(() => {
     if (!wizard.open) return;
+    const inOpenCombo = (t: EventTarget | null) =>
+      t instanceof HTMLElement && !!t.closest(".item-combo")?.querySelector(".item-combo-list");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (inOpenCombo(e.target)) return;
         e.stopPropagation();
         close();
       } else if (e.key === "Enter" && step === 1 && item) {
+        if (inOpenCombo(e.target)) return;
         void solve();
       }
     };

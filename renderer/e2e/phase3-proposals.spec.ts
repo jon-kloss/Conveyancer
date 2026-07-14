@@ -164,3 +164,46 @@ test("total-quantity goal: milestone ladder + carried proposal chip", async ({ p
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("proposal-review")).not.toBeVisible();
 });
+
+test("combobox keyboard: Enter picks the option, Escape peels the list first", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("map-root")).toBeVisible();
+  await page.keyboard.press("p");
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+
+  // ARIA contract: closed → not expanded; focus opens the list
+  const input = page.getByTestId("wizard-item");
+  await expect(input).toHaveAttribute("aria-expanded", "false");
+  await input.click();
+  await expect(input).toHaveAttribute("aria-expanded", "true");
+  await input.fill("iron rod");
+  await page.keyboard.press("ArrowDown");
+
+  // aria-activedescendant points at the highlighted option's real element
+  const activeId = await input.getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  const activeOpt = page.locator(`[id="${activeId}"]`);
+  await expect(activeOpt).toHaveAttribute("role", "option");
+  await expect(activeOpt).toHaveAttribute("aria-selected", "true");
+  // the option's name span (the sibling item-chip monogram is aria-hidden noise)
+  const pickedName = (await activeOpt.locator("span:not(.item-chip)").innerText()).trim();
+
+  // Enter picks the highlighted option — it must NOT double as the wizard's
+  // solve key (that would solve for the stale previously-selected item)
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+  await expect(page.getByTestId("wizard-solve")).toBeVisible(); // still step 1
+  await expect(input).toHaveValue(pickedName);
+  await expect(input).toHaveAttribute("aria-expanded", "false");
+
+  // reopen the list: Escape dismisses ONLY the list, the wizard survives
+  await input.click();
+  await expect(page.locator(".item-combo-list")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".item-combo-list")).not.toBeVisible();
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+
+  // with the list closed, Escape closes the wizard — back where we started
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("wizard-modal")).not.toBeVisible();
+});

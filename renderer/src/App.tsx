@@ -98,6 +98,11 @@ export default function App() {
         if (!st.reviewing) st.setDashboardOpen(!st.dashboardOpen);
       } else if (e.key === "Escape") {
         const st = useStore.getState();
+        // The wizard and the review surface own their Escape flows, and a
+        // focused text field owns its own Escape semantics (e.g. dismissing a
+        // combobox list) — this capture-phase handler must not steal the key
+        // from any of them to close the dashboard/advisor underneath.
+        if (st.wizard.open || st.reviewing || isEditableTarget(e)) return;
         // Consume Escape when it dismisses the dashboard: capture-phase + stop
         // so MapView's window Escape handler doesn't ALSO clear the map
         // selection for the same keystroke. Other keys still reach MapView.
