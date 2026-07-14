@@ -8,7 +8,7 @@ import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtKm, fmtPower, fmtRate } from "../lib/format";
 import type { Id } from "../state/types";
-import { composeBuildSheet, sheetToText } from "./buildSheet";
+import { composeBuildSheet, sheetToText } from "./buildSheetModel";
 import "./buildsheet.css";
 
 export default function BuildSheet({ factoryId, onClose }: { factoryId: Id; onClose: () => void }) {
