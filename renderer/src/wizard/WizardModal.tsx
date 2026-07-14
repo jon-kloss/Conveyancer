@@ -157,11 +157,16 @@ export default function WizardModal() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [wizard.open, step, item, solve, close]);
 
+  // Built once per log change, not per phaseState call — the phase list asks
+  // 4× per render at the 120ms poll cadence, and rebuilding the Set walks the
+  // whole log each time. Hoisted above the early return: hooks must run in the
+  // same order every render, open or not.
+  const seenPhases = useMemo(() => new Set(log.map((l) => l.phase)), [log]);
+
   if (!wizard.open) return null;
 
   const phaseState = (phase: string): "done" | "active" | "pending" => {
     const idx = PHASES.indexOf(phase as (typeof PHASES)[number]);
-    const seenPhases = new Set(log.map((l) => l.phase));
     const lastPhase = log[log.length - 1]?.phase;
     if (lastPhase === phase && !infeasible) return "active";
     if (seenPhases.has(phase)) return "done";
@@ -360,7 +365,11 @@ export default function WizardModal() {
                   freezes the page — the scrollback beyond this window carries
                   no decision the review step doesn't already surface. */}
               {log.length > 400 && (
-                <div className="wl-phase">… {log.length - 400} earlier lines</div>
+                // .wl-phase reused deliberately: the elision marker wants the
+                // same de-emphasized styling as phase tags, not a new class.
+                <div className="wl-phase">
+                  … {log.length - 400} earlier line{log.length - 400 === 1 ? "" : "s"}
+                </div>
               )}
               {log.slice(-400).map((l, i) => (
                 <div key={log.length - Math.min(log.length, 400) + i}>
