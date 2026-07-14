@@ -34,11 +34,14 @@ async function connect(page: Page, source: string, target: string) {
   // pointer-over fires, and the whole gesture can still miss under contention.
   // Retry generously with a neutral-position reset between attempts — a stuck
   // half-drag from a missed attempt otherwise swallows the next one.
-  await src.scrollIntoViewIfNeeded();
-  await dst.scrollIntoViewIfNeeded();
   await src.waitFor({ state: "visible" });
   await dst.waitFor({ state: "visible" });
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    // Re-scroll EVERY attempt: each landed belt adds labels and shifts layout,
+    // so coordinates measured before the previous connect go stale mid-chain
+    // (CI reproduced a miss on belt 3 of 7 that never happens locally).
+    await src.scrollIntoViewIfNeeded();
+    await dst.scrollIntoViewIfNeeded();
     const a = await src.boundingBox();
     const b = await dst.boundingBox();
     if (!a || !b) throw new Error(`handle not found: ${source} → ${target}`);
@@ -52,19 +55,25 @@ async function connect(page: Page, source: string, target: string) {
     await page.mouse.move(sx, sy); // tiny wiggle to register drag start
     await page.mouse.move(tx, ty, { steps: 16 });
     await page.mouse.move(tx, ty); // settle on target so pointer-over fires
-    await page.waitForTimeout(60);
+    await page.waitForTimeout(60 + attempt * 40);
     await page.mouse.up();
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(400 + attempt * 100);
     if ((await page.locator(".belt-label").count()) === before + 1) return;
-    // Reset any half-committed drag before retrying.
+    // Reset any half-committed drag before retrying, with growing backoff so a
+    // contended runner gets breathing room instead of six identical fast misses.
     await page.mouse.up().catch(() => {});
     await page.mouse.move(sx, sy - 120);
-    await page.waitForTimeout(120);
+    await page.waitForTimeout(150 + attempt * 100);
   }
   throw new Error(`connect failed after retries: ${source} → ${target}`);
 }
 
 test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
+  // The suite's longest UI-gesture spec (~40 gestures with retry loops): the
+  // default 60s budget fits a warm dev box but not a cold contended CI runner —
+  // CI burned the whole budget before the first belt and cascaded the serial
+  // suite. Same honest-budget treatment phase4 gives its save parses.
+  test.setTimeout(180_000);
   await page.goto("/");
   await expect(page.getByTestId("map-root")).toBeVisible();
 
@@ -110,6 +119,15 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await expect(page.getByTestId("graph-root")).toBeVisible();
   await expect(page.getByTestId("port-in-Desc_OreIron_C")).toBeVisible();
 
+  // empty factory teaches the add gesture; + MACHINE opens the same menu
+  await expect(page.getByTestId("graph-empty-hint")).toBeVisible();
+  await page.getByTestId("btn-add-machine").click();
+  await expect(page.locator(".addgroup-menu input")).toBeVisible();
+  // generators are placeable like any machine: burn recipes carry an MW tag
+  await page.locator(".addgroup-menu input").fill("coal");
+  await expect(page.locator(".addgroup-item").first()).toContainText("MW");
+  await page.keyboard.press("Escape");
+
   // ---- output port for Modular Frames ----
   await page.getByRole("button", { name: "+ OUT PORT" }).click();
   await page.locator(".addgroup-menu input").fill("modular frame");
@@ -125,6 +143,7 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await addGroup(page, "iron plate", { x: 200, y: 620 });
   await addGroup(page, "reinforced", { x: 760, y: 620 });
   await addGroup(page, "modular frame", { x: 1320, y: 620 });
+  await expect(page.getByTestId("graph-empty-hint")).toBeHidden();
 
   // ---- wire the chain (deselect first so the inspector doesn't cover ports) ----
   await page.keyboard.press("Escape");

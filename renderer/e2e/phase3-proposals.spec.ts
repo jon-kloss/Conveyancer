@@ -17,7 +17,8 @@ test("wizard → reviewable proposal → partial accept → undo", async ({ page
   // P opens the wizard; goal: 25 iron plates/min (nothing produces plates yet)
   await page.keyboard.press("p");
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await page.selectOption('[data-testid="wizard-item"]', "Desc_IronPlate_C");
+  await page.getByTestId("wizard-item").fill("iron plate");
+  await page.getByTestId("wizard-item-option").first().click();
   await page.fill('[data-testid="wizard-rate"]', "25");
   await page.click('[data-testid="wizard-solve"]');
 
@@ -75,7 +76,7 @@ test("audit FIX WITH SOLVER pre-fills the wizard goal", async ({ page }) => {
   await expect(row).toBeVisible();
   await row.locator(".chip", { hasText: "FIX WITH SOLVER" }).click();
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await expect(page.getByTestId("wizard-item")).toHaveValue("Desc_IronIngot_C");
+  await expect(page.getByTestId("wizard-item")).toHaveValue("Iron Ingot");
   await page.keyboard.press("Escape");
 });
 
@@ -135,7 +136,8 @@ test("total-quantity goal: milestone ladder + carried proposal chip", async ({ p
   // P opens the wizard; pick a craftable item + rate
   await page.keyboard.press("p");
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await page.selectOption('[data-testid="wizard-item"]', "Desc_IronPlate_C");
+  await page.getByTestId("wizard-item").fill("iron plate");
+  await page.getByTestId("wizard-item-option").first().click();
   await page.fill('[data-testid="wizard-rate"]', "8");
 
   // toggle TOTAL-QUANTITY GOAL on and set the huge total the game hands out
@@ -161,4 +163,47 @@ test("total-quantity goal: milestone ladder + carried proposal chip", async ({ p
   // new factory in the shared serial state
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("proposal-review")).not.toBeVisible();
+});
+
+test("combobox keyboard: Enter picks the option, Escape peels the list first", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("map-root")).toBeVisible();
+  await page.keyboard.press("p");
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+
+  // ARIA contract: closed → not expanded; focus opens the list
+  const input = page.getByTestId("wizard-item");
+  await expect(input).toHaveAttribute("aria-expanded", "false");
+  await input.click();
+  await expect(input).toHaveAttribute("aria-expanded", "true");
+  await input.fill("iron rod");
+  await page.keyboard.press("ArrowDown");
+
+  // aria-activedescendant points at the highlighted option's real element
+  const activeId = await input.getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  const activeOpt = page.locator(`[id="${activeId}"]`);
+  await expect(activeOpt).toHaveAttribute("role", "option");
+  await expect(activeOpt).toHaveAttribute("aria-selected", "true");
+  // the option's name span (the sibling item-chip monogram is aria-hidden noise)
+  const pickedName = (await activeOpt.locator("span:not(.item-chip)").innerText()).trim();
+
+  // Enter picks the highlighted option — it must NOT double as the wizard's
+  // solve key (that would solve for the stale previously-selected item)
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+  await expect(page.getByTestId("wizard-solve")).toBeVisible(); // still step 1
+  await expect(input).toHaveValue(pickedName);
+  await expect(input).toHaveAttribute("aria-expanded", "false");
+
+  // reopen the list: Escape dismisses ONLY the list, the wizard survives
+  await input.click();
+  await expect(page.locator(".item-combo-list")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".item-combo-list")).not.toBeVisible();
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+
+  // with the list closed, Escape closes the wizard — back where we started
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("wizard-modal")).not.toBeVisible();
 });

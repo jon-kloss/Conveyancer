@@ -6,6 +6,7 @@ import { Handle, Position } from "@xyflow/react";
 import { useStore } from "../state/store";
 import { fmtRate } from "../lib/format";
 import type { Port } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export interface PortNodeData {
   port: Port;
@@ -47,7 +48,7 @@ export default function BoundaryPortNode({ data, selected }: { data: PortNodeDat
     >
       <div className="port-card-dir t-label">{port.direction === "in" ? "INPUT" : "OUTPUT"}</div>
       <div className="port-card-item">
-        <div className="icon-ph s20" />
+        <ItemIcon item={port.item} displayName={item} size={20} />
         <span>{item}</span>
       </div>
       <div className={`t-data-12 ${numCls}`}>

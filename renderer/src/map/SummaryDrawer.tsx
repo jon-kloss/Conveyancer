@@ -7,6 +7,7 @@ import { useStore } from "../state/store";
 import { fmtPower, fmtRate } from "../lib/format";
 import type { Factory } from "../state/types";
 import BuildSheet from "../graph/BuildSheet";
+import ItemIcon from "../lib/ItemIcon";
 
 const STATUS_GLYPH = { planned: "◇", under_construction: "◈", built: "◆" } as const;
 
@@ -158,7 +159,7 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
         {outputs.length === 0 && <div className="drawer-empty">No output ports yet — open the factory to add them.</div>}
         {outputs.map((p) => (
           <div className="drawer-row" key={p.id}>
-            <div className="icon-ph s20" />
+            <ItemIcon item={p.item} displayName={gamedata.items[p.item]?.displayName} size={20} />
             <span className="drawer-row-name">{gamedata.items[p.item]?.displayName ?? p.item}</span>
             <span className={`t-data-12 ${projected}`}>
               {fmtRate(df?.ports[p.id] ?? p.rate)}
@@ -177,10 +178,10 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
           const frac = ceiling ? Math.min(1, used / ceiling) : 0;
           return (
             <div className="drawer-row" key={p.id}>
-              <div className="icon-ph s20" />
+              <ItemIcon item={p.item} displayName={gamedata.items[p.item]?.displayName} size={20} />
               <span className="drawer-row-name">{gamedata.items[p.item]?.displayName ?? p.item}</span>
               {ceiling != null && (
-                <span className="minibar" aria-hidden>
+                <span className="minibar" aria-hidden title={`${fmtRate(used)} of ${fmtRate(ceiling)}/min node ceiling`}>
                   <span
                     className={frac >= 0.95 ? "crit" : frac >= 0.7 ? "warn" : ""}
                     style={{ width: `${frac * 100}%` }}
@@ -189,7 +190,7 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
               )}
               <span className={`t-data-12 ${projected}`}>
                 {fmtRate(used)}
-                {ceiling != null && <span className="unit">/{fmtRate(ceiling)}</span>}
+                <span className="unit">/min</span>
               </span>
             </div>
           );

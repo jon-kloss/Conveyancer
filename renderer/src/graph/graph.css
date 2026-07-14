@@ -145,10 +145,11 @@
   max-width: 176px;
 }
 .fp-box {
-  /* top-down machine outline — placeholder grammar, never invented art */
-  border: 1px solid var(--ink-500);
+  /* top-down machine footprint — a solid block reads as a machine, not an
+     empty checkbox (the faint hatch vanished at these small sizes). */
+  border: 1px solid var(--steel-500);
   border-radius: 1px;
-  background: repeating-linear-gradient(45deg, rgba(108, 118, 128, 0.25) 0 2px, transparent 2px 4px);
+  background: var(--steel-600);
 }
 .fp-more {
   font-size: 9px;
@@ -658,4 +659,27 @@
   font-size: 9px;
   color: var(--ink-faint);
   z-index: 10;
+}
+
+/* Empty-factory hint: centered, non-interactive — the dblclick it teaches
+   passes straight through to the pane. */
+.graph-empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 5;
+  color: var(--ink-500);
+}
+.graph-empty-hint .t-label {
+  color: var(--ink-300);
+  letter-spacing: 0.08em;
+}
+.graph-empty-hint span:last-child {
+  font-size: 11px;
+  color: var(--ink-ghost);
 }

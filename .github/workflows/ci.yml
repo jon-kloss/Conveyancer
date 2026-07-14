@@ -46,6 +46,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Windows checkouts are case-insensitive: two tracked paths differing only
+      # in case collide there and break the exe build (bit us twice — BuildSheet
+      # and ItemIcon). Catch it on the cheap Linux job instead.
+      - name: no case-colliding paths
+        run: |
+          dupes=$(git ls-files | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::case-insensitive path collisions:"; echo "$dupes"; exit 1
+          fi
       - uses: pnpm/action-setup@v4
         with:
           version: 10

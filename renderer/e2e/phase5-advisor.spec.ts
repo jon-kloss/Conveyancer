@@ -90,3 +90,23 @@ test("style guides: manual creation + factory theme link", async ({ page }) => {
   await page.keyboard.press("Control+z");
   await expect(page.getByTestId("theme-select")).toHaveValue("");
 });
+
+test("escape stacking: wizard over advisor unwinds one layer per keypress", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("map-root")).toBeVisible();
+  await page.keyboard.press("a");
+  await expect(page.getByTestId("advisor-panel")).toBeVisible();
+
+  // P opens the wizard on top of the advisor
+  await page.keyboard.press("p");
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+
+  // first Escape closes ONLY the wizard — the advisor underneath survives
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("wizard-modal")).not.toBeVisible();
+  await expect(page.getByTestId("advisor-panel")).toBeVisible();
+
+  // second Escape closes the advisor — everything back as found
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("advisor-panel")).not.toBeVisible();
+});

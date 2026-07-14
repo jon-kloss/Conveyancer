@@ -379,7 +379,7 @@ impl Session {
             },
             "world": self.world,
             "planHash": self.plan_hash(),
-            "advisor": self.advisor.feed(self.ai_key.is_some()),
+            "advisor": self.advisor_feed(),
             "canUndo": self.undo.can_undo(),
             "canRedo": self.undo.can_redo(),
             "undoLabel": self.undo.undo_label(),
@@ -493,7 +493,7 @@ impl Session {
             undo_label: self.undo.undo_label().map(String::from),
             created,
             plan_hash: self.plan_hash(),
-            advisor: self.advisor.feed(self.ai_key.is_some()),
+            advisor: self.advisor_feed(),
         })
     }
 
@@ -586,6 +586,36 @@ impl Session {
             .ok_or_else(|| SessionError::Internal(format!("proposal {id} not found")))?;
         if p.status == ProposalStatus::Accepted || p.status == ProposalStatus::Rejected {
             return Err(SessionError::Internal("proposal is closed".into()));
+        }
+        // A drift diff is only valid against the save state that produced it:
+        // the last_import blob names the proposal the NEWEST import drafted
+        // (null for in-sync/first-import), and any other still-open diff —
+        // e.g. one an in-sync re-import made moot without writing — must not
+        // rewrite the ◆ layer with stale counts. Blobs predating the key
+        // (legacy plan files) carry no verdict and pass.
+        if p.source == planner_core::proposals::ProposalSource::SaveReimport {
+            let current = self
+                .file
+                .last_import()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|blob| blob.get("proposal").cloned());
+            if let Some(current) = current {
+                if current.as_str() != Some(id) {
+                    return Err(SessionError::Internal(
+                        "this drift diff was superseded by a newer save import — re-import for a fresh diff".into(),
+                    ));
+                }
+            }
+        }
+        // Fail loud instead of silently accepting a subset: a dependency cycle
+        // among CHECKED items would otherwise drop them all while the response
+        // still reads ACCEPTED (reachable via raw CreateProposal payloads).
+        let cycles = cycle_dropped(&p);
+        if !cycles.is_empty() {
+            return Err(SessionError::Internal(format!(
+                "cannot accept: dependency cycle among included items ({})",
+                cycles.join(", ")
+            )));
         }
         let label = format!("accept proposal #{}", p.number);
         let mut tx = Transaction::new(label);
@@ -1281,6 +1311,7 @@ impl Session {
                 "imported",
                 clusters.len() as u32,
                 groups_written,
+                None,
             );
             return Ok(ImportOutcome::Imported {
                 response,
@@ -1293,7 +1324,7 @@ impl Session {
         let items =
             crate::import::diff_against_built(&self.state, &self.gamedata, &clusters, &self.world);
         if items.is_empty() {
-            self.write_last_import(&snapshot.save_name, "in_sync", 0, 0);
+            self.write_last_import(&snapshot.save_name, "in_sync", 0, 0, None);
             return Ok(ImportOutcome::InSync);
         }
         let drift_count = items.len() as u32;
@@ -1310,9 +1341,34 @@ impl Session {
             items,
             milestone: None,
         };
-        let response = self.edit(vec![Command::CreateProposal { proposal }])?;
+        // Each new drift diff supersedes every still-open one (a newer diff is a
+        // cumulative superset): reject stale SaveReimport proposals in the same
+        // edit, so the review surface and PLAN DRIFT tab never offer obsolete
+        // SyncOps whose accept would rewrite the ◆ layer with old counts. One
+        // batch → one undoable step.
+        let mut cmds: Vec<Command> = self
+            .state
+            .proposals
+            .values()
+            .filter(|q| {
+                q.source == planner_core::proposals::ProposalSource::SaveReimport
+                    && matches!(q.status, ProposalStatus::Draft | ProposalStatus::Reviewing)
+            })
+            .map(|q| Command::SetProposalStatus {
+                id: q.id.clone(),
+                status: ProposalStatus::Rejected,
+            })
+            .collect();
+        cmds.push(Command::CreateProposal { proposal });
+        let response = self.edit(cmds)?;
         let proposal_id = response.created[0].clone();
-        self.write_last_import(&snapshot.save_name, "drift", 0, drift_count);
+        self.write_last_import(
+            &snapshot.save_name,
+            "drift",
+            0,
+            drift_count,
+            Some(&proposal_id),
+        );
         Ok(ImportOutcome::Drift {
             response,
             proposal: proposal_id,
@@ -1356,12 +1412,17 @@ impl Session {
     /// Persist the "what changed since last import" summary blob (best-effort,
     /// like the advisor writes — a failed session-fact write must not fail the
     /// import). Surfaced through [`Session::hydrate`] as `lastImport`.
+    /// `proposal` is the drift proposal the latest import drafted (None for
+    /// first-import / in-sync): [`Session::accept_proposal`] keys its stale-
+    /// drift gate on it, so a diff the newest import didn't produce — including
+    /// one an in-sync re-import made moot — can never rewrite the ◆ layer.
     fn write_last_import(
         &self,
         save_name: &str,
         outcome: &str,
         factories_added: u32,
         groups_changed: u32,
+        proposal: Option<&str>,
     ) {
         let blob = serde_json::json!({
             "at": crate::jobs::now_rfc3339(),
@@ -1369,6 +1430,7 @@ impl Session {
             "outcome": outcome,
             "factoriesAdded": factories_added,
             "groupsChanged": groups_changed,
+            "proposal": proposal,
         });
         let _ = self.file.set_last_import(&blob.to_string());
     }
@@ -1393,6 +1455,25 @@ impl Session {
             .save_advisor_gate(&self.advisor.gate_snapshot_json());
     }
 
+    /// The advisor feed with expiry derived at the boundary: a Review CTA is
+    /// only actionable while its proposal is still open, so cards pointing at
+    /// a closed or deleted proposal drop out here — zero writes, and an undo
+    /// that reopens the proposal revives the card for free. Non-Review cards
+    /// pass through untouched; mutes/pause/budget are the gate's as-is.
+    pub fn advisor_feed(&self) -> AdvisorFeed {
+        let mut feed = self.advisor.feed(self.ai_key.is_some());
+        feed.cards.retain(|c| match &c.cta {
+            Some(crate::advisor::CardCta::Review { proposal }) => self
+                .state
+                .proposals
+                .get(proposal)
+                .map(|p| matches!(p.status, ProposalStatus::Draft | ProposalStatus::Reviewing))
+                .unwrap_or(false),
+            _ => true,
+        });
+        feed
+    }
+
     /// Dismiss = hide the card AND mute its rule (persisted) — the spec's
     /// anti-nag contract: dismissing means "stop telling me about this".
     pub fn advisor_dismiss(&mut self, card_id: &str) -> AdvisorFeed {
@@ -1408,18 +1489,18 @@ impl Session {
             self.advisor.muted.insert(rule.clone());
             let _ = self.file.add_mute(&rule, &crate::jobs::now_rfc3339());
         }
-        self.advisor.feed(self.ai_key.is_some())
+        self.advisor_feed()
     }
 
     pub fn advisor_unmute(&mut self, rule: &str) -> AdvisorFeed {
         self.advisor.muted.remove(rule);
         let _ = self.file.remove_mute(rule);
-        self.advisor.feed(self.ai_key.is_some())
+        self.advisor_feed()
     }
 
     pub fn advisor_set_paused(&mut self, paused: bool) -> AdvisorFeed {
         self.advisor.paused = paused;
-        self.advisor.feed(self.ai_key.is_some())
+        self.advisor_feed()
     }
 
     pub fn set_view_state(&mut self, json: &str) -> Result<(), SessionError> {
@@ -1440,7 +1521,7 @@ impl Session {
             undo_label: self.undo.undo_label().map(String::from),
             created: vec![],
             plan_hash: self.plan_hash(),
-            advisor: self.advisor.feed(self.ai_key.is_some()),
+            advisor: self.advisor_feed(),
         }
     }
 
@@ -1751,13 +1832,16 @@ impl Session {
                 }
                 // Clamp write-back only for the port the user actually edited —
                 // an upstream dip must surface as a deficit, never silently
-                // rewrite a downstream target.
+                // rewrite a downstream target. Out ports only: for an In-port
+                // trigger, result.ports carries the solved INTAKE (not a clamped
+                // target), and writing that back would replace the value the same
+                // command batch just set with an unrelated flow figure.
                 if result.clamped {
                     if let T0Edit::SetTarget { port, .. } = trigger {
                         if let (Some(p), Some(rate)) =
                             (self.state.ports.get(port), result.ports.get(port))
                         {
-                            if (p.rate - rate).abs() > 1e-9 {
+                            if p.direction == PortDirection::Out && (p.rate - rate).abs() > 1e-9 {
                                 let mut p = p.clone();
                                 p.rate = *rate;
                                 let ops = self.state.upsert(Entity::Port(p));
@@ -2104,7 +2188,43 @@ impl Session {
                     next_shed,
                 });
             }
-            derived.total_generation_mw = self.state.factories.keys().map(gen_of).sum();
+            // Empire generation, per generator group: the solved POWER_ITEM
+            // output when the group's recipe resolves and its factory solved —
+            // so a fuel-starved plant reads its real (lower) output, matching
+            // the per-grid sums above — else nameplate mw × count × clock.
+            // The nameplate arm covers recipe-less imported generators (#58),
+            // unresolvable recipes, and solve-skipped/errored factories: never
+            // a silent 0 that would read as a false "NO GEN".
+            derived.total_generation_mw = self
+                .state
+                .groups
+                .values()
+                .filter_map(|g| {
+                    let mw = match self.gamedata.machines.get(&g.machine).map(|m| &m.kind) {
+                        Some(gamedata::docs::MachineKind::Generator {
+                            power_production_mw,
+                        }) => *power_production_mw,
+                        _ => return None,
+                    };
+                    let solved = derived
+                        .factories
+                        .get(&g.factory)
+                        .filter(|df| df.solve_error.is_none())
+                        .and_then(|df| df.groups.get(&g.id))
+                        .map(|dg| {
+                            dg.out_rates
+                                .get(gamedata::docs::POWER_ITEM)
+                                .copied()
+                                .unwrap_or(0.0)
+                        });
+                    match solved {
+                        Some(solved) if self.gamedata.recipes.contains_key(&g.recipe) => {
+                            Some(solved)
+                        }
+                        _ => Some(mw * g.effective_count() as f64 * g.effective_clock()),
+                    }
+                })
+                .sum();
         }
         // Build queue: a pure projection over canonical state + gamedata,
         // recomputed here like circuits/deficits (no stored ordering entity).
@@ -2248,6 +2368,45 @@ fn ordered_included(p: &Proposal) -> Vec<&ProposalItem> {
         }
     }
     out
+}
+
+/// Included items `ordered_included` could NOT place for any reason other than
+/// a legitimately excluded dependency — i.e. a dependency cycle among included
+/// items. Skipping an item whose dependency (direct or transitive) is unchecked
+/// is documented intent; dropping a cyclic pair while reporting ACCEPTED is
+/// silent data loss, so accept fails loud on these (the same abort-before-commit
+/// policy unresolved aliases follow).
+fn cycle_dropped(p: &Proposal) -> Vec<&str> {
+    let placeable: std::collections::BTreeSet<&str> =
+        ordered_included(p).iter().map(|i| i.id.as_str()).collect();
+    // Excluded-tainted closure: an included item is a legitimate skip when any
+    // dependency is an existing unchecked item, or is itself legitimately skipped.
+    let mut tainted: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    loop {
+        let mut grew = false;
+        for item in p.items.iter().filter(|i| i.included) {
+            if tainted.contains(item.id.as_str()) {
+                continue;
+            }
+            let hit = item.depends_on.iter().any(|d| {
+                tainted.contains(d.as_str()) || p.item(d).map(|i| !i.included).unwrap_or(false)
+            });
+            if hit {
+                tainted.insert(item.id.as_str());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    p.items
+        .iter()
+        .filter(|i| {
+            i.included && !placeable.contains(i.id.as_str()) && !tainted.contains(i.id.as_str())
+        })
+        .map(|i| i.label.as_str())
+        .collect()
 }
 
 /// Stack size for transport math: SS_* → items per inventory slot.

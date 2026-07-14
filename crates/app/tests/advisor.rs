@@ -347,3 +347,188 @@ fn failed_edit_persists_no_advisor_cards() {
     assert!(resp.advisor.cards.iter().any(|c| c.rule == "new_deficit"));
     assert!(s.file.load_advisor_cards().unwrap().len() > disk_cards_before);
 }
+
+/// Review minor M12: rate-parse failures must not be misreported as item-match
+/// failures, and trailing words / comma decimals must not defeat the parse.
+#[test]
+fn chat_rate_parse_is_forgiving_and_errors_name_the_right_culprit() {
+    let mut s = Session::in_memory(None).unwrap();
+
+    // Trailing words after the rate no longer defeat the "/min" strip.
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce iron rod at 30/min please",
+    );
+    assert!(
+        reply.proposal.is_some(),
+        "trailing words parse: {}",
+        reply.reply
+    );
+
+    // Comma decimal is accepted as a courtesy.
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce iron rod at 22,5/min",
+    );
+    assert!(
+        reply.proposal.is_some(),
+        "comma decimal parses: {}",
+        reply.reply
+    );
+
+    // Item matched but rate garbage → the reply blames the RATE, not the item.
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce iron rod at lots/min",
+    );
+    assert!(reply.proposal.is_none());
+    assert!(
+        reply.reply.contains("rate") || reply.reply.contains("positive"),
+        "blames the rate: {}",
+        reply.reply
+    );
+    assert!(
+        !reply.reply.contains("couldn't match"),
+        "must not blame the item: {}",
+        reply.reply
+    );
+
+    // Item genuinely unknown → the item-match reply is still the right one.
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce unobtainium at 30/min",
+    );
+    assert!(reply.proposal.is_none());
+    assert!(reply.reply.contains("couldn't match"), "{}", reply.reply);
+}
+
+/// A drift card's REVIEW CTA is only actionable while its proposal is open:
+/// closing the proposal drops the card at the feed boundary — derived, zero
+/// writes — while every other card kind and the mute set ride through, and
+/// the undo that reopens the proposal revives the card for free.
+#[test]
+fn feed_drops_review_cards_whose_proposal_closed() {
+    use app::import::{ImportMachine, ImportSnapshot};
+    use app::session::ImportOutcome;
+    use planner_core::proposals::ProposalStatus;
+
+    let mut s = Session::in_memory(None).unwrap();
+    // A non-Review card to ride through: starve the rod line.
+    let (_a, out) = build_starvable(&mut s);
+    s.edit(vec![Command::SetPortRate {
+        id: out,
+        rate: 10.0,
+    }])
+    .unwrap();
+    // A drift card with a Review CTA: import a built layer, then re-import
+    // a grown save.
+    let mch = |x: f64| ImportMachine {
+        class: "Build_SmelterMk1_C".into(),
+        recipe: Some("Recipe_IngotIron_C".into()),
+        clock: 1.0,
+        x,
+        y: 90000.0,
+        z: 0.0,
+        ..Default::default()
+    };
+    let snap = |n: usize| ImportSnapshot {
+        save_name: "DRIFT".into(),
+        machines: (0..n).map(|i| mch(50.0 * i as f64)).collect(),
+        ..Default::default()
+    };
+    s.import_save(snap(2)).unwrap();
+    let ImportOutcome::Drift { proposal, .. } = s.import_save(snap(3)).unwrap() else {
+        panic!("expected drift");
+    };
+    let feed = s.advisor_feed();
+    assert!(
+        feed.cards.iter().any(
+            |c| matches!(&c.cta, Some(app::advisor::CardCta::Review { proposal: p }) if *p == proposal)
+        ),
+        "drift card in the feed: {:?}",
+        feed.cards
+    );
+    assert!(
+        feed.cards.iter().any(|c| c.rule == "new_deficit"),
+        "non-Review card present: {:?}",
+        feed.cards
+    );
+
+    // Manual reject closes the proposal → the card expires out of the feed.
+    let resp = s
+        .edit(vec![Command::SetProposalStatus {
+            id: proposal.clone(),
+            status: ProposalStatus::Rejected,
+        }])
+        .unwrap();
+    for feed in [&resp.advisor, &s.advisor_feed()] {
+        assert!(
+            !feed
+                .cards
+                .iter()
+                .any(|c| matches!(&c.cta, Some(app::advisor::CardCta::Review { .. }))),
+            "closed proposal, no Review card: {:?}",
+            feed.cards
+        );
+        assert!(
+            feed.cards.iter().any(|c| c.rule == "new_deficit"),
+            "other card kinds unaffected"
+        );
+        assert!(feed.muted.is_empty(), "expiry is not a mute");
+    }
+    // Zero writes: the card itself was never dismissed — undoing the reject
+    // reopens the proposal and the card comes straight back.
+    assert!(s.advisor.cards.iter().all(|c| !c.dismissed));
+    s.undo().unwrap().unwrap();
+    assert!(
+        s.advisor_feed().cards.iter().any(
+            |c| matches!(&c.cta, Some(app::advisor::CardCta::Review { proposal: p }) if *p == proposal)
+        ),
+        "reopened proposal revives the card"
+    );
+}
+
+/// A comma is a decimal comma ("22,5" → 22.5) OR thousands grouping
+/// ("1,000" → 1000) by shape — either way the drafted goal must carry the
+/// magnitude the user wrote, not a 45×/1000× misread.
+#[test]
+fn chat_rate_commas_preserve_magnitude() {
+    let mut s = Session::in_memory(None).unwrap();
+
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce iron rod at 22,5/min",
+    );
+    let pid = reply.proposal.expect("decimal comma drafts");
+    assert_eq!(
+        s.state.proposals[&pid].goal,
+        vec![("Desc_IronRod_C".to_string(), 22.5)],
+        "22,5 is twenty-two and a half"
+    );
+
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce iron rod at 1,000/min",
+    );
+    match reply.proposal {
+        // Feasible in this catalog → the goal carries the grouped magnitude.
+        Some(pid) => assert_eq!(
+            s.state.proposals[&pid].goal,
+            vec![("Desc_IronRod_C".to_string(), 1000.0)],
+            "1,000 is one thousand"
+        ),
+        // Infeasible at 1000/min is fine — the provenance line still has to
+        // show the solver was asked for one thousand, not one.
+        None => assert!(
+            reply.saw.contains("1000.0/min"),
+            "goal magnitude honest: {}",
+            reply.saw
+        ),
+    }
+}

@@ -117,6 +117,13 @@
 .audit-row.crit {
   background: rgba(255, 93, 85, 0.05);
 }
+.audit-row.power-summary {
+  background: var(--steel-900);
+  border-bottom: 1px solid var(--steel-700);
+}
+.audit-row.power-summary .audit-name {
+  color: var(--ink-100);
+}
 .audit-name {
   font-family: var(--font-display);
   font-weight: 600;

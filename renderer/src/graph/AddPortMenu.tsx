@@ -5,6 +5,7 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import type { Id, PortDirection } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export default function AddPortMenu({
   direction,
@@ -60,7 +61,7 @@ export default function AddPortMenu({
       <div className="addgroup-list">
         {items.map((i) => (
           <button key={i.className} className="addgroup-item" onClick={() => add(i.className)}>
-            <div className="icon-ph s20" />
+            <ItemIcon item={i.className} displayName={i.displayName} size={20} />
             <span>{i.displayName}</span>
           </button>
         ))}

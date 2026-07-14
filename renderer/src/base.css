@@ -214,6 +214,90 @@ button {
 .icon-ph.s28 { width: 28px; height: 28px; }
 .icon-ph.s40 { width: 40px; height: 40px; }
 
+/* ---- item chip: deterministic colour + monogram (supersedes icon-ph for
+   items). Accent tints the tile + border; monogram stays light for contrast
+   across the whole palette (dark coal → light limestone). ---- */
+.item-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  /* plain fallbacks first: WebKitGTK without color-mix() keeps the last
+     valid declaration, so it lands on the untinted steel */
+  background: var(--steel-800);
+  background: color-mix(in srgb, var(--chip-accent, var(--steel-600)) 20%, var(--steel-800));
+  border: 1px solid var(--steel-600);
+  border: 1px solid color-mix(in srgb, var(--chip-accent, var(--steel-600)) 55%, transparent);
+  color: var(--ink-100);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+}
+.item-chip.s20 { width: 20px; height: 20px; font-size: 9px; }
+.item-chip.s28 { width: 28px; height: 28px; font-size: 11px; }
+.item-chip.s40 { width: 40px; height: 40px; font-size: 15px; }
+
+/* ---- item combobox: searchable picker (chip + input + filtered list) ---- */
+.item-combo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.item-combo-input {
+  width: 200px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--steel-800);
+  border: 1px solid var(--steel-600);
+  border-radius: 2px;
+  color: var(--ink-100);
+  font-size: 12px;
+}
+.item-combo-input:focus {
+  outline: none;
+  border-color: var(--signal-500);
+}
+.item-combo-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 26px; /* clear the chip, align with the input */
+  width: 200px;
+  max-height: 264px;
+  overflow-y: auto;
+  background: var(--steel-900);
+  border: 1px solid var(--steel-600);
+  border-radius: 2px;
+  z-index: 40;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.item-combo-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  color: var(--ink-300);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.item-combo-option.hl,
+.item-combo-option:hover {
+  background: var(--steel-700);
+  color: var(--ink-100);
+}
+.item-combo-empty {
+  padding: 6px 8px;
+  color: var(--ink-500);
+  font-size: 11px;
+}
+
 /* ---- scrollbars, node-editor grade ---- */
 ::-webkit-scrollbar {
   width: 8px;

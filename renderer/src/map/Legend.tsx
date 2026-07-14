@@ -2,6 +2,22 @@
 
 import { useState } from "react";
 
+// Node fill = extracted resource (map data, not a UI signal). Compact key so a
+// player can decode the map's colours at a glance.
+const RESOURCE_KEY: [string, string][] = [
+  ["iron", "Iron"],
+  ["copper", "Copper"],
+  ["limestone", "Limestone"],
+  ["coal", "Coal"],
+  ["caterium", "Caterium"],
+  ["quartz", "Quartz"],
+  ["sulfur", "Sulfur"],
+  ["oil", "Oil"],
+  ["bauxite", "Bauxite"],
+  ["uranium", "Uranium"],
+  ["sam", "SAM"],
+];
+
 export default function Legend() {
   const [open, setOpen] = useState(true);
   return (
@@ -24,6 +40,14 @@ export default function Legend() {
           <div className="legend-row">
             <span className="legend-node claimed" /> Claimed
             <span className="legend-node conflict" /> Conflict
+          </div>
+          <div className="legend-resources">
+            {RESOURCE_KEY.map(([key, label]) => (
+              <span className="legend-res" key={key}>
+                <span className="legend-res-dot" style={{ background: `var(--resource-${key})` }} />
+                {label}
+              </span>
+            ))}
           </div>
           <div className="legend-row">
             <span className="legend-tether" /> Claim tether (node → factory)

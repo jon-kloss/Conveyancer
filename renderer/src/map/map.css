@@ -168,6 +168,8 @@
   font-size: 10px;
   white-space: nowrap;
   color: var(--ink-300);
+  /* separate labels that sit close in dense clusters so each stays legible */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 .pin-chip.chip-culled {
   display: none;
@@ -256,6 +258,28 @@
   height: 10px;
   border-radius: 50%;
   border: 1.5px solid var(--ink-500);
+  display: inline-block;
+}
+.legend-resources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 10px;
+  color: var(--ink-300);
+  padding-top: 2px;
+  margin-top: 2px;
+  border-top: 1px solid var(--steel-800);
+}
+.legend-res {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.legend-res-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   display: inline-block;
 }
 .legend-node.normal {

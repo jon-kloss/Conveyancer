@@ -1393,6 +1393,231 @@ fn generator_factories_and_circuits() {
 }
 
 #[test]
+fn imported_generator_counts_nameplate_without_fuel() {
+    // Power honesty (#58): an imported ◆ coal plant has generators but no traced
+    // coal supply, so the fuel-burn recipe solves to 0 POWER_ITEM. Generation
+    // must still reflect nameplate × count × clock, else the empire power balance
+    // reads a false "NO GEN" for every imported world.
+    let mut s = Session::in_memory(None).unwrap();
+    // Real generators carry NO recipe in the save (nothing to read), exactly the
+    // case that made the solver report 0 generation for imports.
+    let gen_mach = |x: f64| app::import::ImportMachine {
+        class: "Build_GeneratorCoal_C".into(),
+        recipe: None,
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+        ..Default::default()
+    };
+    // Import 4 coal generators as ◆ BUILT — clustered into one group of 4, with
+    // NO coal supply anywhere (the fuel chain is untraced, as in a real import).
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "IMPORT-GEN".into(),
+        machines: vec![
+            gen_mach(0.0),
+            gen_mach(40.0),
+            gen_mach(80.0),
+            gen_mach(120.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let gens = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group");
+    assert_eq!(gens.status, Status::Built, "imported as ◆ built");
+    assert_eq!(gens.recipe, "", "no recipe was read from the save");
+    assert_eq!(gens.count, 4, "4 generators clustered into one group");
+    // The empire power balance (the summary's source) must reflect nameplate
+    // generation — 4 × 75 MW = 300 MW — not the solver's fuel-starved 0.
+    let d = s.solve_all_readonly();
+    assert!(
+        (d.total_generation_mw - 300.0).abs() < 1e-4,
+        "empire generation honest without a fuel recipe: {}",
+        d.total_generation_mw
+    );
+}
+
+#[test]
+fn starved_fueled_plant_reports_solved_generation_not_nameplate() {
+    // The other side of #58's honesty: a plant whose fuel recipe DOES solve
+    // must report the solved (starved) output, not nameplate — the empire
+    // total has to agree with the per-grid sums, or the power summary claims
+    // MW the grid never sees. A ◆ imported plant pins the case: the solver
+    // never rewrites its built count, so nameplate stays 4 × 75 MW while the
+    // fuel ceiling caps the solve.
+    let mut s = Session::in_memory(None).unwrap();
+    let burn_recipe = s
+        .gamedata
+        .recipes
+        .values()
+        .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
+        .unwrap()
+        .class_name
+        .clone();
+    let gen_mach = |x: f64| app::import::ImportMachine {
+        class: "Build_GeneratorCoal_C".into(),
+        recipe: Some(burn_recipe.clone()),
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+        ..Default::default()
+    };
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "IMPORT-FUELED".into(),
+        machines: vec![
+            gen_mach(0.0),
+            gen_mach(40.0),
+            gen_mach(80.0),
+            gen_mach(120.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let plant = s.state.factories.keys().next().unwrap().clone();
+    let gens = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group")
+        .id
+        .clone();
+    // A consumer on a power line forms the grid whose sum must agree.
+    let consumer = s
+        .edit(vec![Command::CreateFactory {
+            name: "IRON WORKS".into(),
+            position: MapPos {
+                x: 800.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Power,
+        from: plant,
+        to: consumer,
+        path: vec![
+            MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            MapPos {
+                x: 800.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        ],
+    }])
+    .unwrap();
+
+    // Coal supply collapses to half: 30/min feeds 2 of the 4 generators.
+    let coal_in = s
+        .state
+        .ports
+        .values()
+        .find(|p| p.item == "Desc_Coal_C")
+        .unwrap()
+        .id
+        .clone();
+    let resp = s
+        .edit(vec![Command::SetPortCeiling {
+            id: coal_in,
+            rate_ceiling: Some(30.0),
+        }])
+        .unwrap();
+    let d = &resp.derived;
+    let g = &s.state.groups[&gens];
+    assert_eq!(g.count, 4, "◆ built count is not the solver's to resize");
+    let nameplate = 75.0 * g.effective_count() as f64 * g.effective_clock();
+    assert!(
+        d.total_generation_mw < nameplate - 1e-6,
+        "starved plant reads below nameplate {nameplate}: {}",
+        d.total_generation_mw
+    );
+    assert!(
+        (d.total_generation_mw - 150.0).abs() < 1e-4,
+        "30 coal/min runs 150 MW worth of generators: {}",
+        d.total_generation_mw
+    );
+    assert_eq!(d.circuits.len(), 1);
+    assert!(
+        (d.total_generation_mw - d.circuits[0].generation_mw).abs() < 1e-6,
+        "empire total agrees with the grid sum: {} vs {}",
+        d.total_generation_mw,
+        d.circuits[0].generation_mw
+    );
+}
+
+#[test]
+fn imported_generator_nameplate_reads_planned_delta() {
+    // The nameplate arm plans with the same effective values the solvers use:
+    // a ◆ imported bank with a user-planned expansion/retune reads
+    // mw × effective_count × effective_clock, not the built baseline.
+    let mut s = Session::in_memory(None).unwrap();
+    let gen_mach = |x: f64| app::import::ImportMachine {
+        class: "Build_GeneratorCoal_C".into(),
+        recipe: None,
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+        ..Default::default()
+    };
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "IMPORT-GEN".into(),
+        machines: vec![
+            gen_mach(0.0),
+            gen_mach(40.0),
+            gen_mach(80.0),
+            gen_mach(120.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let gid = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group")
+        .id
+        .clone();
+    s.edit(vec![
+        Command::SetGroupCount {
+            id: gid.clone(),
+            count: 6,
+        },
+        Command::SetGroupClock {
+            id: gid.clone(),
+            clock: 0.5,
+        },
+    ])
+    .unwrap();
+    let g = &s.state.groups[&gid];
+    assert_eq!(
+        g.count, 4,
+        "◆ baseline untouched — the edit rides the delta"
+    );
+    let d = s.solve_all_readonly();
+    assert!(
+        (d.total_generation_mw - 225.0).abs() < 1e-4,
+        "75 × 6 × 0.5 = 225 from the planned delta: {}",
+        d.total_generation_mw
+    );
+}
+
+#[test]
 fn floor_assignment_is_undoable_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("world.ficsit");
@@ -2331,4 +2556,106 @@ fn accept_refactor_is_one_undo_step_and_old_built_untouched() {
         "replacement gone after undo"
     );
     assert_eq!(s.state.factories[&old], old_before, "◆ still untouched");
+}
+
+/// Review minor M8: the clamp write-back must only ever rewrite an OUT port's
+/// target. For an In-port SetPortRate under a clamped solve, result.ports
+/// carries the solved INTAKE — writing that back would replace the value the
+/// same command batch just set with an unrelated flow figure (reachable via the
+/// raw command API; no shipped UI edits In-port rates).
+#[test]
+fn in_port_rate_survives_clamped_solve_write_back() {
+    let mut s = Session::in_memory(None).unwrap();
+    let fid = s
+        .edit(vec![Command::CreateFactory {
+            name: "CLAMP WORKS".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let inp = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::In,
+            item: "Desc_OreIron_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(300.0),
+            graph_pos: GraphPos { x: 0.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let out = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 600.0, y: 100.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let g = add_group(
+        &mut s,
+        &fid,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(300.0, 100.0),
+    );
+    connect_in(
+        &mut s,
+        &fid,
+        EdgeEnd::Port(inp.clone()),
+        EdgeEnd::Group(g.clone()),
+        "Desc_OreIron_C",
+        6,
+    );
+    connect_in(
+        &mut s,
+        &fid,
+        EdgeEnd::Group(g),
+        EdgeEnd::Port(out.clone()),
+        "Desc_IronIngot_C",
+        6,
+    );
+
+    // Achievable target at the generous ceiling…
+    s.edit(vec![Command::SetPortRate {
+        id: out.clone(),
+        rate: 300.0,
+    }])
+    .unwrap();
+    assert!((s.state.ports[&out].rate - 300.0).abs() < 1e-6);
+    // …then the ceiling drops (Recompute trigger — no target write-back), so
+    // the stored out target now permanently exceeds the achievable ceiling.
+    s.edit(vec![Command::SetPortCeiling {
+        id: inp.clone(),
+        rate_ceiling: Some(120.0),
+    }])
+    .unwrap();
+    assert!(
+        (s.state.ports[&out].rate - 300.0).abs() < 1e-6,
+        "stored target kept"
+    );
+
+    // Editing the In port's rate under this clamped solve must keep the value
+    // the user set — not the solver's intake figure.
+    s.edit(vec![Command::SetPortRate {
+        id: inp.clone(),
+        rate: 100.0,
+    }])
+    .unwrap();
+    assert!(
+        (s.state.ports[&inp].rate - 100.0).abs() < 1e-6,
+        "In-port rate sticks: {}",
+        s.state.ports[&inp].rate
+    );
 }

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtDuration, fmtRate } from "../lib/format";
+import ItemCombobox from "../lib/ItemCombobox";
 import type { WizardConstraints, WizardGoal, WizardInfeasible, WizardLogLine } from "../state/types";
 import "./wizard.css";
 
@@ -133,14 +134,22 @@ export default function WizardModal() {
     [item, rate, total, totalOn, constraints, dispatch, setReviewing, setWizard],
   );
 
-  // ⏎ solves from step 1; ESC closes
+  // ⏎ solves from step 1; ESC closes. Capture phase on purpose — MapView's
+  // bubble-phase Escape ordering depends on it — which means this runs BEFORE
+  // the ItemCombobox's own onKeyDown. While the combobox list is open it owns
+  // both keys (Escape dismisses the list, Enter picks the highlighted option),
+  // so yield to it explicitly instead of moving off capture.
   useEffect(() => {
     if (!wizard.open) return;
+    const inOpenCombo = (t: EventTarget | null) =>
+      t instanceof HTMLElement && !!t.closest(".item-combo")?.querySelector(".item-combo-list");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (inOpenCombo(e.target)) return;
         e.stopPropagation();
         close();
       } else if (e.key === "Enter" && step === 1 && item) {
+        if (inOpenCombo(e.target)) return;
         void solve();
       }
     };
@@ -184,18 +193,7 @@ export default function WizardModal() {
           <div className="wizard-body">
             <div className="wizard-goal-sentence">
               <span className="t-label">PRODUCE</span>
-              <select
-                className="mono wizard-item-select"
-                value={item}
-                onChange={(e) => setItem(e.target.value)}
-                data-testid="wizard-item"
-              >
-                {craftable.map((i) => (
-                  <option key={i.className} value={i.className}>
-                    {i.displayName}
-                  </option>
-                ))}
-              </select>
+              <ItemCombobox items={craftable} value={item} onChange={setItem} testid="wizard-item" />
               <span className="t-label">AT</span>
               <input
                 type="number"

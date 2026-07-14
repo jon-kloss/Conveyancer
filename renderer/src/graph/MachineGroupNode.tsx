@@ -7,6 +7,7 @@ import { useStore } from "../state/store";
 import { fmtClock, fmtPower, fmtRate } from "../lib/format";
 import { footprintOf, FOOTPRINT_SCALE } from "./footprints";
 import { POWER_ITEM, type MachineGroup } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export interface GroupNodeData {
   group: MachineGroup;
@@ -78,7 +79,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
         </span>
       </header>
       <div className="group-card-recipe">
-        <div className="icon-ph s20" />
+        <ItemIcon item={recipe?.products?.[0]?.[0] ?? ""} size={20} />
         <span>{recipe?.displayName ?? group.recipe}</span>
         <span className={`t-data-12 ${numCls}`} style={{ marginLeft: "auto" }}>
           {recipe?.products?.[0]?.[0] === POWER_ITEM ? (

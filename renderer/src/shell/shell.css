@@ -237,7 +237,9 @@
 }
 .onboard-source {
   font-size: 9.5px;
+  line-height: 1.5;
   color: var(--ink-faint);
+  text-wrap: balance;
 }
 .onboard-doors {
   display: grid;

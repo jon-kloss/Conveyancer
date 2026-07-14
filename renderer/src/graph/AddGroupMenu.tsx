@@ -4,6 +4,7 @@ import { useMemo, useState, type RefObject } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../state/store";
 import type { Id } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export default function AddGroupMenu({
   at,
@@ -24,9 +25,12 @@ export default function AddGroupMenu({
 
   const recipes = useMemo(() => {
     const q = query.toLowerCase();
-    const manufacturers = new Set(
+    // Manufacturers AND generators: a coal plant is placed like any other
+    // machine group — pick its synthesized burn recipe ("Coal-Powered
+    // Generator — Coal") and the generator bank follows.
+    const placeable = new Set(
       Object.values(gamedata.machines)
-        .filter((m) => m.kind === "manufacturer")
+        .filter((m) => m.kind === "manufacturer" || m.kind === "generator")
         .map((m) => m.className),
     );
     const rank = (name: string) => {
@@ -36,7 +40,7 @@ export default function AddGroupMenu({
       return 2;
     };
     return Object.values(gamedata.recipes)
-      .filter((r) => !r.alternate && r.producedIn.some((m) => manufacturers.has(m)))
+      .filter((r) => !r.alternate && r.producedIn.some((m) => placeable.has(m)))
       .filter((r) => !q || r.displayName.toLowerCase().includes(q))
       .sort((a, b) => rank(a.displayName) - rank(b.displayName) || a.displayName.length - b.displayName.length)
       .slice(0, 10);
@@ -44,7 +48,10 @@ export default function AddGroupMenu({
 
   const add = (recipeClass: string) => {
     const r = gamedata.recipes[recipeClass];
-    const machine = r.producedIn.find((m) => gamedata.machines[m]?.kind === "manufacturer");
+    const machine = r.producedIn.find((m) => {
+      const kind = gamedata.machines[m]?.kind;
+      return kind === "manufacturer" || kind === "generator";
+    });
     if (!machine) return;
     const pos = screenToFlowPosition({ x: at.flowX, y: at.flowY });
     void dispatch(
@@ -78,15 +85,22 @@ export default function AddGroupMenu({
         }}
       />
       <div className="addgroup-list">
-        {recipes.map((r) => (
-          <button key={r.className} className="addgroup-item" onClick={() => add(r.className)}>
-            <div className="icon-ph s20" />
-            <span>{r.displayName}</span>
-            <span className="mono addgroup-sub">
-              {gamedata.machines[r.producedIn[0]]?.displayName?.toUpperCase()}
-            </span>
-          </button>
-        ))}
+        {recipes.map((r) => {
+          // Burn recipes produce the pseudo power item — tag them with the
+          // nameplate MW instead of repeating the generator's name.
+          const isPower = r.products?.[0]?.[0] === "__PowerMW";
+          return (
+            <button key={r.className} className="addgroup-item" onClick={() => add(r.className)}>
+              <ItemIcon item={r.products?.[0]?.[0] ?? ""} displayName={r.displayName} size={20} />
+              <span>{r.displayName}</span>
+              <span className="mono addgroup-sub">
+                {isPower
+                  ? `⚡ ${r.products[0][1]} MW`
+                  : gamedata.machines[r.producedIn[0]]?.displayName?.toUpperCase()}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

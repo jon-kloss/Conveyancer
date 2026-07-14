@@ -27,6 +27,13 @@ test("ALT OPTIMIZER tab renders (empty in fixture) without breaking the drawer",
   await expect(page.getByTestId("audit-drawer")).toContainText("No unlocked alternates to weigh");
   await expect(page.getByTestId("optimizer-row")).toHaveCount(0);
 
+  // POWER tab over the imported empire: the balance line must report real
+  // generation ("… draw of … generated"), never the pre-hybrid "NO GEN" —
+  // recipe-less imported generators take the nameplate arm, so gen > 0.
+  await page.locator(".audit-tab", { hasText: "POWER" }).click();
+  await expect(page.getByTestId("power-summary")).toBeVisible();
+  await expect(page.getByTestId("power-summary")).toContainText("generated");
+
   // The drawer and its other tabs still work — the new tab is additive.
   await page.locator(".audit-tab", { hasText: "SATURATION" }).click();
   await expect(page.getByTestId("audit-drawer")).toBeVisible();
