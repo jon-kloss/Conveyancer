@@ -21,12 +21,16 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
   const [phase, setPhase] = useState<Phase | null>(null);
   const started = useRef(false);
 
-  // Snapshot at mount: a FIRST import flips the plan to built mid-flow, and a
-  // live read would relabel the header "RE-IMPORT SAVE" while its own done
-  // message still reads "imported as ◆ BUILT".
-  const [hasBuilt] = useState(() =>
-    Object.values(useStore.getState().plan.factories).some((f) => f.status === "built"),
-  );
+  // Live until run, then latched. The scrim blocks clicks but not keys: ⌘Z can
+  // flip the ◆ built layer while the preview is open, and the backend re-derives
+  // has_built when the import actually runs — so the header/warning/CTA must
+  // track live plan state or they'd promise a diff while the click performs a
+  // first import (or vice versa). Once the user commits we latch the value the
+  // run saw, so the done-state header keeps describing the flow that ran instead
+  // of relabeling itself "RE-IMPORT SAVE" the instant its own write lands.
+  const liveHasBuilt = useStore((s) => Object.values(s.plan.factories).some((f) => f.status === "built"));
+  const [latched, setLatched] = useState<boolean | null>(null);
+  const hasBuilt = latched ?? liveHasBuilt;
 
   const start = useCallback(async () => {
     setPhase({ step: "parsing", name: file.name });
@@ -50,6 +54,7 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
   }
 
   const runImport = async (snapshot: ImportSnapshot) => {
+    setLatched(liveHasBuilt); // freeze the label to what this run is about to do
     setPhase({ step: "importing" });
     try {
       const outcome = await backend.importRun(snapshot);

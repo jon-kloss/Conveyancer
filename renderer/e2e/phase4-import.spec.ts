@@ -64,6 +64,29 @@ test("import Dunarr-076 as the built layer; drift renders in DIFF", async ({ pag
   await expect(page.locator('[data-testid="import-modal"] .t-title')).toHaveText("RE-IMPORT SAVE");
   await page.locator(".wizard-foot .btn-primary").click();
 
+  // ---- ⌘Z under the open preview: the scrim blocks clicks, not keys, so undo
+  // can flip the ◆ built layer mid-preview — the header and CTA must track
+  // live what the click will actually do ----
+  const [flipChooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByTestId("btn-import").click(),
+  ]);
+  await flipChooser.setFiles(`${SAVES}/Dunarr-076.sav`);
+  await expect(page.getByTestId("import-preview")).toBeVisible({ timeout: 120_000 });
+  const modalTitle = page.locator('[data-testid="import-modal"] .t-title');
+  await expect(modalTitle).toHaveText("RE-IMPORT SAVE");
+  await expect(page.getByTestId("btn-import-run")).toHaveText("DIFF AGAINST BUILT");
+  await page.keyboard.press("Control+z"); // undo the whole import under the modal
+  await expect(modalTitle).toHaveText("IMPORT SAVE AS BUILT");
+  await expect(page.getByTestId("btn-import-run")).toHaveText("IMPORT AS BUILT");
+  await page.keyboard.press("Control+Shift+z"); // restore the built layer
+  await expect(modalTitle).toHaveText("RE-IMPORT SAVE");
+  await expect(page.getByTestId("btn-import-run")).toHaveText("DIFF AGAINST BUILT");
+  // close WITHOUT running — later sections assume the built layer as-is
+  await page.locator('[data-testid="import-modal"] .btn-ghost').click();
+  await expect(page.getByTestId("import-preview")).toBeHidden();
+  expect(await factoryCount()).toBe(before + 13);
+
   // ---- a different world's save: pure game drift → review + DIFF rows ----
   await importSave(page, "269.sav");
   await expect(page.getByTestId("proposal-review")).toBeVisible({ timeout: 120_000 });
