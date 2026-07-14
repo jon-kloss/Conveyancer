@@ -1530,28 +1530,42 @@ fn accept_still_skips_items_with_excluded_dependency() {
 
 // ---- real-catalog hazard: recipe cycles must never hang the solver ----
 
-/// A catalog whose ONLY producers form a 1:1 packaging cycle (no acyclic
-/// escape) is degenerate — but the real Docs.json proved shapes like it reach
-/// production. The demand expansion must terminate at its step cap and
-/// degrade honestly (remaining demand → raw), never spin the job thread
-/// forever. Pre-fix this test never returns.
-#[test]
-fn pure_packaging_cycle_terminates_with_honest_log() {
+/// Test-catalog recipe builder (constructor machine, 1s cycles by default).
+fn mk_recipe(
+    class: &str,
+    ings: Vec<(&str, f64)>,
+    prods: Vec<(&str, f64)>,
+) -> gamedata::docs::Recipe {
+    gamedata::docs::Recipe {
+        class_name: class.into(),
+        display_name: class.into(),
+        duration_s: 1.0,
+        ingredients: ings.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+        products: prods.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+        produced_in: vec!["Build_ConstructorMk1_C".into()],
+        alternate: false,
+        variable_power_mw: None,
+    }
+}
+
+fn mk_item(class: &str, is_resource: bool) -> gamedata::docs::Item {
+    gamedata::docs::Item {
+        class_name: class.into(),
+        display_name: class.into(),
+        form: "RF_SOLID".into(),
+        stack_size: String::new(),
+        energy_mj: 0.0,
+        is_resource,
+    }
+}
+
+/// The 1:1 Goo packaging pair: the only producers of Goo/PackagedGoo consume
+/// each other. Items registered explicitly (is_resource:false).
+fn goo_cycle_session() -> Session {
     let mut s = Session::in_memory(None).unwrap();
-    let mk =
-        |class: &str, ings: Vec<(&str, f64)>, prods: Vec<(&str, f64)>| gamedata::docs::Recipe {
-            class_name: class.into(),
-            display_name: class.into(),
-            duration_s: 1.0,
-            ingredients: ings.into_iter().map(|(i, n)| (i.into(), n)).collect(),
-            products: prods.into_iter().map(|(i, n)| (i.into(), n)).collect(),
-            produced_in: vec!["Build_Packager_C".into()],
-            alternate: false,
-            variable_power_mw: None,
-        };
     s.gamedata.recipes.insert(
         "Recipe_UnpackageGoo_C".into(),
-        mk(
+        mk_recipe(
             "Recipe_UnpackageGoo_C",
             vec![("Desc_PackagedGoo_C", 2.0)],
             vec![("Desc_Goo_C", 2.0)],
@@ -1559,37 +1573,345 @@ fn pure_packaging_cycle_terminates_with_honest_log() {
     );
     s.gamedata.recipes.insert(
         "Recipe_PackageGoo_C".into(),
-        mk(
+        mk_recipe(
             "Recipe_PackageGoo_C",
             vec![("Desc_Goo_C", 2.0)],
             vec![("Desc_PackagedGoo_C", 2.0)],
         ),
     );
+    s.gamedata
+        .items
+        .insert("Desc_Goo_C".into(), mk_item("Desc_Goo_C", false));
+    s.gamedata.items.insert(
+        "Desc_PackagedGoo_C".into(),
+        mk_item("Desc_PackagedGoo_C", false),
+    );
+    s
+}
 
+fn solve_with_log(s: &Session, goal: WizardGoal) -> (WizardOutcome, Vec<String>) {
     let cancel = AtomicBool::new(false);
     let mut log_lines: Vec<String> = Vec::new();
     let outcome = global_solve(
         &s.state,
         &s.gamedata,
         &s.world,
-        &WizardGoal {
-            items: vec![("Desc_Goo_C".into(), 60.0)],
-            constraints: Default::default(),
-            milestone: None,
-            pinned_recipes: Default::default(),
-        },
+        &goal,
         &s.unlocked,
         s.plan_hash(),
         "2026-07-14T00:00:00Z".into(),
         |phase, line| log_lines.push(format!("{phase}: {line}")),
         &cancel,
     );
+    (outcome, log_lines)
+}
+
+fn goal_for(item: &str, rate: f64) -> WizardGoal {
+    WizardGoal {
+        items: vec![(item.into(), rate)],
+        constraints: Default::default(),
+        milestone: None,
+        pinned_recipes: Default::default(),
+    }
+}
+
+/// A goal whose every producer chain loops back on itself is a NAMED
+/// Infeasible from the resolver — not an expansion-cap hit, and never a
+/// degraded proposal. Pre-resolver this spun to the cap and dumped the
+/// non-converged demand as raw inputs.
+#[test]
+fn packaging_cycle_goal_is_infeasible_not_capped() {
+    let s = goo_cycle_session();
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_Goo_C", 60.0));
+    let WizardOutcome::Infeasible(inf) = outcome else {
+        panic!("expected infeasible, got {outcome:?}");
+    };
     assert!(
-        !matches!(outcome, WizardOutcome::Cancelled),
-        "the solve ran to a real outcome"
+        inf.binding.contains("recipe cycle") || inf.binding.contains("loops back"),
+        "binding names the cycle: {}",
+        inf.binding
+    );
+    assert!(!inf.relaxations.is_empty(), "one-tap relaxations offered");
+    assert_eq!(inf.best_rate, 0.0);
+    assert!(
+        !log_lines
+            .iter()
+            .any(|l| l.contains("expansion cap") || l.contains("did not converge")),
+        "the resolver catches the cycle long before the cap: {log_lines:?}"
+    );
+}
+
+/// Same cycle, but a LOCKED alternate (ore → Goo) exists: the Infeasible must
+/// name the escape — enabling alternates breaks the loop — so the modal's
+/// one-tap ENABLE ALTERNATES chip lights up.
+#[test]
+fn cycle_with_locked_alternate_names_the_escape() {
+    let mut s = goo_cycle_session();
+    let mut alt = mk_recipe(
+        "Recipe_Alternate_GooRefined_C",
+        vec![("Desc_OreIron_C", 2.0)],
+        vec![("Desc_Goo_C", 2.0)],
+    );
+    alt.alternate = true;
+    s.gamedata
+        .recipes
+        .insert("Recipe_Alternate_GooRefined_C".into(), alt);
+
+    let (outcome, _log) = solve_with_log(&s, goal_for("Desc_Goo_C", 60.0));
+    let WizardOutcome::Infeasible(inf) = outcome else {
+        panic!("expected infeasible, got {outcome:?}");
+    };
+    assert!(
+        inf.binding.contains("loops back") && inf.binding.contains("alternate"),
+        "binding says an alternate breaks the loop: {}",
+        inf.binding
     );
     assert!(
-        log_lines.iter().any(|l| l.contains("expansion cap hit")),
-        "the cap announces itself honestly in the log"
+        inf.relaxations
+            .iter()
+            .any(|r| r == "enable alternate recipes ✓"),
+        "the alternates relaxation is offered: {:?}",
+        inf.relaxations
+    );
+}
+
+/// And once the save has UNLOCKED that alternate, the same goal solves
+/// straight through it — the cycle-Infeasible was scope-honest, not a blanket
+/// ban on the item.
+#[test]
+fn cycle_with_unlocked_alternate_solves_through_it() {
+    let mut s = goo_cycle_session();
+    let mut alt = mk_recipe(
+        "Recipe_Alternate_GooRefined_C",
+        vec![("Desc_OreIron_C", 2.0)],
+        vec![("Desc_Goo_C", 2.0)],
+    );
+    alt.alternate = true;
+    s.gamedata
+        .recipes
+        .insert("Recipe_Alternate_GooRefined_C".into(), alt);
+    s.unlocked.insert("Recipe_Alternate_GooRefined_C".into());
+
+    let (outcome, _log) = solve_with_log(&s, goal_for("Desc_Goo_C", 60.0));
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    assert!(
+        proposal.items.iter().any(|i| i.commands.iter().any(
+            |c| matches!(c, Command::AddGroup { recipe, .. } if recipe == "Recipe_Alternate_GooRefined_C")
+        )),
+        "the unlocked alternate is the staged producer"
+    );
+}
+
+/// Cycles longer than the Package↔Unpackage pair: A←B←C←A must be caught by
+/// RESOLUTION (backtracking walks the whole chain), not by the expansion cap —
+/// a per-pair "partner" heuristic would miss it.
+#[test]
+fn three_step_cycle_is_infeasible() {
+    let mut s = Session::in_memory(None).unwrap();
+    for (class, ing, prod) in [
+        ("Recipe_CycA_C", "Desc_CycB_C", "Desc_CycA_C"),
+        ("Recipe_CycB_C", "Desc_CycC_C", "Desc_CycB_C"),
+        ("Recipe_CycC_C", "Desc_CycA_C", "Desc_CycC_C"),
+    ] {
+        s.gamedata.recipes.insert(
+            class.into(),
+            mk_recipe(class, vec![(ing, 1.0)], vec![(prod, 1.0)]),
+        );
+        s.gamedata.items.insert(prod.into(), mk_item(prod, false));
+    }
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_CycA_C", 10.0));
+    let WizardOutcome::Infeasible(inf) = outcome else {
+        panic!("expected infeasible, got {outcome:?}");
+    };
+    assert!(
+        inf.binding.contains("recipe cycle") || inf.binding.contains("loops back"),
+        "binding names the cycle: {}",
+        inf.binding
+    );
+    assert!(
+        !log_lines
+            .iter()
+            .any(|l| l.contains("expansion cap") || l.contains("did not converge")),
+        "a 3-cycle is a resolver outcome, not a cap hit: {log_lines:?}"
+    );
+}
+
+/// The one remaining cap path: an ACYCLIC catalog whose demand tree is
+/// combinatorially huge (each item needs two of the next — 2^21 expansions).
+/// The cap must return an honest "did not converge" Infeasible, never the
+/// old raw-dump proposal built from non-converged demand.
+#[test]
+fn combinatorial_blowup_is_infeasible_not_garbage() {
+    let mut s = Session::in_memory(None).unwrap();
+    for i in 0..20 {
+        let class = format!("Recipe_Blow{i}_C");
+        let prod = format!("Desc_Blow{i}_C");
+        let ing = format!("Desc_Blow{}_C", i + 1);
+        s.gamedata.recipes.insert(
+            class.clone(),
+            mk_recipe(
+                &class,
+                vec![(ing.as_str(), 1.0), (ing.as_str(), 1.0)],
+                vec![(prod.as_str(), 1.0)],
+            ),
+        );
+    }
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_Blow0_C", 10.0));
+    let WizardOutcome::Infeasible(inf) = outcome else {
+        panic!("expected infeasible, got {outcome:?}");
+    };
+    assert!(
+        inf.binding.contains("did not converge"),
+        "the cap is honest about non-convergence: {}",
+        inf.binding
+    );
+    assert_eq!(inf.best_rate, 0.0);
+    assert!(
+        log_lines.iter().any(|l| l.contains("did not converge")),
+        "the log names the dead end: {log_lines:?}"
+    );
+}
+
+/// Cap-magnitude pin: a 500-deep LINEAR chain (far deeper than the real
+/// catalog's ≈994-pop worst case is wide) terminates well under the cap and
+/// yields a clean proposal — the backstop never fires on legitimate depth.
+#[test]
+fn deep_linear_catalog_never_hits_cap() {
+    let mut s = Session::in_memory(None).unwrap();
+    for i in 0..500 {
+        let class = format!("Recipe_Deep{i}_C");
+        let prod = format!("Desc_Deep{i}_C");
+        let ing = if i == 499 {
+            "Desc_OreIron_C".to_string()
+        } else {
+            format!("Desc_Deep{}_C", i + 1)
+        };
+        s.gamedata.recipes.insert(
+            class.clone(),
+            mk_recipe(
+                &class,
+                vec![(ing.as_str(), 1.0)],
+                vec![(prod.as_str(), 1.0)],
+            ),
+        );
+    }
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_Deep0_C", 30.0));
+    assert!(
+        matches!(outcome, WizardOutcome::Proposal { .. }),
+        "a deep linear chain solves clean: {outcome:?}"
+    );
+    assert!(
+        !log_lines
+            .iter()
+            .any(|l| l.contains("expansion cap") || l.contains("did not converge")),
+        "no cap noise on legitimate depth: {log_lines:?}"
+    );
+}
+
+/// The is_resource raw gate, exercised in a full solve: a resource-flagged
+/// item short-circuits to raw even when recipes "produce" it — the packaging
+/// pair must never be entered. (The load-bearing water-fix guard: deleting
+/// `is_resource ||` from the phase-1 gate fails this test.)
+#[test]
+fn resource_item_short_circuits_to_raw() {
+    let mut s = goo_cycle_session();
+    // flip Goo to a world-sourced resource (like water) and consume it
+    s.gamedata
+        .items
+        .insert("Desc_Goo_C".into(), mk_item("Desc_Goo_C", true));
+    s.gamedata.recipes.insert(
+        "Recipe_Widget_C".into(),
+        mk_recipe(
+            "Recipe_Widget_C",
+            vec![("Desc_Goo_C", 2.0)],
+            vec![("Desc_Widget_C", 2.0)],
+        ),
+    );
+    s.gamedata
+        .items
+        .insert("Desc_Widget_C".into(), mk_item("Desc_Widget_C", false));
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_Widget_C", 30.0));
+    assert!(
+        matches!(outcome, WizardOutcome::Proposal { .. }),
+        "the resource gate keeps the solve clean: {outcome:?}"
+    );
+    assert!(
+        log_lines.iter().any(|l| l.contains("raw: Desc_Goo_C")),
+        "Goo enters as a raw input: {log_lines:?}"
+    );
+    assert!(
+        !log_lines
+            .iter()
+            .any(|l| l.contains("Desc_Goo_C") && l.contains('←')),
+        "a raw is never expanded through a recipe: {log_lines:?}"
+    );
+    assert!(
+        !log_lines
+            .iter()
+            .any(|l| l.contains("expansion cap") || l.contains("did not converge")),
+        "no cap involvement: {log_lines:?}"
+    );
+}
+
+/// A resource with NO node in the world snapshot (nitrogen-shaped) is supply-
+/// assumed like water: the proposal still lands, the SITING log names the
+/// assumption, and no claim/port is emitted for it. A resource WITH nodes
+/// (iron ore) still sites normally in the same solve.
+#[test]
+fn nodeless_resource_is_supply_assumed() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.gamedata
+        .items
+        .insert("Desc_NitroGas_C".into(), mk_item("Desc_NitroGas_C", true));
+    s.gamedata.recipes.insert(
+        "Recipe_GasWidget_C".into(),
+        mk_recipe(
+            "Recipe_GasWidget_C",
+            vec![("Desc_NitroGas_C", 2.0), ("Desc_OreIron_C", 2.0)],
+            vec![("Desc_GasWidget_C", 2.0)],
+        ),
+    );
+    s.gamedata.items.insert(
+        "Desc_GasWidget_C".into(),
+        mk_item("Desc_GasWidget_C", false),
+    );
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_GasWidget_C", 30.0));
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal (gas is supply-assumed), got {outcome:?}");
+    };
+    assert!(
+        log_lines.iter().any(|l| l.contains("supply assumed")),
+        "the SITING log names the assumption: {log_lines:?}"
+    );
+    let gas_touched = proposal.items.iter().any(|i| {
+        i.commands.iter().any(|c| match c {
+            Command::AddPort { item, .. } => item == "Desc_NitroGas_C",
+            Command::ClaimNode { .. } => i.detail.contains("Desc_NitroGas_C"),
+            _ => false,
+        })
+    });
+    assert!(!gas_touched, "no port or claim for the assumed gas");
+    // companion: a resource WITH world nodes still sites normally
+    assert!(
+        proposal.items.iter().any(|i| i
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::ClaimNode { .. }))),
+        "iron ore is claimed"
+    );
+    assert!(
+        proposal.items.iter().any(|i| i
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+                if item == "Desc_OreIron_C" && *direction == PortDirection::In))),
+        "iron ore gets a metered in port"
     );
 }

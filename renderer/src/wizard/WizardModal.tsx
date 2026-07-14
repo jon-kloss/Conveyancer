@@ -379,16 +379,20 @@ export default function WizardModal() {
                   Best achievable: <span className="mono">{fmtRate(infeasible.bestRate)}/min</span>
                 </div>
                 <div className="wizard-relaxations">
-                  <button
-                    className="chip warn"
-                    onClick={() => {
-                      const c = { ...constraints, nodeBudget: constraints.nodeBudget + 1 };
-                      setConstraints(c);
-                      void solve({ items: [[item, rate]], constraints: c });
-                    }}
-                  >
-                    +1 NODE CLAIM → RE-SOLVE
-                  </button>
+                  {/* only when the binding is actually node-shaped — a recipe
+                      cycle or non-convergence can't be fixed by claiming more */}
+                  {infeasible.relaxations.some((r) => r.toLowerCase().includes("node")) && (
+                    <button
+                      className="chip warn"
+                      onClick={() => {
+                        const c = { ...constraints, nodeBudget: constraints.nodeBudget + 1 };
+                        setConstraints(c);
+                        void solve({ items: [[item, rate]], constraints: c });
+                      }}
+                    >
+                      +1 NODE CLAIM → RE-SOLVE
+                    </button>
+                  )}
                   {constraints.purityFloor !== "impure" && (
                     <button
                       className="chip warn"

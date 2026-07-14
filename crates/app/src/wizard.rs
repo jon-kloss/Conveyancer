@@ -20,6 +20,15 @@ use serde::{Deserialize, Serialize};
 
 const WIZARD_EXTRACTOR: &str = "Build_MinerMk2_C";
 
+/// Hard ceiling on demand-expansion steps AND on the resolver's backtracking
+/// budget — a pure combinatorial backstop, never a normal exit. The deepest
+/// legitimate real-catalog expansion (nuclear, alternates included) pops ≈994
+/// queue entries, an order of magnitude under this; recipe cycles are caught
+/// by the backtracking resolver before they can spin the queue. Hitting the
+/// cap therefore means non-converged demand by construction, and the solve
+/// returns an honest Infeasible instead of staging garbage.
+const EXPANSION_CAP: usize = 10_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WizardConstraints {
@@ -146,29 +155,30 @@ pub fn global_solve(
         }
     }
 
-    // Hard ceiling on expansion steps: no catalog shape may hang the solve.
-    // The deepest legitimate real-catalog chain (nuclear) expands well under a
-    // thousand steps; hitting the cap means a recipe cycle survived the picker,
-    // so degrade honestly — remaining demand becomes raw input, and the log
-    // says so instead of the bridge spinning forever.
+    // One backtracking resolver serves BOTH phases: picks memoized here in the
+    // demand walk are the exact picks phase 2 stages, so staging is always
+    // consistent with what was expanded.
+    let mut resolver = RecipeResolver::new(gd, unlocked, c.include_alternates, pinned);
+
     let mut expansion_steps = 0usize;
     while let Some((item, mut rate)) = queue.pop() {
         if cancel.load(Ordering::Relaxed) {
             return WizardOutcome::Cancelled;
         }
         expansion_steps += 1;
-        if expansion_steps > 10_000 {
-            log(
-                phase,
-                "expansion cap hit (10000 steps) — recipe cycle suspected; treating remaining demand as raw inputs",
+        if expansion_steps > EXPANSION_CAP {
+            // Backstop only (see EXPANSION_CAP): accumulated demand is
+            // non-converged garbage by construction, so refuse it honestly.
+            let binding = format!(
+                "expansion did not converge after {EXPANSION_CAP} steps (while expanding {})",
+                item_name(&item)
             );
-            *raw.entry(item.clone()).or_default() += rate;
-            for (i, r) in queue.drain(..) {
-                if i != POWER_ITEM && r > 1e-9 {
-                    *raw.entry(i).or_default() += r;
-                }
-            }
-            break;
+            log(phase, &format!("INFEASIBLE — {binding}"));
+            return WizardOutcome::Infeasible(Infeasible {
+                best_rate: 0.0,
+                binding,
+                relaxations: vec![format!("pin a recipe for {}", item_name(&item))],
+            });
         }
         if item == POWER_ITEM {
             continue; // power is sourced in phase 4 (A2.4), not belted
@@ -226,8 +236,12 @@ pub fn global_solve(
             continue;
         }
         *demand.entry(item.clone()).or_default() += rate;
-        // expand via the standard recipe for BFS; final pick happens in phase 2
-        if let Some(r) = pick_recipe(gd, &item, unlocked, c.include_alternates, pinned) {
+        // expand via the resolver's pick; phase 2 stages the SAME memoized pick
+        let picked = resolver.resolve(&item);
+        for note in resolver.take_notes() {
+            log(phase, &note);
+        }
+        if let Some(r) = picked {
             let out_per_cycle = r
                 .products
                 .iter()
@@ -242,6 +256,62 @@ pub fn global_solve(
                 phase,
                 &format!("{} {:.1}/min ← {}", item_name(&item), rate, r.display_name),
             );
+        } else {
+            if resolver.exhausted {
+                // Same shape as the queue cap: the resolver's backtracking
+                // budget ran out, so nothing it reported is trustworthy.
+                let binding = format!(
+                    "expansion did not converge after {EXPANSION_CAP} steps (while expanding {})",
+                    item_name(&item)
+                );
+                log(phase, &format!("INFEASIBLE — {binding}"));
+                return WizardOutcome::Infeasible(Infeasible {
+                    best_rate: 0.0,
+                    binding,
+                    relaxations: vec![format!("pin a recipe for {}", item_name(&item))],
+                });
+            }
+            if is_goal && resolver.has_candidates(&item) {
+                // Cycle-blocked GOAL (distinct from no-producer: candidates
+                // exist, but every chain re-enters itself). A fresh
+                // include_alts=true probe decides whether an alternate recipe
+                // is the escape hatch worth naming.
+                let alt_escape = RecipeResolver::new(gd, unlocked, true, pinned)
+                    .resolve(&item)
+                    .is_some();
+                let (binding, relaxations) = if alt_escape {
+                    (
+                        format!(
+                            "every unlocked recipe chain for {} loops back on itself — an alternate recipe breaks the loop",
+                            item_name(&item)
+                        ),
+                        vec![
+                            "enable alternate recipes ✓".to_string(),
+                            format!("pin a recipe for {}", item_name(&item)),
+                        ],
+                    )
+                } else {
+                    (
+                        format!(
+                            "recipe cycle: every recipe producing {} consumes it downstream",
+                            item_name(&item)
+                        ),
+                        vec![format!("pin a recipe for {}", item_name(&item))],
+                    )
+                };
+                log(phase, &format!("INFEASIBLE — {binding}"));
+                return WizardOutcome::Infeasible(Infeasible {
+                    best_rate: 0.0,
+                    binding,
+                    relaxations,
+                });
+            }
+            // Zero-candidate items keep today's degradation exactly: the
+            // demand entry stays, phase 2 names the fix for goals (locked
+            // alternates / no recipe at all) and mid-chain items surface as
+            // T1 `Disconnected` shortfalls. A cycle-blocked MID-CHAIN item
+            // cannot reach here: the goal resolving means its entire memo
+            // tree resolved, and only resolved recipes enqueue ingredients.
         }
     }
 
@@ -252,13 +322,21 @@ pub fn global_solve(
         if cancel.load(Ordering::Relaxed) {
             return WizardOutcome::Cancelled;
         }
-        let Some(r) = pick_recipe(gd, item, unlocked, c.include_alternates, pinned) else {
+        // Same resolver instance as phase 1: memo hits guarantee the staged
+        // pick is the one the demand walk expanded.
+        let picked = resolver.resolve(item);
+        for note in resolver.take_notes() {
+            log(phase, &note);
+        }
+        let Some(r) = picked else {
             // A GOAL item with no pickable recipe can never be staged — the
             // proposal would dangle a `$g.` alias and accept would always
             // fail. Name the fix instead of emitting a broken proposal.
             // (Non-goal mid-chain items keep degrading honestly via the
             // ingredient-edge guard + T1 `Disconnected` shortfalls.)
             if goal.items.iter().any(|(i, _)| i == item) {
+                // include_alts=true resolver probe (pick_recipe is exactly
+                // that): does relaxing to locked alternates make it makeable?
                 let (binding, relaxations) = if !c.include_alternates
                     && pick_recipe(gd, item, unlocked, true, pinned).is_some()
                 {
@@ -329,6 +407,17 @@ pub fn global_solve(
         });
     }
 
+    // A world-sourced raw (FGResourceDescriptor) with NO node in the world
+    // snapshot — water today, nitrogen and other well gases until wells land —
+    // cannot be claimed or metered. Its supply is ASSUMED: no claim, no in
+    // port, no feed edge, no goal wiring. Generalizes the old hardcoded
+    // Desc_Water_C checks (water is exactly a resource with zero nodes, so its
+    // behavior is unchanged byte-for-byte).
+    let supply_assumed = |item: &str| -> bool {
+        gd.items.get(item).map(|i| i.is_resource).unwrap_or(false)
+            && !world.nodes.iter().any(|n| n.item == item)
+    };
+
     // ---------- phase 3: siting ----------
     let phase = "SITING";
     let claimed: std::collections::BTreeSet<&str> = state
@@ -349,8 +438,16 @@ pub fn global_solve(
     let mut budget = c.node_budget;
     let mut binding: Option<String> = None;
     for (item, need) in &raw {
-        if item == "Desc_Water_C" {
-            continue; // water is unmetered until pipes land
+        if supply_assumed(item) {
+            log(
+                phase,
+                &format!(
+                    "{}: supply assumed — no {} nodes in the world snapshot (unmetered until wells land)",
+                    item_name(item),
+                    item_name(item)
+                ),
+            );
+            continue;
         }
         let mut candidates: Vec<&gamedata::worldnodes::WorldNode> = world
             .nodes
@@ -493,8 +590,8 @@ pub fn global_solve(
     // in ports per raw item (ceiling = claimed extraction), out port per goal
     let mut y = 80.0;
     for (item, need) in &raw {
-        if item == "Desc_Water_C" {
-            continue;
+        if supply_assumed(item) {
+            continue; // assumed raws get no in port — nothing meters them
         }
         let ceiling: f64 = picked_nodes
             .iter()
@@ -582,8 +679,8 @@ pub fn global_solve(
                         .map(|(_, m)| *m)
                         .unwrap_or(1.0));
             let from = if raw.contains_key(ing) {
-                if ing == "Desc_Water_C" {
-                    continue;
+                if supply_assumed(ing) {
+                    continue; // no in port exists for an assumed raw
                 }
                 EdgeEnd::Port(format!("$in.{ing}"))
             } else if stages.iter().any(|s| &s.item == ing) {
@@ -607,12 +704,13 @@ pub fn global_solve(
     }
     // The out port's feed depends on how the goal is produced: a stage group
     // when one exists, else the raw in port (extraction-and-ship — the claims
-    // feed the in port, which feeds the out port). Unmetered water has no in
-    // port: leave the out port unwired — an honest T1 shortfall, not a
-    // dangling `$g.` alias that would roll back the whole accept.
+    // feed the in port, which feeds the out port). A supply-assumed raw
+    // (water, well gases) has no in port: leave the out port unwired — an
+    // honest T1 shortfall, not a dangling `$g.` alias that would roll back
+    // the whole accept.
     let goal_from = if stages.iter().any(|s| s.item == goal_item) {
         Some(EdgeEnd::Group(format!("$g.{goal_item}")))
-    } else if raw.contains_key(&goal_item) && goal_item != "Desc_Water_C" {
+    } else if raw.contains_key(&goal_item) && !supply_assumed(&goal_item) {
         Some(EdgeEnd::Port(format!("$in.{goal_item}")))
     } else {
         None
@@ -908,76 +1006,258 @@ pub fn global_solve(
     }
 }
 
-/// Cheapest recipe for an item: min machines for 1/min, then min power.
-/// Standard recipes win ties over alternates.
+/// Memoized backtracking recipe resolver (the wizard's picker).
+///
+/// A greedy per-item pick cannot survive the real catalog: recipe cycles
+/// (Package↔Unpackage fluids, the turbofuel family) make the locally-cheapest
+/// candidate a dead end while a pricier sibling resolves fine. The resolver
+/// does a depth-first search over candidates in cost order, rejecting any
+/// candidate whose craft ingredient sits on the current DFS path (re-entry =
+/// cycle) or fails to resolve while producers for it exist; the first
+/// candidate whose whole ingredient tree resolves wins.
 ///
 /// Eligibility (W2b): an alternate is available iff the save has unlocked it
 /// (`unlocked.contains(&r.class_name)`). `include_alts` re-scopes to ALSO pull
 /// in genuinely-locked alternates as suggestions. Standard recipes are always
-/// eligible; with an empty unlocked set + `include_alts=false` this collapses to
-/// the historical "standard only" filter (honest fixture degradation).
-fn pick_recipe<'a>(
+/// eligible; with an empty unlocked set + `include_alts=false` this collapses
+/// to the historical "standard only" filter (honest fixture degradation).
+/// Candidate cost order: (starved, cyclic, 1/per_min, power, alternate).
+type CandidateCost = (bool, bool, f64, f64, bool);
+
+struct RecipeResolver<'a, 'b> {
+    gd: &'a GameData,
+    unlocked: &'b BTreeSet<String>,
+    include_alts: bool,
+    pinned: &'b BTreeMap<String, String>,
+    /// item → resolved recipe class. SUCCESSES ONLY: failures are
+    /// path-dependent (an item can be unreachable from inside a cycle yet
+    /// resolve fine from outside), so only proven picks are cached. The memo
+    /// graph is provably acyclic: the first member of a would-be cycle to be
+    /// memoized resolved while every other member was still on the DFS path,
+    /// so its recorded tree cannot re-enter the cycle.
+    memo: BTreeMap<String, String>,
+    /// Diagnostics for the caller's phase log (pin-ignored notices).
+    notes: Vec<String>,
+    /// Backtracking budget (shared value with the expansion cap): one step
+    /// per candidate attempt. Exhaustion poisons the resolver — the caller
+    /// must surface the same "did not converge" Infeasible as the cap.
+    steps: usize,
+    exhausted: bool,
+}
+
+impl<'a, 'b> RecipeResolver<'a, 'b> {
+    fn new(
+        gd: &'a GameData,
+        unlocked: &'b BTreeSet<String>,
+        include_alts: bool,
+        pinned: &'b BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            gd,
+            unlocked,
+            include_alts,
+            pinned,
+            memo: BTreeMap::new(),
+            notes: Vec::new(),
+            steps: 0,
+            exhausted: false,
+        }
+    }
+
+    fn item_name(&self, class: &str) -> String {
+        self.gd
+            .items
+            .get(class)
+            .map(|i| i.display_name.clone())
+            .unwrap_or_else(|| class.into())
+    }
+
+    fn is_resource(&self, item: &str) -> bool {
+        self.gd
+            .items
+            .get(item)
+            .map(|i| i.is_resource)
+            .unwrap_or(false)
+    }
+
+    fn eligible(&self, item: &str, r: &gamedata::docs::Recipe) -> bool {
+        !r.produced_in.is_empty()
+            && (!r.alternate || self.unlocked.contains(&r.class_name) || self.include_alts)
+            && r.products.iter().any(|(i, _)| i == item)
+            && r.products.iter().all(|(i, _)| i != POWER_ITEM)
+    }
+
+    fn has_candidates(&self, item: &str) -> bool {
+        self.gd.recipes.values().any(|r| self.eligible(item, r))
+    }
+
+    /// Does `item` expand through recipes during the demand walk? Power is
+    /// phase-4 territory, world raws never expand, and an item nothing
+    /// produces is the existing T1 `Disconnected` degradation — none of them
+    /// can recurse, so the resolver skips them.
+    fn expands(&self, item: &str) -> bool {
+        item != POWER_ITEM
+            && !self.is_resource(item)
+            && self.gd.recipes.values().any(|r| {
+                !r.produced_in.is_empty()
+                    && r.products.iter().any(|(i, _)| i == item)
+                    && r.products
+                        .first()
+                        .map(|(i, _)| i != POWER_ITEM)
+                        .unwrap_or(true)
+            })
+    }
+
+    /// Cost tuple, computed ONCE per candidate before sorting:
+    /// (starved, cyclic, 1/per_min, power, alternate).
+    ///
+    /// `starved`: some craft ingredient has ZERO eligible in-scope producers —
+    /// the chain is guaranteed a shortfall, so any non-starved candidate
+    /// (however slow) beats it.
+    ///
+    /// `cyclic`: some non-raw ingredient's PRIMARY producer consumes our
+    /// product — one half of a Package↔Unpackage-style 2-cycle, never a sane
+    /// default. Narrowed to primary-product partners on purpose: a recipe that
+    /// returns the ingredient only as a BYPRODUCT (Rocket Fuel's Compacted
+    /// Coal, Aluminum Scrap's water) is not that ingredient's producer of
+    /// record and must not paint honest recipes cyclic. Raw-resource
+    /// ingredients stay exempt: raws never expand, so a loop through one
+    /// cannot recurse.
+    fn cost(&self, item: &str, r: &gamedata::docs::Recipe) -> CandidateCost {
+        let starved = r.ingredients.iter().any(|(y, _)| {
+            self.expands(y) && !self.has_candidates(y) // craftable, none in scope
+        });
+        let cyclic = r.ingredients.iter().any(|(y, _)| {
+            !self.is_resource(y)
+                && self.gd.recipes.values().any(|s| {
+                    s.products.first().map(|(p, _)| p == y).unwrap_or(false)
+                        && s.ingredients.iter().any(|(i, _)| i == item)
+                })
+        });
+        let per_min = r
+            .products
+            .iter()
+            .find(|(i, _)| i == item)
+            .map(|(_, n)| n * 60.0 / r.duration_s)
+            .unwrap_or(1e-9);
+        let power = r
+            .produced_in
+            .first()
+            .map(|m| gamedata::db::recipe_power(self.gd, r, m))
+            .unwrap_or(0.0);
+        (starved, cyclic, 1.0 / per_min, power, r.alternate)
+    }
+
+    /// Candidates in the order the DFS tries them: an explicit pin first
+    /// (bypassing cost scoring AND the alternate gate, matching the pre-
+    /// resolver pin semantics), then cost order. The stable sort keeps
+    /// catalog order among cost ties — the old `min_by` first-wins behavior.
+    fn ordered_candidates(&self, item: &str) -> Vec<&'a gamedata::docs::Recipe> {
+        let mut scored: Vec<(CandidateCost, &'a gamedata::docs::Recipe)> = self
+            .gd
+            .recipes
+            .values()
+            .filter(|r| self.eligible(item, r))
+            .map(|r| (self.cost(item, r), r))
+            .collect();
+        scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out: Vec<&'a gamedata::docs::Recipe> = Vec::with_capacity(scored.len() + 1);
+        if let Some(class) = self.pinned.get(item) {
+            if let Some(pin) = self.gd.recipes.get(class) {
+                // A bad pin (unknown class / wrong product) is ignored — it
+                // falls through to normal scoring, never panics.
+                if !pin.produced_in.is_empty() && pin.products.iter().any(|(i, _)| i == item) {
+                    out.push(pin);
+                }
+            }
+        }
+        let pin_class = out.first().map(|p| p.class_name.clone());
+        for (_, r) in scored {
+            if pin_class.as_deref() != Some(r.class_name.as_str()) {
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    /// One-shot entry point: resolve `item` from an empty DFS path.
+    fn resolve(&mut self, item: &str) -> Option<&'a gamedata::docs::Recipe> {
+        let mut path = BTreeSet::new();
+        self.resolve_path(item, &mut path)
+            .and_then(|class| self.gd.recipes.get(&class))
+    }
+
+    fn resolve_path(&mut self, item: &str, path: &mut BTreeSet<String>) -> Option<String> {
+        if let Some(hit) = self.memo.get(item) {
+            return Some(hit.clone());
+        }
+        // The DFS path includes the item being resolved: a candidate whose
+        // chain re-enters ANY item on the path (itself included) is a cycle.
+        path.insert(item.to_string());
+        let mut chosen: Option<String> = None;
+        let mut pin_failed = false;
+        for r in self.ordered_candidates(item) {
+            self.steps += 1;
+            if self.steps > EXPANSION_CAP {
+                self.exhausted = true;
+                break;
+            }
+            let mut ok = true;
+            for (ing, _) in &r.ingredients {
+                if !self.expands(ing) {
+                    continue;
+                }
+                if path.contains(ing) {
+                    ok = false;
+                    break;
+                }
+                if self.resolve_path(ing, path).is_none() && self.has_candidates(ing) {
+                    // An ingredient nothing produces stays ALLOWED (the
+                    // existing T1 `Disconnected` degradation); one that has
+                    // producers yet cannot resolve is cycle-blocked — this
+                    // candidate fails, try the next.
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                chosen = Some(r.class_name.clone());
+                break;
+            }
+            if self.pinned.get(item) == Some(&r.class_name) {
+                pin_failed = true;
+            }
+        }
+        path.remove(item);
+        let class = chosen?;
+        if pin_failed {
+            // Only when a sibling rescued the item — a pin that fails with no
+            // fallback surfaces through the normal Infeasible arms instead.
+            self.notes.push(format!(
+                "pin for {} sits on a recipe cycle — ignored",
+                self.item_name(item)
+            ));
+        }
+        self.memo.insert(item.to_string(), class.clone());
+        Some(class)
+    }
+
+    fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
+    }
+}
+
+/// Cheapest RESOLVABLE recipe for an item: a thin one-shot wrapper over
+/// `RecipeResolver` (cost order: starved, cyclic, min machines for 1/min,
+/// min power; standard recipes win ties over alternates).
+pub fn pick_recipe<'a>(
     gd: &'a GameData,
     item: &str,
     unlocked: &BTreeSet<String>,
     include_alts: bool,
     pinned: &BTreeMap<String, String>,
 ) -> Option<&'a gamedata::docs::Recipe> {
-    // An explicit pin wins over cost scoring: if the caller pinned a recipe for
-    // this product and it exists in gamedata AND actually produces the item,
-    // adopt it directly. A bad pin (unknown class / wrong product) is ignored —
-    // it falls through to the normal scoring below, never panics.
-    if let Some(class) = pinned.get(item) {
-        if let Some(r) = gd.recipes.get(class) {
-            if !r.produced_in.is_empty() && r.products.iter().any(|(i, _)| i == item) {
-                return Some(r);
-            }
-        }
-    }
-    gd.recipes
-        .values()
-        .filter(|r| {
-            !r.produced_in.is_empty()
-                && (!r.alternate || unlocked.contains(&r.class_name) || include_alts)
-                && r.products.iter().any(|(i, _)| i == item)
-                && r.products.iter().all(|(i, _)| i != POWER_ITEM)
-        })
-        .min_by(|a, b| {
-            let cost = |r: &gamedata::docs::Recipe| {
-                // A recipe that eats something made FROM our product is one half
-                // of a 2-cycle (Package↔Unpackage Water, Recycled Rubber↔Recycled
-                // Plastic). Never a sane default producer — score those last so
-                // they're only picked when nothing acyclic exists (in which case
-                // the item's ingredient chain still terminates elsewhere).
-                // Raw-resource ingredients are exempt: raws never expand through
-                // recipes, so a loop through one can't recurse — without this,
-                // Aluminum Scrap's water BYPRODUCT paints the honest Alumina
-                // Solution recipe (water ingredient) cyclic and the packaging
-                // recipe wins the tiebreak.
-                let cyclic = r.ingredients.iter().any(|(y, _)| {
-                    !gd.items.get(y).map(|i| i.is_resource).unwrap_or(false)
-                        && gd.recipes.values().any(|s| {
-                            s.products.iter().any(|(p, _)| p == y)
-                                && s.ingredients.iter().any(|(i, _)| i == item)
-                        })
-                });
-                let per_min = r
-                    .products
-                    .iter()
-                    .find(|(i, _)| i == item)
-                    .map(|(_, n)| n * 60.0 / r.duration_s)
-                    .unwrap_or(1e-9);
-                let power = r
-                    .produced_in
-                    .first()
-                    .map(|m| gamedata::db::recipe_power(gd, r, m))
-                    .unwrap_or(0.0);
-                (cyclic, 1.0 / per_min, power, r.alternate)
-            };
-            cost(a)
-                .partial_cmp(&cost(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+    RecipeResolver::new(gd, unlocked, include_alts, pinned).resolve(item)
 }
 
 fn nearest_region(world: &WorldSnapshot, pos: MapPos) -> String {
@@ -1333,6 +1613,137 @@ mod tests {
         assert_eq!(
             picked.class_name, "Recipe_AluminaSolution_C",
             "the honest raws-in recipe wins over the packaging half-cycle"
+        );
+    }
+
+    /// Cost-order guard (kills tuple-order mutants post-resolver): a FAST
+    /// candidate that is painted cyclic but still RESOLVES (its painted
+    /// ingredient has an honest second producer, so backtracking would accept
+    /// it) must lose to a slower unpainted candidate. Only the cyclic-first
+    /// tuple order keeps the honest recipe on top — a throughput-first mutant
+    /// returns the painted one, because resolution alone would not reject it.
+    #[test]
+    fn painted_but_resolvable_candidate_loses_ordering() {
+        let mut gd = GameData::default();
+        let mk =
+            |class: &str, ings: Vec<(&str, f64)>, prods: Vec<(&str, f64)>| gamedata::docs::Recipe {
+                class_name: class.into(),
+                display_name: class.into(),
+                duration_s: 60.0,
+                ingredients: ings.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+                products: prods.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+                produced_in: vec!["Build_ConstructorMk1_C".into()],
+                alternate: false,
+                variable_power_mw: None,
+            };
+        // honest W: raw-only, slow (1/min)
+        gd.recipes.insert(
+            "Recipe_W_C".into(),
+            mk(
+                "Recipe_W_C",
+                vec![("Desc_Ore_C", 1.0)],
+                vec![("Desc_T_C", 1.0)],
+            ),
+        );
+        // fast X (100/min) consumes M — painted cyclic by P1 below
+        gd.recipes.insert(
+            "Recipe_X_C".into(),
+            mk(
+                "Recipe_X_C",
+                vec![("Desc_M_C", 1.0)],
+                vec![("Desc_T_C", 100.0)],
+            ),
+        );
+        // P1: PRIMARY producer of M that consumes T → paints X cyclic
+        gd.recipes.insert(
+            "Recipe_P1_C".into(),
+            mk(
+                "Recipe_P1_C",
+                vec![("Desc_T_C", 1.0)],
+                vec![("Desc_M_C", 1.0)],
+            ),
+        );
+        // P2: honest producer of M → X's chain RESOLVES despite the paint
+        gd.recipes.insert(
+            "Recipe_P2_C".into(),
+            mk(
+                "Recipe_P2_C",
+                vec![("Desc_Ore_C", 1.0)],
+                vec![("Desc_M_C", 1.0)],
+            ),
+        );
+
+        let picked = pick_recipe(&gd, "Desc_T_C", &BTreeSet::new(), false, &BTreeMap::new())
+            .expect("T has producers");
+        assert_eq!(
+            picked.class_name, "Recipe_W_C",
+            "cyclic-first ordering beats raw throughput even when the painted \
+             candidate would resolve"
+        );
+    }
+
+    /// Paint narrowing (primary-product partners only): a recipe that returns
+    /// the ingredient purely as a BYPRODUCT while consuming our product — the
+    /// turbofuel shape, Rocket Fuel's Compacted Coal — must NOT paint the fast
+    /// candidate cyclic. With the narrow paint the fast recipe wins on
+    /// throughput; the old any-product scan painted it and picked the slow one.
+    #[test]
+    fn byproduct_partner_does_not_paint() {
+        let mut gd = GameData::default();
+        let mk =
+            |class: &str, ings: Vec<(&str, f64)>, prods: Vec<(&str, f64)>| gamedata::docs::Recipe {
+                class_name: class.into(),
+                display_name: class.into(),
+                duration_s: 60.0,
+                ingredients: ings.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+                products: prods.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+                produced_in: vec!["Build_ConstructorMk1_C".into()],
+                alternate: false,
+                variable_power_mw: None,
+            };
+        // fast X: Y → T at 100/min
+        gd.recipes.insert(
+            "Recipe_X_C".into(),
+            mk(
+                "Recipe_X_C",
+                vec![("Desc_Y_C", 1.0)],
+                vec![("Desc_T_C", 100.0)],
+            ),
+        );
+        // slow honest W: ore → T at 1/min
+        gd.recipes.insert(
+            "Recipe_W_C".into(),
+            mk(
+                "Recipe_W_C",
+                vec![("Desc_Ore_C", 1.0)],
+                vec![("Desc_T_C", 1.0)],
+            ),
+        );
+        // S consumes T and returns Y ONLY as a byproduct (primary product Z)
+        gd.recipes.insert(
+            "Recipe_S_C".into(),
+            mk(
+                "Recipe_S_C",
+                vec![("Desc_T_C", 1.0)],
+                vec![("Desc_Z_C", 1.0), ("Desc_Y_C", 1.0)],
+            ),
+        );
+        // Y's PRIMARY producer is honest — X's chain resolves through it
+        gd.recipes.insert(
+            "Recipe_Y_C".into(),
+            mk(
+                "Recipe_Y_C",
+                vec![("Desc_Ore_C", 1.0)],
+                vec![("Desc_Y_C", 1.0)],
+            ),
+        );
+
+        let picked = pick_recipe(&gd, "Desc_T_C", &BTreeSet::new(), false, &BTreeMap::new())
+            .expect("T has producers");
+        assert_eq!(
+            picked.class_name, "Recipe_X_C",
+            "a byproduct-only partner is not the ingredient's producer of \
+             record and must not paint the fast recipe cyclic"
         );
     }
 
