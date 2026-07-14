@@ -5,6 +5,9 @@
 .dash-scrim {
   position: absolute;
   inset: 0;
+  /* plain fallback first: WebKitGTK without color-mix() keeps an opaque
+     scrim rather than none at all */
+  background: var(--steel-950);
   background: color-mix(in srgb, var(--steel-950) 62%, transparent);
   display: flex;
   justify-content: center;

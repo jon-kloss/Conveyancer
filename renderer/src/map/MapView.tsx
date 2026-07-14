@@ -76,8 +76,13 @@ function declutterPinChips(map: L.Map, markers: Map<string, L.Marker>) {
       const pt = map.latLngToContainerPoint(toLatLng(f.position));
       // Real rendered width when visible (covers status glyphs, warn badges,
       // RETIRING/INCOMING tags the old estimate missed — the source of visibly
-      // overlapping labels in dense clusters); estimate only while hidden.
-      const w = el.offsetWidth || f.name.length * 6.4 + 34;
+      // overlapping labels in dense clusters). Culled chips are display:none
+      // and read offsetWidth 0, so cache the last visible measure — otherwise
+      // a culled chip shrinks to the estimate, wins the next pass, and the
+      // pair oscillates. A rename while hidden leaves the cache stale for one
+      // cycle; it self-corrects on the next visible measure.
+      if (el.offsetWidth) el.dataset.w = String(el.offsetWidth);
+      const w = el.offsetWidth || Number(el.dataset.w) || f.name.length * 6.4 + 34;
       return {
         el,
         selected: st.selection?.kind === "factory" && st.selection.id === f.id,
