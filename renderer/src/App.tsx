@@ -107,6 +107,14 @@ export default function App() {
           e.stopImmediatePropagation();
           return;
         }
+        // Advisor panel closes on Escape like every other overlay (it opens
+        // via A or its edge tab; × was its only way out — a keyboard dead end).
+        if (st.advisorOpen) {
+          st.setAdvisorOpen(false);
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
       }
     };
     window.addEventListener("keydown", onKey, true);

@@ -431,12 +431,14 @@ pub fn global_solve(
     log(
         phase,
         &format!(
-            "site: {} @ ({:.0}, {:.0}) — {} stages, {} claims",
+            "site: {} @ ({:.0}, {:.0}) — {} stage{}, {} claim{}",
             site_name,
             site_pos.x,
             site_pos.y,
             stages.len(),
-            picked_nodes.len()
+            if stages.len() == 1 { "" } else { "s" },
+            picked_nodes.len(),
+            if picked_nodes.len() == 1 { "" } else { "s" }
         ),
     );
 
@@ -622,9 +624,11 @@ pub fn global_solve(
         included: true,
         label: format!("+ {site_name} — NEW"),
         detail: format!(
-            "{} stages · {} machines · {} {:.1}/min",
+            "{} stage{} · {} machine{} · {} {:.1}/min",
             stages.len(),
+            if stages.len() == 1 { "" } else { "s" },
             machines_total,
+            if machines_total == 1 { "" } else { "s" },
             goal_name,
             goal_rate
         ),

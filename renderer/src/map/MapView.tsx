@@ -74,7 +74,10 @@ function declutterPinChips(map: L.Map, markers: Map<string, L.Marker>) {
       const el = marker?.getElement()?.querySelector(".pin-chip") as HTMLElement | null;
       if (!marker || !el) return null;
       const pt = map.latLngToContainerPoint(toLatLng(f.position));
-      const w = f.name.length * 6.4 + 34; // 10px mono + glyph + padding
+      // Real rendered width when visible (covers status glyphs, warn badges,
+      // RETIRING/INCOMING tags the old estimate missed — the source of visibly
+      // overlapping labels in dense clusters); estimate only while hidden.
+      const w = el.offsetWidth || f.name.length * 6.4 + 34;
       return {
         el,
         selected: st.selection?.kind === "factory" && st.selection.id === f.id,
