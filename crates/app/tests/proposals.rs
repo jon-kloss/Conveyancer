@@ -1527,3 +1527,69 @@ fn accept_still_skips_items_with_excluded_dependency() {
         "excluded dep cascades the skip — nothing materialized"
     );
 }
+
+// ---- real-catalog hazard: recipe cycles must never hang the solver ----
+
+/// A catalog whose ONLY producers form a 1:1 packaging cycle (no acyclic
+/// escape) is degenerate — but the real Docs.json proved shapes like it reach
+/// production. The demand expansion must terminate at its step cap and
+/// degrade honestly (remaining demand → raw), never spin the job thread
+/// forever. Pre-fix this test never returns.
+#[test]
+fn pure_packaging_cycle_terminates_with_honest_log() {
+    let mut s = Session::in_memory(None).unwrap();
+    let mk =
+        |class: &str, ings: Vec<(&str, f64)>, prods: Vec<(&str, f64)>| gamedata::docs::Recipe {
+            class_name: class.into(),
+            display_name: class.into(),
+            duration_s: 1.0,
+            ingredients: ings.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+            products: prods.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+            produced_in: vec!["Build_Packager_C".into()],
+            alternate: false,
+            variable_power_mw: None,
+        };
+    s.gamedata.recipes.insert(
+        "Recipe_UnpackageGoo_C".into(),
+        mk(
+            "Recipe_UnpackageGoo_C",
+            vec![("Desc_PackagedGoo_C", 2.0)],
+            vec![("Desc_Goo_C", 2.0)],
+        ),
+    );
+    s.gamedata.recipes.insert(
+        "Recipe_PackageGoo_C".into(),
+        mk(
+            "Recipe_PackageGoo_C",
+            vec![("Desc_Goo_C", 2.0)],
+            vec![("Desc_PackagedGoo_C", 2.0)],
+        ),
+    );
+
+    let cancel = AtomicBool::new(false);
+    let mut log_lines: Vec<String> = Vec::new();
+    let outcome = global_solve(
+        &s.state,
+        &s.gamedata,
+        &s.world,
+        &WizardGoal {
+            items: vec![("Desc_Goo_C".into(), 60.0)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: Default::default(),
+        },
+        &s.unlocked,
+        s.plan_hash(),
+        "2026-07-14T00:00:00Z".into(),
+        |phase, line| log_lines.push(format!("{phase}: {line}")),
+        &cancel,
+    );
+    assert!(
+        !matches!(outcome, WizardOutcome::Cancelled),
+        "the solve ran to a real outcome"
+    );
+    assert!(
+        log_lines.iter().any(|l| l.contains("expansion cap hit")),
+        "the cap announces itself honestly in the log"
+    );
+}

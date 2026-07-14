@@ -146,9 +146,29 @@ pub fn global_solve(
         }
     }
 
+    // Hard ceiling on expansion steps: no catalog shape may hang the solve.
+    // The deepest legitimate real-catalog chain (nuclear) expands well under a
+    // thousand steps; hitting the cap means a recipe cycle survived the picker,
+    // so degrade honestly — remaining demand becomes raw input, and the log
+    // says so instead of the bridge spinning forever.
+    let mut expansion_steps = 0usize;
     while let Some((item, mut rate)) = queue.pop() {
         if cancel.load(Ordering::Relaxed) {
             return WizardOutcome::Cancelled;
+        }
+        expansion_steps += 1;
+        if expansion_steps > 10_000 {
+            log(
+                phase,
+                "expansion cap hit (10000 steps) — recipe cycle suspected; treating remaining demand as raw inputs",
+            );
+            *raw.entry(item.clone()).or_default() += rate;
+            for (i, r) in queue.drain(..) {
+                if i != POWER_ITEM && r > 1e-9 {
+                    *raw.entry(i).or_default() += r;
+                }
+            }
+            break;
         }
         if item == POWER_ITEM {
             continue; // power is sourced in phase 4 (A2.4), not belted
@@ -187,6 +207,11 @@ pub fn global_solve(
             continue;
         }
         let extractable = world.nodes.iter().any(|n| n.item == item);
+        // World-sourced raws (FGResourceDescriptor) are raw even without a map
+        // node — water/nitrogen come from extractors the world snapshot doesn't
+        // model. Without this, the real catalog offers Unpackage Water as
+        // water's "producer" and the Package↔Unpackage pair recurses forever.
+        let is_resource = gd.items.get(&item).map(|i| i.is_resource).unwrap_or(false);
         let craftable = gd.recipes.values().any(|r| {
             !r.produced_in.is_empty()
                 && r.products.iter().any(|(i, _)| i == &item)
@@ -195,7 +220,7 @@ pub fn global_solve(
                     .map(|(i, _)| i != POWER_ITEM)
                     .unwrap_or(true)
         });
-        if extractable || !craftable {
+        if extractable || is_resource || !craftable {
             *raw.entry(item.clone()).or_default() += rate;
             log(phase, &format!("raw: {} {:.1}/min", item_name(&item), rate));
             continue;
@@ -919,6 +944,23 @@ fn pick_recipe<'a>(
         })
         .min_by(|a, b| {
             let cost = |r: &gamedata::docs::Recipe| {
+                // A recipe that eats something made FROM our product is one half
+                // of a 2-cycle (Package↔Unpackage Water, Recycled Rubber↔Recycled
+                // Plastic). Never a sane default producer — score those last so
+                // they're only picked when nothing acyclic exists (in which case
+                // the item's ingredient chain still terminates elsewhere).
+                // Raw-resource ingredients are exempt: raws never expand through
+                // recipes, so a loop through one can't recurse — without this,
+                // Aluminum Scrap's water BYPRODUCT paints the honest Alumina
+                // Solution recipe (water ingredient) cyclic and the packaging
+                // recipe wins the tiebreak.
+                let cyclic = r.ingredients.iter().any(|(y, _)| {
+                    !gd.items.get(y).map(|i| i.is_resource).unwrap_or(false)
+                        && gd.recipes.values().any(|s| {
+                            s.products.iter().any(|(p, _)| p == y)
+                                && s.ingredients.iter().any(|(i, _)| i == item)
+                        })
+                });
                 let per_min = r
                     .products
                     .iter()
@@ -930,7 +972,7 @@ fn pick_recipe<'a>(
                     .first()
                     .map(|m| gamedata::db::recipe_power(gd, r, m))
                     .unwrap_or(0.0);
-                (1.0 / per_min, power, r.alternate)
+                (cyclic, 1.0 / per_min, power, r.alternate)
             };
             cost(a)
                 .partial_cmp(&cost(b))
@@ -1175,6 +1217,122 @@ mod tests {
         assert!(
             !picked.alternate || unlocked.contains(&picked.class_name),
             "an unlocked alt drops the NOT UNLOCKED flag"
+        );
+    }
+
+    /// The real-catalog alumina trap: the honest producer (raws in, byproduct
+    /// water out elsewhere in the catalog) must beat the packaging pair even
+    /// when the packager is cheaper on power and ties on throughput.
+    /// Aluminum Scrap's water BYPRODUCT must not paint the honest recipe
+    /// cyclic — cycles through raw resources can't recurse and don't count.
+    #[test]
+    fn byproduct_water_loop_does_not_shadow_honest_producer() {
+        let mut gd = GameData::default();
+        let mk = |class: &str,
+                  ings: Vec<(&str, f64)>,
+                  prods: Vec<(&str, f64)>,
+                  machine: &str,
+                  dur: f64| Recipe {
+            class_name: class.into(),
+            display_name: class.into(),
+            duration_s: dur,
+            ingredients: ings.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+            products: prods.into_iter().map(|(i, n)| (i.into(), n)).collect(),
+            produced_in: vec![machine.into()],
+            alternate: false,
+            variable_power_mw: None,
+        };
+        // honest: raws → alumina (+ silica), refinery
+        gd.recipes.insert(
+            "Recipe_AluminaSolution_C".into(),
+            mk(
+                "Recipe_AluminaSolution_C",
+                vec![("Desc_OreBauxite_C", 12.0), ("Desc_Water_C", 18.0)],
+                vec![("Desc_AluminaSolution_C", 12.0), ("Desc_Silica_C", 5.0)],
+                "Build_OilRefinery_C",
+                6.0,
+            ),
+        );
+        // packaging pair (identical alumina throughput, cheaper machine)
+        gd.recipes.insert(
+            "Recipe_UnpackageAlumina_C".into(),
+            mk(
+                "Recipe_UnpackageAlumina_C",
+                vec![("Desc_PackagedAlumina_C", 2.0)],
+                vec![("Desc_AluminaSolution_C", 2.0)],
+                "Build_Packager_C",
+                1.0,
+            ),
+        );
+        gd.recipes.insert(
+            "Recipe_PackagedAlumina_C".into(),
+            mk(
+                "Recipe_PackagedAlumina_C",
+                vec![
+                    ("Desc_AluminaSolution_C", 2.0),
+                    ("Desc_FluidCanister_C", 2.0),
+                ],
+                vec![("Desc_PackagedAlumina_C", 2.0)],
+                "Build_Packager_C",
+                1.0,
+            ),
+        );
+        // the byproduct edge that painted the honest recipe cyclic: scrap
+        // consumes alumina and RETURNS water
+        gd.recipes.insert(
+            "Recipe_AluminaScrap_C".into(),
+            mk(
+                "Recipe_AluminaScrap_C",
+                vec![("Desc_AluminaSolution_C", 4.0), ("Desc_Coal_C", 2.0)],
+                vec![("Desc_AluminumScrap_C", 6.0), ("Desc_Water_C", 2.0)],
+                "Build_OilRefinery_C",
+                1.0,
+            ),
+        );
+        for (class, res) in [
+            ("Desc_Water_C", true),
+            ("Desc_OreBauxite_C", true),
+            ("Desc_Coal_C", true),
+            ("Desc_AluminaSolution_C", false),
+            ("Desc_PackagedAlumina_C", false),
+            ("Desc_FluidCanister_C", false),
+        ] {
+            gd.items.insert(
+                class.to_string(),
+                gamedata::docs::Item {
+                    class_name: class.into(),
+                    display_name: class.into(),
+                    form: "RF_LIQUID".into(),
+                    stack_size: String::new(),
+                    energy_mj: 0.0,
+                    is_resource: res,
+                },
+            );
+        }
+        // refinery costs more power than the packager — the old tiebreak's trap
+        for (class, mw) in [("Build_OilRefinery_C", 30.0), ("Build_Packager_C", 10.0)] {
+            gd.machines.insert(
+                class.to_string(),
+                gamedata::docs::Machine {
+                    class_name: class.into(),
+                    display_name: class.into(),
+                    power_mw: mw,
+                    kind: gamedata::docs::MachineKind::Manufacturer,
+                },
+            );
+        }
+
+        let picked = pick_recipe(
+            &gd,
+            "Desc_AluminaSolution_C",
+            &BTreeSet::new(),
+            false,
+            &BTreeMap::new(),
+        )
+        .expect("alumina has producers");
+        assert_eq!(
+            picked.class_name, "Recipe_AluminaSolution_C",
+            "the honest raws-in recipe wins over the packaging half-cycle"
         );
     }
 
