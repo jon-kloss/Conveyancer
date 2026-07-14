@@ -225,12 +225,20 @@ export default function Dashboard() {
         )}
         {dt && dt.downtimeAvailable && dt.dips.length > 0 && (
           <div className="dash-line" data-testid="cutover-downtime">
-            {dt.dips.map((d, i) => (
-              <span className="chip warn" key={i} data-testid="downtime-dip">
-                {itemName(d.item).toUpperCase()} → {fmtRate(d.rate)}/min (was {fmtRate(d.baseline)}) · ~
-                {d.estHours < 1 ? d.estHours.toFixed(1) : Math.round(d.estHours)}h (est)
-              </span>
-            ))}
+            {dt.dips.map((d, i) => {
+              // A phase-2 (Dismantle) dip carries est_hours: 0 — the old output
+              // never returns, so it's a PERMANENT SHORTFALL, not a downtime
+              // window. Phase-1 (Switch) keeps the "~Nh (est)" build-window label.
+              const permanent = d.phase === 2 || d.estHours === 0;
+              return (
+                <span className="chip warn" key={i} data-testid="downtime-dip">
+                  {itemName(d.item).toUpperCase()} → {fmtRate(d.rate)}/min (was {fmtRate(d.baseline)}) ·{" "}
+                  {permanent
+                    ? "PERMANENT SHORTFALL"
+                    : `~${d.estHours < 1 ? d.estHours.toFixed(1) : Math.round(d.estHours)}h (est)`}
+                </span>
+              );
+            })}
           </div>
         )}
         {dt && dt.downtimeAvailable && dt.dips.length === 0 && (

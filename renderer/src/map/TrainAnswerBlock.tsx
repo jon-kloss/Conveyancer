@@ -5,9 +5,9 @@
 // the plain-text payload to the clipboard. Never mutates the plan.
 
 import { useState } from "react";
-import { fmtKm, fmtRate } from "../lib/format";
+import { fmtClockS, fmtKm, fmtRate } from "../lib/format";
 import type { TrainAnswer } from "../state/types";
-import { clockS, trainAnswerToText, UNIT, type TrainAnswerContext } from "./trainAnswer";
+import { trainAnswerToText, UNIT, type TrainAnswerContext } from "./trainAnswer";
 
 export default function TrainAnswerBlock({
   answer,
@@ -87,14 +87,14 @@ export default function TrainAnswerBlock({
         )}
         <div className="math-row">
           <span>RTT</span>
-          <span className="math-note">round trip {clockS(answer.math.roundTripS)}</span>
-          <span>{clockS(answer.math.rttS)}</span>
+          <span className="math-note">round trip {fmtClockS(answer.math.roundTripS)}</span>
+          <span>{fmtClockS(answer.math.rttS)}</span>
         </div>
         {answer.math.headwayS != null && (
           <div className="math-row">
             <span>HEADWAY</span>
             <span className="math-note" />
-            <span>{clockS(answer.math.headwayS)}</span>
+            <span>{fmtClockS(answer.math.headwayS)}</span>
           </div>
         )}
       </div>

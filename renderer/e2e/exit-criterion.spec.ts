@@ -240,6 +240,12 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
 
   // ---- reopen: everything persisted (view state returns to the open factory) ----
   await page.reload();
+  // R1: the once-per-plan resume dashboard auto-presents on THIS first reload
+  // with a non-empty build queue — the empty first open (above) no longer wrongly
+  // spends the flag. Dismiss it (Escape consumes — R6) to reach the factory view.
+  await expect(page.getByTestId("dashboard")).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("dashboard")).toBeHidden();
   await expect(page.getByTestId("graph-root")).toBeVisible();
   await expect(page.getByTestId("port-out-Desc_ModularFrame_C")).toBeVisible();
   await page.getByTestId("port-out-Desc_ModularFrame_C").click();

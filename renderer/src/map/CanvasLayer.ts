@@ -103,6 +103,10 @@ export class MapCanvasLayer extends L.Layer {
   /** terrain pre-rendered once with the muted design filter baked in */
   private terrainCanvas: HTMLCanvasElement | null = null;
   private terrainLoading = false;
+  /** Projected node container-points cached during drawNodes so hitTestNode
+   *  reuses them instead of re-projecting all 459 nodes per mousemove.
+   *  Rebuilt each redraw (which already fires on move/zoom/viewreset/resize). */
+  private nodeScreen: { node: WorldNode; x: number; y: number }[] = [];
 
   constructor(data: CanvasLayerData) {
     super();
@@ -145,6 +149,18 @@ export class MapCanvasLayer extends L.Layer {
     const map = this.mapRef;
     if (!map || !this.data.showNodes) return null;
     let best: { node: WorldNode; d: number } | null = null;
+    // Fast path: the points cached by the last drawNodes. Falls back to live
+    // projection before the first paint (empty cache).
+    const cache = this.nodeScreen;
+    if (cache.length) {
+      for (const c of cache) {
+        const dx = c.x - point.x;
+        const dy = c.y - point.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d <= 12 && (!best || d < best.d)) best = { node: c.node, d };
+      }
+      return best;
+    }
     for (const node of this.data.world.nodes) {
       const p = map.latLngToContainerPoint(toLatLng(node));
       const dx = p.x - point.x;
@@ -163,7 +179,8 @@ export class MapCanvasLayer extends L.Layer {
   private nodeLabel(node: WorldNode): string {
     const code =
       { Desc_OreIron_C: "FE", Desc_OreCopper_C: "CU", Desc_Stone_C: "LIME", Desc_Coal_C: "COAL" }[node.item] ??
-      node.item.replace("Desc_", "").replace("_C", "").slice(0, 4).toUpperCase();
+      // save-only nodes carry item:"" — degrade to a readable NODE, not "".
+      (node.item || "NODE").replace("Desc_", "").replace("_C", "").slice(0, 4).toUpperCase();
     const purity = node.purity === "normal" ? "NORM" : node.purity.toUpperCase();
     return node.zone === "cave" ? `${code} ${purity} ▾CAVE` : `${code} ${purity}`;
   }
@@ -757,15 +774,21 @@ export class MapCanvasLayer extends L.Layer {
     const signal = css("--signal-500");
     const crit = css("--flow-crit");
     const canvasBg = css("--map-canvas");
+    // hoisted out of the per-node loop — one lookup per redraw, not per node
+    const fontMono = css("--font-mono");
+    const inkGhost = css("--ink-ghost");
+    const ink100 = css("--ink-100");
 
     // 459 real nodes at world zoom are a wall of rings — dots shrink as the
     // view widens so factories and flows stay the foreground layer
     const zoom = map.getZoom();
     const rBase = zoom <= 2 ? 3.5 : zoom <= 3 ? 5 : 7;
 
+    this.nodeScreen = [];
     for (const node of this.data.world.nodes) {
       const state = this.data.nodeStates[node.id] ?? { claims: 0, conflict: false, claimed: false };
       const p = map.latLngToContainerPoint(toLatLng(node));
+      this.nodeScreen.push({ node, x: p.x, y: p.y });
       const hovered = this.data.hoveredNode === node.id;
       const selected = this.data.selectedNode === node.id;
       const r = hovered || selected ? 7 : rBase;
@@ -780,7 +803,7 @@ export class MapCanvasLayer extends L.Layer {
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.lineWidth = hovered || selected ? 2 : 1.5;
-      ctx.strokeStyle = state.conflict ? crit : hovered || selected ? css("--ink-100") : inkMuted;
+      ctx.strokeStyle = state.conflict ? crit : hovered || selected ? ink100 : inkMuted;
       if (node.purity === "normal") ctx.setLineDash([4, 3]);
       else if (node.purity === "impure") ctx.setLineDash([1.5, 2.5]);
       else ctx.setLineDash([]);
@@ -794,7 +817,7 @@ export class MapCanvasLayer extends L.Layer {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 3.5, Math.PI * 0.15, Math.PI * 0.85);
         ctx.lineWidth = 1.5;
-        ctx.strokeStyle = hovered || selected ? css("--ink-100") : inkMuted;
+        ctx.strokeStyle = hovered || selected ? ink100 : inkMuted;
         ctx.stroke();
         if (node.entrance && (hovered || selected)) {
           const e = map.latLngToContainerPoint(toLatLng(node.entrance));
@@ -807,7 +830,7 @@ export class MapCanvasLayer extends L.Layer {
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.strokeRect(e.x - 3.5, e.y - 3.5, 7, 7);
-          ctx.font = `500 9px ${css("--font-mono")}`;
+          ctx.font = `500 9px ${fontMono}`;
           ctx.fillStyle = inkMuted;
           ctx.fillText("ENTRANCE", e.x + 7, e.y + 3);
         }
@@ -841,19 +864,19 @@ export class MapCanvasLayer extends L.Layer {
       // when it would overlap an earlier chip/label (hover/select always
       // wins); at world zoom the dots speak for themselves
       if (zoom > 2 || hovered || selected || state.conflict) {
-        ctx.font = `500 9px ${css("--font-mono")}`;
+        ctx.font = `500 9px ${fontMono}`;
         const label = this.nodeLabel(node);
         const lw = ctx.measureText(label).width;
         if (hovered || selected || this.placeChip(p.x - lw / 2, p.y + r + 3, lw, 12)) {
           ctx.textAlign = "center";
-          ctx.fillStyle = state.conflict ? crit : hovered || selected ? inkMuted : css("--ink-ghost");
+          ctx.fillStyle = state.conflict ? crit : hovered || selected ? inkMuted : inkGhost;
           ctx.fillText(label, p.x, p.y + r + 12);
           ctx.textAlign = "left";
         }
       }
 
       if (state.conflict) {
-        ctx.font = `700 9px ${css("--font-mono")}`;
+        ctx.font = `700 9px ${fontMono}`;
         ctx.fillStyle = crit;
         ctx.fillText(`⚠×${state.claims}`, p.x + r + 4, p.y + 3);
       }

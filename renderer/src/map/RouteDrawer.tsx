@@ -3,17 +3,11 @@
 // The full rail/truck/drone math block arrives in Phase 4.
 
 import { useStore } from "../state/store";
-import { fmtKm, fmtPercent, fmtPower, fmtRate } from "../lib/format";
+import { fmtClockS, fmtKm, fmtPercent, fmtPower, fmtRate } from "../lib/format";
 import { DEFAULT_DRONE_SPEC, DEFAULT_RAIL_SPEC, DEFAULT_TRUCK_SPEC } from "../state/types";
 import type { RailSpec, Route, RouteKind } from "../state/types";
 import TrainAnswerBlock from "./TrainAnswerBlock";
 import { trainAnswerFromMath } from "./trainAnswer";
-
-const fmtClockS = (s: number) => {
-  const m = Math.floor(s / 60);
-  const sec = Math.round(s % 60);
-  return `${m}:${sec.toString().padStart(2, "0")}`;
-};
 
 export default function RouteDrawer({ route }: { route: Route }) {
   const plan = useStore((s) => s.plan);

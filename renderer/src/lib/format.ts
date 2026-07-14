@@ -19,6 +19,16 @@ export function fmtClock(v: number): string {
   return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}%`;
 }
 
+/** m:ss clock from seconds — the transport math block's time grammar. Round the
+ *  TOTAL first, then split, so 119.7s reads "2:00", never "1:60". Shared by the
+ *  route inspector, the train-answer block, and the clipboard payload. */
+export function fmtClockS(s: number): string {
+  const t = Math.max(0, Math.round(s));
+  const m = Math.floor(t / 60);
+  const sec = t % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 export function fmtPower(mw: number): string {
   if (mw >= 1000) return `${(mw / 1000).toFixed(1)} GW`;
   return `${mw % 1 === 0 ? mw.toFixed(0) : mw.toFixed(1)} MW`;

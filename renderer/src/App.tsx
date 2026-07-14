@@ -51,13 +51,18 @@ export default function App() {
     if (!ready) return;
     const st = useStore.getState();
     if (st.viewState.resumeSeen) return;
-    st.saveViewState({ resumeSeen: true });
     const hasDrift = Object.values(st.plan.proposals).some(
       (p) => p.source === "save_reimport" && (p.status === "draft" || p.status === "reviewing"),
     );
     const hasWork = st.derived.buildQueue.length > 0 || hasDrift;
     const empty = Object.keys(st.plan.factories).length === 0;
-    if (hasWork && !st.reviewing && !empty) st.setDashboardOpen(true);
+    // Burn the once-per-plan flag ONLY when we actually present. A build-from-
+    // scratch plan opens empty first; spending the flag there (unconditionally)
+    // would mean the dashboard never auto-presents once work exists.
+    if (hasWork && !st.reviewing && !empty) {
+      st.saveViewState({ resumeSeen: true });
+      st.setDashboardOpen(true);
+    }
   }, [ready]);
 
   // Backstop: a rejection that escaped every local handler still lands in
@@ -93,11 +98,19 @@ export default function App() {
         if (!st.reviewing) st.setDashboardOpen(!st.dashboardOpen);
       } else if (e.key === "Escape") {
         const st = useStore.getState();
-        if (st.dashboardOpen) st.setDashboardOpen(false);
+        // Consume Escape when it dismisses the dashboard: capture-phase + stop
+        // so MapView's window Escape handler doesn't ALSO clear the map
+        // selection for the same keystroke. Other keys still reach MapView.
+        if (st.dashboardOpen) {
+          st.setDashboardOpen(false);
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [undo, redo]);
 
   // Early screens (error / hydrating) still get the titlebar: the frameless

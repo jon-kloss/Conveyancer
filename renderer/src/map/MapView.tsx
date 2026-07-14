@@ -534,6 +534,11 @@ export default function MapView() {
         markers.set(f.id, marker);
       } else {
         marker.setIcon(icon);
+        // re-sync draggability: a pin that flips ◇→◈→◆ (or back on undo) must
+        // gain/lose its drag handle, not keep the value it was created with.
+        const draggable = f.status === "planned";
+        marker.options.draggable = draggable;
+        if (marker.dragging) marker.dragging[draggable ? "enable" : "disable"]();
         const ll = toLatLng(f.position) as [number, number];
         const cur = marker.getLatLng();
         if (Math.abs(cur.lat - ll[0]) > 1e-9 || Math.abs(cur.lng - ll[1]) > 1e-9) marker.setLatLng(ll);
@@ -690,10 +695,11 @@ export default function MapView() {
 
 function NodeTooltip({ node }: { node: WorldNode }) {
   const items = useStore((s) => s.gamedata.items);
-  const name = items[node.item]?.displayName ?? node.item;
+  // save-only nodes carry item:"" — degrade to a readable label, never blank.
+  const name = items[node.item]?.displayName ?? (node.item || "RESOURCE NODE");
   return (
     <div className="node-tooltip chip">
-      {name.toUpperCase()} · {node.purity.toUpperCase()}
+      {name.toUpperCase()} · {(node.purity || "UNKNOWN").toUpperCase()}
       {node.zone === "cave" ? " · ▾CAVE" : ""}
     </div>
   );

@@ -19,7 +19,8 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   const [factoryId, setFactoryId] = useState(factories[0]?.id ?? "");
   const [extractor, setExtractor] = useState(EXTRACTORS[0]);
 
-  const item = gamedata.items[node.item]?.displayName ?? node.item;
+  // save-only nodes carry item:"" — degrade to a readable title, never blank.
+  const item = gamedata.items[node.item]?.displayName ?? (node.item || "RESOURCE NODE");
   const region = world.regions.find((r) => r.id === node.region)?.name ?? node.region;
   const claims = Object.values(plan.nodeClaims).filter((c) => c.node === node.id);
   const conflict = derived.nodes[node.id]?.conflict ?? false;
@@ -54,7 +55,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
         <div className="drawer-title-block">
           <div className="t-title">{item.toUpperCase()}</div>
           <div className="mono drawer-sub">
-            {region.toUpperCase()} · {node.purity.toUpperCase()} NODE · {Math.round(node.z)}M
+            {region.toUpperCase()} · {(node.purity || "UNKNOWN").toUpperCase()} NODE · {Math.round(node.z)}M
             {node.zone === "cave" ? " · ▾CAVE" : ""}
           </div>
         </div>

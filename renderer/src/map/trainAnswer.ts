@@ -6,15 +6,8 @@
 // does the trivial ceil/surplus wrapper (mirrored from Rust `train_answer`)
 // and the plain-text clipboard payload (sheetToText-style). No plan mutation.
 
-import { fmtKm, fmtRate } from "../lib/format";
+import { fmtClockS, fmtKm, fmtRate } from "../lib/format";
 import type { TrainAnswer, TransportMath } from "../state/types";
-
-/** m:ss clock from seconds — the math block's time grammar. */
-export const clockS = (s: number) => {
-  const m = Math.floor(s / 60);
-  const sec = Math.round(s % 60);
-  return `${m}:${sec.toString().padStart(2, "0")}`;
-};
 
 /** Fold an already-computed math block + its unit count + a demand into the
  *  answer — the ceil/surplus fold mirrored from Rust `train_answer`. Used for an
@@ -72,8 +65,8 @@ export function trainAnswerToText(a: TrainAnswer, ctx: TrainAnswerContext): stri
     }
   }
   L.push("");
-  L.push(`RTT  ${clockS(a.math.rttS)}`);
-  if (a.math.headwayS != null) L.push(`HEADWAY  ${clockS(a.math.headwayS)}`);
-  L.push(`ROUND TRIP  ${clockS(a.math.roundTripS)}`);
+  L.push(`RTT  ${fmtClockS(a.math.rttS)}`);
+  if (a.math.headwayS != null) L.push(`HEADWAY  ${fmtClockS(a.math.headwayS)}`);
+  L.push(`ROUND TRIP  ${fmtClockS(a.math.roundTripS)}`);
   return L.join("\n");
 }
