@@ -169,7 +169,7 @@ fn cutover_plan(
     factory: String,
 ) -> Result<serde_json::Value, SessionError> {
     let mut s = state.0.lock().unwrap();
-    let proposal = s.plan_replacement(factory)?;
+    let proposal = s.plan_replacement(factory, None)?;
     let resp = s.edit(vec![Command::CreateProposal { proposal }])?;
     let _ = window.emit("state://patch", &resp);
     let pid = resp.created.first().cloned().unwrap_or_default();

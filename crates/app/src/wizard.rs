@@ -67,6 +67,13 @@ pub struct WizardGoal {
     /// Proposal untouched (no solver behaviour changes — a target annotation).
     #[serde(default)]
     pub milestone: Option<Milestone>,
+    /// Product class → pinned recipe class. When a product is pinned, the solver
+    /// adopts that exact recipe for it (bypassing cost scoring) instead of the
+    /// cheapest one — e.g. a built-factory "adopt this alt" seeds the retired
+    /// product's alternate here so its ◇ replacement is solved onto that recipe.
+    /// Empty (the default) leaves recipe selection behaviour-identical.
+    #[serde(default)]
+    pub pinned_recipes: BTreeMap<String, String>,
 }
 
 /// Infeasible ≠ dead end (mock 5c): best achievable + named binding + one-tap
@@ -111,6 +118,7 @@ pub fn global_solve(
     cancel: &AtomicBool,
 ) -> WizardOutcome {
     let c = &goal.constraints;
+    let pinned = &goal.pinned_recipes;
     let item_name = |class: &str| -> String {
         gd.items
             .get(class)
@@ -194,7 +202,7 @@ pub fn global_solve(
         }
         *demand.entry(item.clone()).or_default() += rate;
         // expand via the standard recipe for BFS; final pick happens in phase 2
-        if let Some(r) = pick_recipe(gd, &item, unlocked, c.include_alternates) {
+        if let Some(r) = pick_recipe(gd, &item, unlocked, c.include_alternates, pinned) {
             let out_per_cycle = r
                 .products
                 .iter()
@@ -219,31 +227,32 @@ pub fn global_solve(
         if cancel.load(Ordering::Relaxed) {
             return WizardOutcome::Cancelled;
         }
-        let Some(r) = pick_recipe(gd, item, unlocked, c.include_alternates) else {
+        let Some(r) = pick_recipe(gd, item, unlocked, c.include_alternates, pinned) else {
             // A GOAL item with no pickable recipe can never be staged — the
             // proposal would dangle a `$g.` alias and accept would always
             // fail. Name the fix instead of emitting a broken proposal.
             // (Non-goal mid-chain items keep degrading honestly via the
             // ingredient-edge guard + T1 `Disconnected` shortfalls.)
             if goal.items.iter().any(|(i, _)| i == item) {
-                let (binding, relaxations) =
-                    if !c.include_alternates && pick_recipe(gd, item, unlocked, true).is_some() {
-                        (
-                            format!(
-                                "only locked alternate recipes produce {} (not unlocked)",
-                                item_name(item)
-                            ),
-                            vec!["enable alternate recipes ✓".to_string()],
-                        )
-                    } else {
-                        (
-                            format!("no usable recipe produces {}", item_name(item)),
-                            vec![format!(
-                                "pick another goal item — {} has no enabled recipe",
-                                item_name(item)
-                            )],
-                        )
-                    };
+                let (binding, relaxations) = if !c.include_alternates
+                    && pick_recipe(gd, item, unlocked, true, pinned).is_some()
+                {
+                    (
+                        format!(
+                            "only locked alternate recipes produce {} (not unlocked)",
+                            item_name(item)
+                        ),
+                        vec!["enable alternate recipes ✓".to_string()],
+                    )
+                } else {
+                    (
+                        format!("no usable recipe produces {}", item_name(item)),
+                        vec![format!(
+                            "pick another goal item — {} has no enabled recipe",
+                            item_name(item)
+                        )],
+                    )
+                };
                 log(phase, &format!("INFEASIBLE — {binding}"));
                 return WizardOutcome::Infeasible(Infeasible {
                     best_rate: 0.0,
@@ -883,7 +892,19 @@ fn pick_recipe<'a>(
     item: &str,
     unlocked: &BTreeSet<String>,
     include_alts: bool,
+    pinned: &BTreeMap<String, String>,
 ) -> Option<&'a gamedata::docs::Recipe> {
+    // An explicit pin wins over cost scoring: if the caller pinned a recipe for
+    // this product and it exists in gamedata AND actually produces the item,
+    // adopt it directly. A bad pin (unknown class / wrong product) is ignored —
+    // it falls through to the normal scoring below, never panics.
+    if let Some(class) = pinned.get(item) {
+        if let Some(r) = gd.recipes.get(class) {
+            if !r.produced_in.is_empty() && r.products.iter().any(|(i, _)| i == item) {
+                return Some(r);
+            }
+        }
+    }
     gd.recipes
         .values()
         .filter(|r| {
@@ -1140,7 +1161,7 @@ mod tests {
         let mut unlocked = BTreeSet::new();
         unlocked.insert("Recipe_Alt_C".to_string());
 
-        let picked = pick_recipe(&gd, "Desc_Widget_C", &unlocked, false)
+        let picked = pick_recipe(&gd, "Desc_Widget_C", &unlocked, false, &BTreeMap::new())
             .expect("an unlocked cheaper alt is eligible without include_alts");
         assert_eq!(
             picked.class_name, "Recipe_Alt_C",
@@ -1166,11 +1187,11 @@ mod tests {
         );
         let empty = BTreeSet::new();
         assert!(
-            pick_recipe(&gd, "Desc_Gizmo_C", &empty, false).is_none(),
+            pick_recipe(&gd, "Desc_Gizmo_C", &empty, false, &BTreeMap::new()).is_none(),
             "a locked alt is excluded by default"
         );
         assert_eq!(
-            pick_recipe(&gd, "Desc_Gizmo_C", &empty, true)
+            pick_recipe(&gd, "Desc_Gizmo_C", &empty, true, &BTreeMap::new())
                 .expect("include_alts pulls the locked alt in")
                 .class_name,
             "Recipe_AltOnly_C"
@@ -1178,7 +1199,7 @@ mod tests {
         // and being unlocked admits it even with include_alts off, flag-free
         let mut unlocked = BTreeSet::new();
         unlocked.insert("Recipe_AltOnly_C".to_string());
-        let picked = pick_recipe(&gd, "Desc_Gizmo_C", &unlocked, false)
+        let picked = pick_recipe(&gd, "Desc_Gizmo_C", &unlocked, false, &BTreeMap::new())
             .expect("the unlocked alt is available");
         assert!(picked.alternate && unlocked.contains(&picked.class_name));
     }

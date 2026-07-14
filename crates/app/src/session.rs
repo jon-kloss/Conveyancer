@@ -816,7 +816,11 @@ impl Session {
     /// beside the old pin, and bind the two with a trailing `SetFactoryReplaces`
     /// alias command. Returns a Draft proposal — accept goes through the
     /// UNTOUCHED accept path (◇-only, one undo, the old ◆ never touched).
-    pub fn plan_replacement(&mut self, old_factory_id: Id) -> Result<Proposal, SessionError> {
+    pub fn plan_replacement(
+        &mut self,
+        old_factory_id: Id,
+        pin: Option<String>,
+    ) -> Result<Proposal, SessionError> {
         let old = self
             .state
             .factories
@@ -854,10 +858,27 @@ impl Session {
                 "the factory ships nothing to replace (no output ports)".into(),
             ));
         }
+        // O1: when the caller pins a recipe (a built-factory "adopt this alt"),
+        // seed the retired product's alternate so the ◇ replacement is solved
+        // ONTO that recipe (the ◆ is never touched). A pin whose product cannot
+        // be resolved degrades to no pin — behaviour-identical to the None path.
+        let mut pinned_recipes: BTreeMap<String, String> = BTreeMap::new();
+        if let Some(recipe) = pin {
+            if let Some(product) = self
+                .gamedata
+                .recipes
+                .get(&recipe)
+                .and_then(|r| r.products.first())
+                .map(|(i, _)| i.clone())
+            {
+                pinned_recipes.insert(product, recipe);
+            }
+        }
         let goal = crate::wizard::WizardGoal {
             items: by_item.into_iter().collect(),
             constraints: crate::wizard::WizardConstraints::default(),
             milestone: None,
+            pinned_recipes,
         };
         let outcome = crate::wizard::global_solve(
             &self.state,
@@ -1114,15 +1135,21 @@ impl Session {
 
         if built_factories.is_empty() {
             // All ◇ planned → a single T2-style adopt proposal (SetGroupRecipe).
-            let mut proposal = crate::altopt::optimize_to_recipe(
+            // When no planned group can LOCALLY source the alt (an all-◇ dead-end),
+            // this is honest degradation, not an error: return an empty draft set
+            // with a note the row can surface, rather than an Err.
+            let Some(mut proposal) = crate::altopt::optimize_to_recipe(
                 &self.state,
                 &self.gamedata,
                 &self.unlocked,
                 recipe,
-            )
-            .ok_or_else(|| {
-                SessionError::Internal("no planned group can adopt this alternate".into())
-            })?;
+            ) else {
+                return Ok(AdoptOutcome {
+                    proposals: vec![],
+                    route: "t2".into(),
+                    note: Some("no factory can locally source this alternate".into()),
+                });
+            };
             proposal.input_hash = self.plan_hash();
             proposal.snapshot_time = crate::jobs::now_rfc3339();
             let resp = self.edit(vec![Command::CreateProposal { proposal }])?;
@@ -1134,7 +1161,8 @@ impl Session {
         }
 
         // Any ◆ built → a W2a Refactor per built factory. plan_replacement only
-        // PLANS a ◇ replacement bound by `replaces`; it never touches the ◆.
+        // PLANS a ◇ replacement bound by `replaces` (with the alt PINNED in its
+        // solve goal); it never touches the ◆.
         let mut proposals: Vec<Id> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
         for fid in built_factories {
@@ -1144,7 +1172,7 @@ impl Session {
                 .get(&fid)
                 .map(|f| f.name.clone())
                 .unwrap_or_else(|| fid.clone());
-            match self.plan_replacement(fid) {
+            match self.plan_replacement(fid, Some(recipe.to_string())) {
                 Ok(proposal) => {
                     let resp = self.edit(vec![Command::CreateProposal { proposal }])?;
                     proposals.extend(resp.created);
@@ -1152,9 +1180,23 @@ impl Session {
                 Err(e) => notes.push(format!("{name}: {e}")),
             }
         }
+        // O4: a mixed opportunity also touches ◇ PLANNED groups (disjoint from the
+        // ◆ groups the Refactors retire — no double-apply). Draft the T2
+        // SetGroupRecipe for those too so the whole opportunity adopts in one
+        // review. Route reflects what was actually drafted.
+        let mut route = "refactor";
+        if let Some(mut proposal) =
+            crate::altopt::optimize_to_recipe(&self.state, &self.gamedata, &self.unlocked, recipe)
+        {
+            proposal.input_hash = self.plan_hash();
+            proposal.snapshot_time = crate::jobs::now_rfc3339();
+            let resp = self.edit(vec![Command::CreateProposal { proposal }])?;
+            proposals.extend(resp.created);
+            route = "mixed";
+        }
         Ok(AdoptOutcome {
             proposals,
-            route: "refactor".into(),
+            route: route.into(),
             note: (!notes.is_empty()).then(|| notes.join("; ")),
         })
     }

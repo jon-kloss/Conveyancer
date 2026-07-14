@@ -92,6 +92,32 @@ fn unlocked(classes: &[&str]) -> BTreeSet<String> {
     classes.iter().map(|s| s.to_string()).collect()
 }
 
+/// Add an IN port for `item` to the factory owning `gid` so that synthetic
+/// factory can LOCALLY source that ingredient (a boundary feed). The optimizer's
+/// per-factory sourceability gate (O2) only counts a planned group when the alt's
+/// ingredients are sourceable in its own factory — realistic fixtures declare the
+/// feed rather than relying on an empire-wide raw-item escape hatch.
+fn add_in_port(state: &mut PlanState, gid: &Id, item: &str) {
+    let fid = state.groups[gid].factory.clone();
+    let pid = new_id();
+    state.ports.insert(
+        pid.clone(),
+        Port {
+            id: pid.clone(),
+            factory: fid.clone(),
+            direction: PortDirection::In,
+            item: item.into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            bound_route: None,
+            graph_pos: GraphPos { x: 0.0, y: 0.0 },
+            status: Status::Planned,
+            created_by: CreatedBy::Manual,
+        },
+    );
+    state.factories.get_mut(&fid).unwrap().ports.push(pid);
+}
+
 /// Two products, each with a cheaper unlocked alternate; the bigger machine
 /// saving ranks first, and machines_saved/power_saved are the real recipe math.
 #[test]
@@ -149,10 +175,14 @@ fn ranks_by_machines_then_power() {
     );
 
     let mut state = PlanState::default();
-    // Two ◇ groups of A across the empire (count 3 each) + one B group (count 2).
-    planned_group(&mut state, "Recipe_A_Std_C", 3, 1.0);
-    planned_group(&mut state, "Recipe_A_Std_C", 3, 1.0);
-    planned_group(&mut state, "Recipe_B_Std_C", 2, 1.0);
+    // Two ◇ groups of A across the empire (count 3 each) + one B group (count 2),
+    // each with an IN port feeding its alt's ore so the per-factory gate counts it.
+    let ga1 = planned_group(&mut state, "Recipe_A_Std_C", 3, 1.0);
+    let ga2 = planned_group(&mut state, "Recipe_A_Std_C", 3, 1.0);
+    let gb = planned_group(&mut state, "Recipe_B_Std_C", 2, 1.0);
+    add_in_port(&mut state, &ga1, "Desc_OreA_C");
+    add_in_port(&mut state, &ga2, "Desc_OreA_C");
+    add_in_port(&mut state, &gb, "Desc_OreB_C");
 
     let opps = empire_optimize(
         &state,
@@ -216,7 +246,10 @@ fn input_delta_surfaced() {
         ),
     );
     let mut state = PlanState::default();
-    planned_group(&mut state, "Recipe_W_Std_C", 4, 1.0);
+    // The alt trades iron for STEEL, so the group's factory must be able to
+    // source steel locally (per-factory gate) — declare a steel IN port.
+    let gw = planned_group(&mut state, "Recipe_W_Std_C", 4, 1.0);
+    add_in_port(&mut state, &gw, "Desc_Steel_C");
 
     let opps = empire_optimize(&state, &gd, &unlocked(&["Recipe_W_Alt_C"]));
     assert_eq!(opps.len(), 1);
@@ -553,4 +586,178 @@ fn node_reuse_flagged() {
         .find(|o| o.recipe == alt)
         .expect("ingot alt opportunity");
     assert!(opp.node_reuse, "a held node on the ◆ factory → node_reuse");
+}
+
+/// Inject a WORSE unlocked ingot alt: HALF the standard throughput, so it needs
+/// MORE machines and cost-based `pick_recipe` would never choose it — only an
+/// explicit PIN adopts it. Returns its class.
+fn inject_ingot_alt_worse(s: &mut Session) -> String {
+    let class = "Recipe_Alt_IngotIron_Worse_C";
+    let std = s
+        .gamedata
+        .recipes
+        .get("Recipe_IngotIron_C")
+        .cloned()
+        .expect("fixture has Recipe_IngotIron_C");
+    let alt = Recipe {
+        class_name: class.into(),
+        display_name: "Slow Iron Ingot".into(),
+        duration_s: std.duration_s,
+        ingredients: std.ingredients.clone(),
+        products: vec![(INGOT.into(), per_cycle_out(&std, INGOT) * 0.5)],
+        produced_in: std.produced_in.clone(),
+        alternate: true,
+        variable_power_mw: None,
+    };
+    s.gamedata.recipes.insert(class.into(), alt);
+    s.unlocked.insert(class.into());
+    class.into()
+}
+
+/// T2 — the built-factory "adopt this alt" PINS the clicked recipe in the ◇
+/// replacement's solve goal: the drafted Refactor's CREATE group is solved onto
+/// the pinned alt (even though it is strictly WORSE on cost, so an unpinned solve
+/// would never pick it), and the ◆ built group is left BYTE-IDENTICAL.
+#[test]
+fn built_refactor_pins_the_adopted_alt() {
+    let mut s = Session::in_memory(None).unwrap();
+    // ◆ built ingot factory FIRST (import resets unlocked), then inject the pin
+    // target — a worse-on-cost alt, so only the pin can adopt it.
+    let old_fid = import_built_ingots(&mut s);
+    let alt = inject_ingot_alt_worse(&mut s);
+    // OUT port so plan_replacement has an item (INGOT) to reproduce.
+    s.edit(vec![Command::AddPort {
+        factory: old_fid.clone(),
+        direction: PortDirection::Out,
+        item: INGOT.into(),
+        rate: 30.0,
+        rate_ceiling: None,
+        graph_pos: GraphPos { x: 0.0, y: 0.0 },
+    }])
+    .unwrap();
+    let old_gid = s.state.factories[&old_fid].groups[0].clone();
+    let before = s.state.groups[&old_gid].clone();
+
+    let outcome = s.optimize_adopt(&alt).unwrap();
+    assert_eq!(outcome.route, "refactor", "any ◆ → Refactor route");
+    let pid = outcome.proposals[0].clone();
+    let proposal = s.state.proposals.get(&pid).unwrap().clone();
+    assert_eq!(proposal.source, ProposalSource::Refactor);
+
+    // The ◇ replacement's CREATE group adopts the PINNED alt recipe class.
+    assert!(
+        proposal.items.iter().any(|it| it
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::AddGroup { recipe, .. } if recipe == &alt))),
+        "the ◇ replacement is solved onto the pinned alt recipe"
+    );
+    // The pin overrode the cheaper STANDARD recipe — it is nowhere in the draft.
+    assert!(
+        !proposal.items.iter().any(|it| it.commands.iter().any(
+            |c| matches!(c, Command::AddGroup { recipe, .. } if recipe == "Recipe_IngotIron_C")
+        )),
+        "the pin overrode the cheaper standard recipe (never staged)"
+    );
+    // The pin lives in the ◇ replacement's goal ONLY — the ◆ layer never mutates.
+    assert!(
+        !proposal.items.iter().any(|it| it
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::SetGroupRecipe { .. }))),
+        "a refactor never emits SetGroupRecipe onto the ◆"
+    );
+    let after = s.state.groups[&old_gid].clone();
+    assert_eq!(
+        before, after,
+        "the ◆ built group is byte-identical after the pinned refactor"
+    );
+}
+
+/// T3(a) — an all-◇ opportunity whose alt ingredients NO factory can locally
+/// source is honest degradation, not an error: `optimize_adopt` returns empty
+/// proposals + a note (never `Err`).
+#[test]
+fn no_local_source_yields_note_not_err() {
+    let mut s = Session::in_memory(None).unwrap();
+    let alt = inject_ingot_alt(&mut s);
+    // A ◇ planned ingot factory on the STANDARD recipe — but with NO ore feed
+    // (no IN port, no ore-producing group), so the alt's ore is unsourceable here.
+    let fid = s
+        .edit(vec![Command::CreateFactory {
+            name: "STARVED INGOTS".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    s.edit(vec![Command::AddGroup {
+        factory: fid,
+        machine: "Build_SmelterMk1_C".into(),
+        recipe: "Recipe_IngotIron_C".into(),
+        count: 4,
+        clock: 1.0,
+        graph_pos: GraphPos { x: 0.0, y: 0.0 },
+        floor: 0,
+    }])
+    .unwrap();
+
+    let outcome = s.optimize_adopt(&alt).unwrap();
+    assert_eq!(outcome.route, "t2", "all-◇ dead-end still routes t2");
+    assert!(
+        outcome.proposals.is_empty(),
+        "no locally-sourceable factory → no drafted proposal"
+    );
+    assert!(
+        outcome.note.is_some(),
+        "the dead-end is surfaced as a note, not swallowed as an Err"
+    );
+}
+
+/// T3(b) — a negative-savings alt (needs MORE machines) is filtered from
+/// `empire_optimize` at the `machines_saved <= 0` gate. The factory CAN source
+/// the alt (an IN port is present) so the per-factory gate does NOT prune it —
+/// isolating the savings filter as the reason it never surfaces.
+#[test]
+fn negative_savings_alt_filtered() {
+    let mut gd = GameData::default();
+    // Standard X: 4/min from ore (1 machine covers a 4/min group). Unlocked alt:
+    // 1/min → 4 machines for the same rate → a machine LOSS.
+    gd.recipes.insert(
+        "Recipe_X_Std_C".into(),
+        recipe(
+            "Recipe_X_Std_C",
+            "Desc_X_C",
+            4.0,
+            60.0,
+            false,
+            vec![("Desc_OreX_C", 1.0)],
+            5.0,
+        ),
+    );
+    gd.recipes.insert(
+        "Recipe_X_Alt_C".into(),
+        recipe(
+            "Recipe_X_Alt_C",
+            "Desc_X_C",
+            1.0,
+            60.0,
+            true,
+            vec![("Desc_OreX_C", 1.0)],
+            2.0,
+        ),
+    );
+    let mut state = PlanState::default();
+    let gx = planned_group(&mut state, "Recipe_X_Std_C", 1, 1.0);
+    add_in_port(&mut state, &gx, "Desc_OreX_C"); // sourceable — not source-pruned
+
+    assert!(
+        empire_optimize(&state, &gd, &unlocked(&["Recipe_X_Alt_C"])).is_empty(),
+        "a negative-savings alt is filtered at the machines_saved <= 0 gate"
+    );
 }

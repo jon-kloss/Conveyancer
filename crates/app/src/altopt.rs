@@ -88,13 +88,37 @@ fn per_cycle(r: &gamedata::docs::Recipe, item: &str) -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Can `factory` locally source `ing`? Mirrors `optimize_to_recipe`'s `source_of`
+/// (per-factory, not empire-wide): a group in THIS factory whose recipe's primary
+/// product is `ing`, or a boundary IN port on this factory carrying `ing`. This is
+/// the exact predicate the ◇ T2 adopt route needs, so advertised savings for a
+/// planned group only count when that same group could actually adopt the alt.
+fn source_in_factory(state: &PlanState, gd: &GameData, factory: &Factory, ing: &str) -> bool {
+    for gid in &factory.groups {
+        if let Some(g) = state.groups.get(gid) {
+            if let Some(r) = gd.recipes.get(&g.recipe) {
+                if r.products.first().map(|(i, _)| i == ing).unwrap_or(false) {
+                    return true;
+                }
+            }
+        }
+    }
+    factory
+        .ports
+        .iter()
+        .filter_map(|pid| state.ports.get(pid))
+        .any(|p| p.direction == PortDirection::In && p.item == ing)
+}
+
 /// Empire-wide greedy per-item alternate-recipe ranking. Pure and read-only.
 ///
 /// One opportunity per unlocked alternate recipe whose product is made somewhere
-/// on a different recipe, whose ingredients are all sourceable empire-wide, and
-/// whose adopt-everywhere delta saves machines. Ranked by machines saved (minus
-/// the normalized retool estimate), then power saved, then input savings, then
-/// recipe class for determinism.
+/// on a different recipe and whose adopt-everywhere delta saves machines. A
+/// PLANNED group is counted only when the alt is locally sourceable in its
+/// factory (so advertised savings == adoptable savings); built groups always
+/// count (they re-source through `plan_replacement`). Ranked LEXICOGRAPHICALLY:
+/// machines saved (desc), then retool hours (asc), then power saved (desc), then
+/// input savings (desc), then recipe class — no cross-unit arithmetic.
 pub fn empire_optimize(
     state: &PlanState,
     gd: &GameData,
@@ -107,31 +131,6 @@ pub fn empire_optimize(
             .unwrap_or_else(|| class.into())
     };
 
-    // Empire sourceability (reuse T2's source_of idea, aggregated empire-wide):
-    // an ingredient is sourceable if some group makes it as its primary product,
-    // any factory declares an IN port for it, or it is a raw (non-craftable)
-    // item the map can extract.
-    let empire_produced: BTreeSet<&str> = state
-        .groups
-        .values()
-        .filter_map(|g| gd.recipes.get(&g.recipe))
-        .filter_map(|r| r.products.first())
-        .map(|(i, _)| i.as_str())
-        .collect();
-    let in_port_items: BTreeSet<&str> = state
-        .ports
-        .values()
-        .filter(|p| p.direction == PortDirection::In)
-        .map(|p| p.item.as_str())
-        .collect();
-    let craftable = |ing: &str| {
-        gd.recipes
-            .values()
-            .any(|r| !r.produced_in.is_empty() && r.products.iter().any(|(i, _)| i == ing))
-    };
-    let sourceable =
-        |ing: &str| empire_produced.contains(ing) || in_port_items.contains(ing) || !craftable(ing);
-
     let mut opps: Vec<AltOpportunity> = Vec::new();
     for alt in gd.recipes.values() {
         // Only UNLOCKED alternates are actionable now (W2b-B semantics).
@@ -142,11 +141,6 @@ pub fn empire_optimize(
             continue;
         };
         if product == POWER_ITEM || per_machine(alt, product) <= EPS {
-            continue;
-        }
-        // The alt must be fully sourceable empire-wide, else adopting it would
-        // dangle a supply chain the empire has no way to feed.
-        if !alt.ingredients.iter().all(|(ing, _)| sourceable(ing)) {
             continue;
         }
         let alt_machine = alt.produced_in.first().cloned().unwrap_or_default();
@@ -176,6 +170,27 @@ pub fn empire_optimize(
             let cur_rate = per_machine(current, product) * count as f64 * clock;
             if cur_rate <= EPS {
                 continue;
+            }
+            // Per-factory sourceability: a PLANNED group only counts toward the
+            // advertised savings when it could actually adopt the alt in place —
+            // i.e. every alt ingredient is locally sourceable in THIS factory (the
+            // exact gate the ◇ T2 adopt route applies). Built groups keep counting
+            // regardless: they route through `plan_replacement`, which re-solves a
+            // fresh ◇ replacement and sources the feed freely. This keeps the
+            // advertised savings == the adoptable savings (no phantom opportunity).
+            if g.status != Status::Built {
+                let sourceable_here = state
+                    .factories
+                    .get(&g.factory)
+                    .map(|f| {
+                        alt.ingredients
+                            .iter()
+                            .all(|(ing, _)| source_in_factory(state, gd, f, ing))
+                    })
+                    .unwrap_or(false);
+                if !sourceable_here {
+                    continue;
+                }
             }
             let new_exact = cur_rate / per_machine(alt, product);
             let new_count = new_exact.ceil().max(1.0) as u32;
@@ -246,15 +261,20 @@ pub fn empire_optimize(
         });
     }
 
-    // Rank: machines saved minus the normalized retool cost (primary), then
-    // power saved, then input savings (less intake = better), then recipe class.
+    // Rank LEXICOGRAPHICALLY (no unit-mismatched arithmetic — machines and hours
+    // are different units): most machines saved first, then the cheapest retool,
+    // then most power saved, then least added intake, then recipe class for a
+    // deterministic tie-break.
     opps.sort_by(|a, b| {
-        let score = |o: &AltOpportunity| o.machines_saved as f64 - o.retool_est_hours;
         let input_savings =
             |o: &AltOpportunity| -o.input_deltas.iter().map(|(_, v)| *v).sum::<f64>();
-        score(b)
-            .partial_cmp(&score(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        b.machines_saved
+            .cmp(&a.machines_saved)
+            .then_with(|| {
+                a.retool_est_hours
+                    .partial_cmp(&b.retool_est_hours)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| {
                 b.power_saved_mw
                     .partial_cmp(&a.power_saved_mw)

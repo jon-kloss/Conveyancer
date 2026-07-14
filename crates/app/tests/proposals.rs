@@ -468,6 +468,7 @@ fn wizard_produces_reviewable_partially_acceptable_proposal() {
             items: vec![("Desc_IronRod_C".into(), 30.0)],
             constraints: Default::default(),
             milestone: None,
+            pinned_recipes: Default::default(),
         },
     );
     let WizardOutcome::Proposal { proposal } = outcome else {
@@ -647,6 +648,7 @@ fn surplus_port_tapped_by_two_stages_yields_one_route() {
             items: vec![("Desc_IronPlateReinforced_C".into(), 2.0)],
             constraints: Default::default(),
             milestone: None,
+            pinned_recipes: Default::default(),
         },
     );
     let WizardOutcome::Proposal { proposal } = outcome else {
@@ -723,6 +725,7 @@ fn infeasible_returns_best_achievable_and_relaxations() {
                 ..Default::default()
             },
             milestone: None,
+            pinned_recipes: Default::default(),
         },
     );
     let WizardOutcome::Infeasible(inf) = outcome else {
@@ -752,6 +755,7 @@ fn raw_goal_builds_extraction_and_ship_site_that_accepts() {
             items: vec![("Desc_OreIron_C".into(), 120.0)],
             constraints: Default::default(),
             milestone: None,
+            pinned_recipes: Default::default(),
         },
     );
     let WizardOutcome::Proposal { proposal } = outcome else {
@@ -859,6 +863,7 @@ fn alternate_only_goal_is_infeasible_naming_alternates() {
             items: vec![("Desc_IronScrew_C".into(), 40.0)],
             constraints: Default::default(),
             milestone: None,
+            pinned_recipes: Default::default(),
         },
         &s.unlocked,
         s.plan_hash(),
@@ -900,6 +905,7 @@ fn alternate_only_goal_is_infeasible_naming_alternates() {
                 ..Default::default()
             },
             milestone: None,
+            pinned_recipes: Default::default(),
         },
         &s.unlocked,
         s.plan_hash(),
@@ -925,6 +931,7 @@ fn plan_hash_flags_staleness() {
             items: vec![("Desc_IronRod_C".into(), 10.0)],
             constraints: Default::default(),
             milestone: None,
+            pinned_recipes: Default::default(),
         },
     );
     let WizardOutcome::Proposal { proposal } = outcome else {
@@ -1120,6 +1127,7 @@ fn eval_reports_per_circuit_power_impact_for_a_touched_grid() {
             items: vec![("Desc_IronRod_C".into(), 30.0)],
             constraints: Default::default(),
             milestone: None,
+            pinned_recipes: Default::default(),
         },
     );
     let WizardOutcome::Proposal { proposal } = outcome else {
@@ -1253,6 +1261,7 @@ fn wizard_milestone_carries_into_proposal_and_persists() {
                     total: 2500.0,
                     rate: 30.0,
                 }),
+                pinned_recipes: Default::default(),
             },
         );
         let WizardOutcome::Proposal { proposal } = outcome else {

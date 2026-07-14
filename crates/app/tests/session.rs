@@ -2239,7 +2239,7 @@ fn plan_replacement_builds_refactor_proposal() {
     let old = import_built_ingot(&mut s, 0.0);
     let old_pos = s.state.factories[&old].position;
 
-    let proposal = s.plan_replacement(old.clone()).unwrap();
+    let proposal = s.plan_replacement(old.clone(), None).unwrap();
     assert_eq!(
         proposal.source,
         planner_core::proposals::ProposalSource::Refactor
@@ -2291,7 +2291,7 @@ fn accept_refactor_is_one_undo_step_and_old_built_untouched() {
         .map(|g| (g.id.clone(), g.clone()))
         .collect();
 
-    let proposal = s.plan_replacement(old.clone()).unwrap();
+    let proposal = s.plan_replacement(old.clone(), None).unwrap();
     let pid = s
         .edit(vec![Command::CreateProposal { proposal }])
         .unwrap()

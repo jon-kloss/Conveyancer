@@ -177,7 +177,7 @@ fn main() -> anyhow::Result<()> {
                 (Method::Post, "/api/cutover/plan") => {
                     let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     let fid = req["factory"].as_str().unwrap_or_default().to_string();
-                    match s.plan_replacement(fid) {
+                    match s.plan_replacement(fid, None) {
                         Ok(proposal) => match s.edit(vec![Command::CreateProposal { proposal }]) {
                             Ok(resp) => {
                                 let pid = resp.created.first().cloned().unwrap_or_default();
