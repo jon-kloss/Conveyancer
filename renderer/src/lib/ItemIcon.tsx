@@ -1,7 +1,7 @@
 // A recognizable item chip (colour + monogram) replacing the old hatch square.
 // Keeps the s20/s28/s40 size vocabulary of the placeholder it supersedes.
 import type { CSSProperties } from "react";
-import { itemAccent, itemMonogram } from "./itemIcon";
+import { itemAccent, itemMonogram } from "./itemChip";
 
 export default function ItemIcon({
   item,
