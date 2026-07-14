@@ -984,3 +984,179 @@ fn reimport_supersedes_stale_open_drift_proposals() {
     assert_eq!(s.state.proposals[&p1].status, ProposalStatus::Draft);
     assert!(!s.state.proposals.contains_key(&p2));
 }
+
+/// An in-sync re-import never writes, so an older drift diff stays Draft —
+/// but its SyncOps describe a save state that no longer exists. Accept keys
+/// on the last_import blob's proposal identity (the diff the NEWEST import
+/// drafted, null for in-sync) and refuses the moot one.
+#[test]
+fn in_sync_reimport_makes_stale_drift_unacceptable() {
+    use planner_core::proposals::ProposalStatus;
+    let mut s = Session::in_memory(None).unwrap();
+    let base = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+    ];
+    s.import_save(snapshot(base.clone())).unwrap();
+
+    // Drift: the bank grew to 3.
+    let grown = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 110.0, 80.0),
+    ];
+    let ImportOutcome::Drift { proposal: p1, .. } = s.import_save(snapshot(grown)).unwrap() else {
+        panic!("expected drift");
+    };
+
+    // The game caught back down (older save loaded): identical-to-built
+    // re-import is IN SYNC and writes nothing — hash unchanged, P1 untouched.
+    let hash = s.plan_hash();
+    assert!(matches!(
+        s.import_save(snapshot(base)).unwrap(),
+        ImportOutcome::InSync
+    ));
+    assert_eq!(s.plan_hash(), hash, "in-sync re-import never writes");
+    assert_eq!(s.state.proposals[&p1].status, ProposalStatus::Draft);
+
+    // ... yet its ×2 → ×3 SyncOp is moot now: accept is refused, named as such.
+    let err = s.accept_proposal(&p1).unwrap_err();
+    assert!(
+        format!("{err}").contains("superseded"),
+        "names the supersede: {err}"
+    );
+    assert_eq!(
+        s.state.proposals[&p1].status,
+        ProposalStatus::Draft,
+        "refused accept leaves the proposal untouched"
+    );
+    assert_eq!(
+        s.state
+            .groups
+            .values()
+            .find(|g| g.machine == "Build_SmelterMk1_C")
+            .unwrap()
+            .count,
+        2,
+        "the stale diff never rewrote the ◆ layer"
+    );
+}
+
+/// The identity gate keys on the blob's proposal id, so the diff the newest
+/// import drafted — the only one whose SyncOps match the save — accepts fine.
+#[test]
+fn current_drift_proposal_accepts_normally() {
+    let mut s = Session::in_memory(None).unwrap();
+    let base = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+    ];
+    s.import_save(snapshot(base)).unwrap();
+    let grown = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 110.0, 80.0),
+    ];
+    let ImportOutcome::Drift { proposal, .. } = s.import_save(snapshot(grown)).unwrap() else {
+        panic!("expected drift");
+    };
+    s.accept_proposal(&proposal).unwrap();
+    assert_eq!(
+        s.state
+            .groups
+            .values()
+            .find(|g| g.machine == "Build_SmelterMk1_C")
+            .unwrap()
+            .count,
+        3,
+        "current diff syncs the built layer"
+    );
+}
+
+/// The supersede sweep covers Reviewing too — a diff mid-review when the next
+/// import lands is just as stale as a Draft one.
+#[test]
+fn reimport_supersedes_reviewing_drift_proposal() {
+    use planner_core::commands::Command;
+    use planner_core::proposals::ProposalStatus;
+    let mut s = Session::in_memory(None).unwrap();
+    let base = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+    ];
+    s.import_save(snapshot(base)).unwrap();
+    let drift1 = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 110.0, 80.0),
+    ];
+    let ImportOutcome::Drift { proposal: p1, .. } = s.import_save(snapshot(drift1)).unwrap() else {
+        panic!("expected drift #1");
+    };
+    s.edit(vec![Command::SetProposalStatus {
+        id: p1.clone(),
+        status: ProposalStatus::Reviewing,
+    }])
+    .unwrap();
+
+    let drift2 = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 110.0, 80.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 30.0, 90.0),
+    ];
+    let ImportOutcome::Drift { proposal: p2, .. } = s.import_save(snapshot(drift2)).unwrap() else {
+        panic!("expected drift #2");
+    };
+    assert_eq!(s.state.proposals[&p1].status, ProposalStatus::Rejected);
+    assert_eq!(s.state.proposals[&p2].status, ProposalStatus::Draft);
+    assert!(s.accept_proposal(&p1).is_err(), "closed = unacceptable");
+}
+
+/// The supersede sweep is SaveReimport-scoped: an open draft from any other
+/// source rides through a drift import untouched.
+#[test]
+fn drift_import_leaves_non_reimport_drafts_open() {
+    use planner_core::proposals::{Proposal, ProposalSource, ProposalStatus};
+    let mut s = Session::in_memory(None).unwrap();
+    let base = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+    ];
+    s.import_save(snapshot(base)).unwrap();
+    let draft = Proposal {
+        id: planner_core::entities::new_id(),
+        source: ProposalSource::GlobalSolver,
+        title: "WIZARD DRAFT".into(),
+        goal: vec![],
+        status: ProposalStatus::Draft,
+        number: 0,
+        snapshot_time: "2026-07-10T00:00:00Z".into(),
+        input_hash: s.plan_hash(),
+        provenance: "test".into(),
+        items: vec![],
+        milestone: None,
+    };
+    let wizard_pid = s
+        .edit(vec![planner_core::commands::Command::CreateProposal {
+            proposal: draft,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+
+    let grown = vec![
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 60.0, 40.0),
+        m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 110.0, 80.0),
+    ];
+    let ImportOutcome::Drift { .. } = s.import_save(snapshot(grown)).unwrap() else {
+        panic!("expected drift");
+    };
+    assert_eq!(
+        s.state.proposals[&wizard_pid].status,
+        ProposalStatus::Draft,
+        "non-SaveReimport draft survives the sweep"
+    );
+    s.accept_proposal(&wizard_pid).unwrap();
+}

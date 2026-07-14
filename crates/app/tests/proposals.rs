@@ -1485,6 +1485,28 @@ fn accept_fails_loud_on_included_dependency_cycle() {
     assert!(s.state.routes.is_empty(), "no partial materialization");
 }
 
+/// A dependency id that names no item in the proposal counts as satisfied —
+/// the mirrored defaults in ordered_included/cycle_dropped — so a checked
+/// item with a dangling dep materializes instead of being dropped or read
+/// as a cycle.
+#[test]
+fn accept_treats_unknown_dependency_id_as_satisfied() {
+    let mut s = Session::in_memory(None).unwrap();
+    let a = bare_factory(&mut s, "A");
+    let b = bare_factory(&mut s, "B");
+    let mut item = power_route_item(&a, &b);
+    item.depends_on = vec!["no-such-id".into()];
+    let pid = store_proposal(&mut s, vec![item]);
+
+    s.accept_proposal(&pid).unwrap();
+    assert_eq!(s.state.proposals[&pid].status, ProposalStatus::Accepted);
+    assert_eq!(
+        s.state.routes.len(),
+        1,
+        "dangling dep is satisfied — the item materializes"
+    );
+}
+
 /// The documented skip stays intact: an included item whose dependency is
 /// UNCHECKED is silently skipped (that is reviewer intent, not a cycle).
 #[test]

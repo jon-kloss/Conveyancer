@@ -108,6 +108,28 @@ pub struct ChatReply {
     pub engine: String,
 }
 
+/// Normalize a human rate token for `f64::parse`. A comma is thousands
+/// grouping only when the integer part has that exact shape — 1–3 leading
+/// digits then all-numeric 3-digit blocks ("1,000", "1,000.5") — in which
+/// case the commas are stripped; any other comma is a decimal comma
+/// ("22,5" → "22.5"), never a magnitude-inflating strip.
+fn normalize_rate(token: &str) -> String {
+    let int_part = token.split('.').next().unwrap_or(token);
+    let mut blocks = int_part.split(',');
+    let head = blocks.next().unwrap_or("");
+    let head_ok = (1..=3).contains(&head.len()) && head.chars().all(|c| c.is_ascii_digit());
+    let mut grouped = false;
+    let tail_ok = blocks.all(|b| {
+        grouped = true;
+        b.len() == 3 && b.chars().all(|c| c.is_ascii_digit())
+    });
+    if head_ok && grouped && tail_ok {
+        token.replace(',', "")
+    } else {
+        token.replace(',', ".")
+    }
+}
+
 /// The offline chat engine. With a key, a model would produce the prose and
 /// `proposal_intent` blocks — the materialization path below stays identical.
 pub fn chat(s: &mut Session, _scope: &ContextScope, message: &str) -> ChatReply {
@@ -133,11 +155,12 @@ pub fn chat(s: &mut Session, _scope: &ContextScope, message: &str) -> ChatReply 
         if let Some((item_part, rate_part)) = rest.split_once(" at ") {
             // Take the first token, THEN strip "/min" — trailing words after the
             // suffix ("… at 30/min please") must not defeat the strip. Accept a
-            // comma decimal ("22,5") as a courtesy.
+            // comma decimal ("22,5") and thousands grouping ("1,000") as a
+            // courtesy.
             let rate: f64 = rate_part
                 .split_whitespace()
                 .next()
-                .map(|t| t.trim_end_matches("/min").replace(',', "."))
+                .map(|t| normalize_rate(t.trim_end_matches("/min")))
                 .and_then(|t| t.parse().ok())
                 .unwrap_or(0.0);
             let item = s
