@@ -5,3 +5,4 @@ dev-world.ficsit*
 *.sqlite
 renderer/test-results/
 renderer/playwright-report/
+renderer/tsconfig.tsbuildinfo
