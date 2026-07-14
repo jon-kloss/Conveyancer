@@ -1,14 +1,19 @@
-// Top-down machine footprints in meters (width × length), community-documented
-// build dimensions. Rendered at one shared scale so relative size reads
-// truthfully across machines. Docs.json carries no dimensions — this table is
-// the presentation-side source until pak extraction lands (v2, SDD §7).
+// Top-down machine footprints in meters (width × length). The primary source
+// is the catalog's Docs-derived clearance footprint (gamedata parses
+// mClearanceData → Machine.footprintM); this community-documented table is
+// the fallback for catalogs without clearance data. Rendered at one shared
+// scale so relative size reads truthfully across machines.
+
+import type { GameData } from "../state/types";
 
 export interface Footprint {
   w: number;
   l: number;
+  /** true when the dims come from the game's own clearance data. */
+  derived: boolean;
 }
 
-const FOOTPRINTS: Record<string, Footprint> = {
+const FOOTPRINTS: Record<string, { w: number; l: number }> = {
   Build_SmelterMk1_C: { w: 6, l: 9 },
   Build_ConstructorMk1_C: { w: 8, l: 10 },
   Build_AssemblerMk1_C: { w: 10, l: 15 },
@@ -29,16 +34,23 @@ const FOOTPRINTS: Record<string, Footprint> = {
   Build_MinerMk3_C: { w: 6, l: 14 },
 };
 
-const FALLBACK: Footprint = { w: 8, l: 8 };
+const FALLBACK = { w: 8, l: 8 };
 
-export function footprintOf(machineClass: string): Footprint {
-  return FOOTPRINTS[machineClass] ?? FALLBACK;
+/** Docs-derived clearance footprint when the catalog carries one (the honest,
+ *  machine-exact number), else the community table estimate. */
+export function footprintFor(gamedata: GameData, machineClass: string): Footprint {
+  const fp = gamedata.machines[machineClass]?.footprintM;
+  if (fp) return { w: fp[0], l: fp[1], derived: true };
+  return { ...(FOOTPRINTS[machineClass] ?? FALLBACK), derived: false };
 }
 
 /** Shared render scale: px per meter in the card footprint strip. */
 export const FOOTPRINT_SCALE = 1.1;
 
-export function footprintArea(machineClass: string, count: number): number {
-  const f = footprintOf(machineClass);
+/** Outline long side stays ≤ this many px — real clearance data includes
+ *  giants (Nuclear Plant 36×42 m) that would otherwise swallow the card. */
+export const FOOTPRINT_MAX_PX = 26;
+
+export function footprintArea(f: Footprint, count: number): number {
   return f.w * f.l * count;
 }

@@ -77,6 +77,12 @@ pub struct Machine {
     pub class_name: String,
     pub display_name: String,
     pub power_mw: f64,
+    /// Top-down build footprint (width, depth) in meters, ~1 decimal —
+    /// derived from Docs.json `mClearanceData` (union bounding box over the
+    /// clearance boxes, centimeters ÷ 100). None when the catalog carries no
+    /// clearance data (older trimmed fixtures) — honest absence, never 0×0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footprint_m: Option<(f64, f64)>,
     #[serde(flatten)]
     pub kind: MachineKind,
 }
@@ -212,6 +218,52 @@ fn f(v: &Value, key: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Top-down build footprint from an FG `mClearanceData` string: the union
+/// bounding box over every `ClearanceBox` `Min=(…)`/`Max=(…)` pair
+/// (centimeters), returned as (width, depth) in meters rounded to one
+/// decimal. None when the string holds no parseable box (absent key on
+/// trimmed fixtures / decor classes).
+fn parse_clearance_footprint(raw: &str) -> Option<(f64, f64)> {
+    /// First number after `key` in `s` (`X=-800.000000,…` → -800.0).
+    fn axis(s: &str, key: &str) -> Option<f64> {
+        s.split(key)
+            .nth(1)?
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+            .collect::<String>()
+            .parse()
+            .ok()
+    }
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut boxes = 0usize;
+    // Only ClearanceBox carries a Min=(…)/Max=(…) pair (transforms use
+    // Translation/Rotation), so anchoring on those keys is unambiguous.
+    for chunk in raw.split("Min=(").skip(1) {
+        let Some((min_part, max_part)) = chunk.split_once("Max=(") else {
+            continue;
+        };
+        let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
+            axis(min_part, "X="),
+            axis(min_part, "Y="),
+            axis(max_part, "X="),
+            axis(max_part, "Y="),
+        ) else {
+            continue;
+        };
+        min_x = min_x.min(x0);
+        min_y = min_y.min(y0);
+        max_x = max_x.max(x1);
+        max_y = max_y.max(y1);
+        boxes += 1;
+    }
+    if boxes == 0 {
+        return None;
+    }
+    let meters = |cm: f64| (cm / 10.0).round() / 10.0; // cm → m at one decimal
+    Some((meters(max_x - min_x), meters(max_y - min_y)))
+}
+
 /// Pseudo-item carried by generator outputs: 1 "item/min" = 1 MW.
 /// Power is production (Addendum A2) — the ordinary solver handles it.
 pub const POWER_ITEM: &str = "__PowerMW";
@@ -343,6 +395,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         class_name: s(c, "ClassName"),
                         display_name: s(c, "mDisplayName"),
                         power_mw,
+                        footprint_m: parse_clearance_footprint(&s(c, "mClearanceData")),
                         kind: MachineKind::Manufacturer,
                     };
                     if !m.class_name.is_empty() {
@@ -359,6 +412,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         class_name: s(c, "ClassName"),
                         display_name: s(c, "mDisplayName"),
                         power_mw: f(c, "mPowerConsumption"),
+                        footprint_m: parse_clearance_footprint(&s(c, "mClearanceData")),
                         kind: MachineKind::Extractor {
                             items_per_cycle: f(c, "mItemsPerCycle"),
                             cycle_time_s: f(c, "mExtractCycleTime"),
@@ -405,6 +459,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                             class_name: class_name.clone(),
                             display_name: s(c, "mDisplayName"),
                             power_mw: 0.0, // generators draw nothing; they produce
+                            footprint_m: parse_clearance_footprint(&s(c, "mClearanceData")),
                             kind: MachineKind::Generator {
                                 power_production_mw: mw,
                             },
@@ -603,6 +658,14 @@ mod tests {
         assert!(!mf.alternate);
         assert!(gd.recipes["Recipe_Alternate_Screw_C"].alternate);
         assert_eq!(gd.belts["Build_ConveyorBeltMk3_C"].capacity_per_min, 270.0);
+        // mClearanceData on the fixture constructor → real derived footprint;
+        // classes without the key stay honestly None.
+        assert_eq!(
+            gd.machines["Build_ConstructorMk1_C"].footprint_m,
+            Some((8.0, 10.0)),
+            "constructor clearance union: 800×1000 cm → 8×10 m"
+        );
+        assert_eq!(gd.machines["Build_SmelterMk1_C"].footprint_m, None);
         let miner = &gd.machines["Build_MinerMk1_C"];
         assert_eq!(extraction_rate(miner, "normal", 1.0), 60.0);
         assert_eq!(extraction_rate(miner, "pure", 1.0), 120.0);
@@ -640,6 +703,40 @@ mod tests {
         assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
         assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
         assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
+    }
+
+    #[test]
+    fn footprint_unions_all_clearance_boxes() {
+        // Verbatim Build_QuantumEncoder_C mClearanceData from the real
+        // 1.0.0.5 Docs.json — six boxes, incl. CT_Soft attachments. Union:
+        // X −1100…1100 cm → 22.0 m wide, Y −2700…2300 cm → 50.0 m deep.
+        let qe = "((ClearanceBox=(Min=(X=-800.000000,Y=-2100.000000,Z=0.000000),Max=(X=800.000000,Y=-1000.000000,Z=450.000000),IsValid=True)),(ClearanceBox=(Min=(X=-1100.000000,Y=-1000.000000,Z=0.000000),Max=(X=1100.000000,Y=1000.000000,Z=1400.000000),IsValid=True)),(ClearanceBox=(Min=(X=-450.000000,Y=-2700.000000,Z=0.000000),Max=(X=450.000000,Y=-2100.000000,Z=500.000000),IsValid=True)),(ClearanceBox=(Min=(X=-600.000000,Y=1000.000000,Z=0.000000),Max=(X=600.000000,Y=2300.000000,Z=500.000000),IsValid=True)),(Type=CT_Soft,ClearanceBox=(Min=(X=-50.000000,Y=-30.000000,Z=0.000000),Max=(X=30.000000,Y=30.000000,Z=270.000000),IsValid=True),RelativeTransform=(Translation=(X=860.000000,Y=-2030.000000,Z=250.000000)),ExcludeForSnapping=True),(Type=CT_Soft,ClearanceBox=(Min=(X=-200.000000,Y=-2000.000000,Z=0.000000),Max=(X=500.000000,Y=-1700.000000,Z=270.000000),IsValid=True),RelativeTransform=(Translation=(X=-690.000000,Y=20.000000,Z=450.000000)),ExcludeForSnapping=True))";
+        assert_eq!(parse_clearance_footprint(qe), Some((22.0, 50.0)));
+    }
+
+    #[test]
+    fn footprint_single_box_rounds_to_one_decimal() {
+        // One box, non-round centimeters: 812.5 cm × 1993 cm → 8.1 × 19.9 m.
+        let one = "((ClearanceBox=(Min=(X=-406.250000,Y=-996.500000,Z=0.000000),Max=(X=406.250000,Y=996.500000,Z=450.000000),IsValid=True)))";
+        assert_eq!(parse_clearance_footprint(one), Some((8.1, 19.9)));
+    }
+
+    #[test]
+    fn footprint_none_when_clearance_absent() {
+        assert_eq!(parse_clearance_footprint(""), None);
+        assert_eq!(parse_clearance_footprint("()"), None);
+        // A machine class without the key parses with footprint_m: None —
+        // honest absence (trimmed fixtures), never an invented 0×0.
+        let text = r#"[
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableManufacturer'",
+            "Classes": [
+              { "ClassName": "Build_Bare_C", "mDisplayName": "Bare", "mPowerConsumption": "4.0" }
+            ]
+          }
+        ]"#;
+        let gd = parse_docs(text, "test").unwrap();
+        assert_eq!(gd.machines["Build_Bare_C"].footprint_m, None);
     }
 
     #[test]

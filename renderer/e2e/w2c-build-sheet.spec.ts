@@ -93,6 +93,12 @@ test("build sheet: derived spec renders + clipboard copy", async ({ page, reques
   await page.getByTestId("btn-open-factory").click();
   await expect(page.getByTestId("graph-root")).toBeVisible();
 
+  // Group card carries the machine footprint derived from the catalog's
+  // clearance data (fixture Constructor: 8 × 10 m), not a placeholder.
+  await expect(page.getByTestId("group-Recipe_IronRod_C")).toContainText(
+    /\d+(\.\d+)? × \d+(\.\d+)? m/,
+  );
+
   // ---- open the BUILD SHEET ----
   await page.getByTestId("btn-build-sheet").click();
   const sheet = page.getByTestId("build-sheet");
@@ -125,6 +131,9 @@ test("build sheet: derived spec renders + clipboard copy", async ({ page, reques
   const clip = await page.evaluate(() => navigator.clipboard.readText());
   expect(clip).toContain("BSHEET ROD DEPOT");
   expect(clip).toContain("4× Constructor");
+  // Per-machine footprint rides the machine stage line — players size
+  // foundation pads with this (Docs clearance data: Constructor 8 × 10 m).
+  expect(clip).toContain("· 8 × 10 m each");
   expect(clip).toContain("MACHINES");
   expect(clip).toContain("BSHEET SCREW DEPOT");
 });

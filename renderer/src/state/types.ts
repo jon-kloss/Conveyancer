@@ -237,7 +237,15 @@ export interface GameRecipe {
   /** Average sustained draw override for variable-power machines (absent for fixed-power recipes). */
   variablePowerMw?: number | null;
 }
-export interface GameMachine { className: string; displayName: string; powerMw: number; kind: string }
+export interface GameMachine {
+  className: string;
+  displayName: string;
+  powerMw: number;
+  kind: string;
+  /** Top-down build footprint [width, depth] in meters, derived from Docs.json
+   *  clearance data (absent on catalogs without mClearanceData). */
+  footprintM?: [number, number] | null;
+}
 export interface GameBelt { className: string; displayName: string; capacityPerMin: number; tier: number }
 
 export interface GameBuildable { className: string; displayName: string; nativeClass: string }

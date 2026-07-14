@@ -22,6 +22,14 @@ against satisfactory-calculator.com's 1.1 map data.
 `crates/gamedata/assets/world-nodes.json` is generated from it by
 `scripts/gen-world-nodes.py`.
 
+## Item & machine icons — `renderer/public/icons/*.png`
+
+64px item/building icons extracted from the game by the
+[SatisfactoryTools](https://github.com/greeny/SatisfactoryTools) project by
+greeny (vendored from its `www/assets/images/items` set by
+`scripts/fetch-icons.mjs`). The icon imagery itself is game content
+© Coffee Stain Studios AB, used here as a non-commercial planning aid.
+
 ### MIT license (Hirashi3630/satisfactory_node_heatmap)
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy

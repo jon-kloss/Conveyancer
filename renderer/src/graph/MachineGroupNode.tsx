@@ -5,8 +5,8 @@
 import { Handle, Position } from "@xyflow/react";
 import { useStore } from "../state/store";
 import { fmtClock, fmtPower, fmtRate } from "../lib/format";
-import { footprintOf, FOOTPRINT_SCALE } from "./footprints";
-import { POWER_ITEM, type MachineGroup } from "../state/types";
+import { footprintFor, FOOTPRINT_MAX_PX, FOOTPRINT_SCALE } from "./footprints";
+import { POWER_ITEM, type GameData, type MachineGroup } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
 
 export interface GroupNodeData {
@@ -17,14 +17,27 @@ export interface GroupNodeData {
 }
 
 /** Top-down outlines at one shared px-per-meter scale — relative machine size
- *  reads truthfully across cards. Capped at 12 outlines with a +n overflow. */
-function FootprintStrip({ machine, count }: { machine: string; count: number }) {
-  const f = footprintOf(machine);
-  const w = Math.max(5, Math.round(f.w * FOOTPRINT_SCALE));
-  const l = Math.max(5, Math.round(f.l * FOOTPRINT_SCALE));
+ *  reads truthfully across cards (a giant's outline caps at FOOTPRINT_MAX_PX
+ *  so the card survives real clearance data). Dims come from the catalog's
+ *  clearance footprint when it carries one, else the community estimate.
+ *  Capped at 12 outlines with a +n overflow. */
+function FootprintStrip({
+  gamedata,
+  machine,
+  count,
+}: {
+  gamedata: GameData;
+  machine: string;
+  count: number;
+}) {
+  const f = footprintFor(gamedata, machine);
+  const scale = Math.min(FOOTPRINT_SCALE, FOOTPRINT_MAX_PX / Math.max(f.w, f.l));
+  const w = Math.max(5, Math.round(f.w * scale));
+  const l = Math.max(5, Math.round(f.l * scale));
   const shown = Math.min(count, 12);
+  const source = f.derived ? "game clearance data" : "community estimate";
   return (
-    <div className="fp-strip" title={`${f.w}×${f.l} m each — top-down footprint`}>
+    <div className="fp-strip" title={`${f.w} × ${f.l} m each — top-down footprint (${source})`}>
       <div className="fp-outlines">
         {Array.from({ length: shown }, (_, i) => (
           <span key={i} className="fp-box" style={{ width: w, height: l }} />
@@ -32,7 +45,7 @@ function FootprintStrip({ machine, count }: { machine: string; count: number }) 
         {count > shown && <span className="fp-more mono">+{count - shown}</span>}
       </div>
       <span className="fp-dims mono">
-        {f.w}×{f.l}M
+        {f.w} × {f.l} m
       </span>
     </div>
   );
@@ -65,7 +78,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
     <div className={`group-card frame-${group.status} ${selected ? "selected" : ""}`} data-testid={`group-${group.recipe}`}>
       <Handle type="target" position={Position.Left} className="belt-handle" />
       <header className="group-card-head">
-        <div className="icon-ph s20" />
+        <ItemIcon item={group.machine} displayName={machine} size={20} />
         <span className="group-card-name">
           {machine.toUpperCase()} <span className={`mono ${numCls}`}>×{group.count}</span>
           {deltaCount !== null && <span className="mono projected"> ➜ ×{deltaCount}</span>}
@@ -92,7 +105,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
           )}
         </span>
       </div>
-      <FootprintStrip machine={group.machine} count={deltaCount ?? group.count} />
+      <FootprintStrip gamedata={gamedata} machine={group.machine} count={deltaCount ?? group.count} />
       <footer className="group-card-foot mono">
         <span>IN {recipe?.ingredients.length ?? 0}</span>
         <span>OUT {recipe?.products.length ?? 0}</span>

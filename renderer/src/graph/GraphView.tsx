@@ -30,6 +30,7 @@ import AddGroupMenu from "./AddGroupMenu";
 import AddPortMenu from "./AddPortMenu";
 import BuildSheet from "./BuildSheet";
 import { fmtPower } from "../lib/format";
+import ItemIcon from "../lib/ItemIcon";
 import { isEditableTarget } from "../lib/keys";
 import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
 import FloorPlates from "./FloorPlates";
@@ -700,7 +701,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
                       setLogisticMenu(false);
                     }}
                   >
-                    <div className="icon-ph s20" />
+                    <ItemIcon item={cls} displayName={name} size={20} />
                     <span>{name}</span>
                   </button>
                 );

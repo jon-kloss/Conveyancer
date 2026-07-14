@@ -236,6 +236,7 @@ button {
   letter-spacing: -0.02em;
   overflow: hidden;
 }
+.item-chip img { display: block; } /* vendored icon fills the tile, no baseline gap */
 .item-chip.s20 { width: 20px; height: 20px; font-size: 9px; }
 .item-chip.s28 { width: 28px; height: 28px; font-size: 11px; }
 .item-chip.s40 { width: 40px; height: 40px; font-size: 15px; }

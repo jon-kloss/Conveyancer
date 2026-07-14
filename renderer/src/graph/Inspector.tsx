@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, solveChip } from "../state/store";
 import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
-import { footprintOf, footprintArea } from "./footprints";
+import { footprintFor, footprintArea } from "./footprints";
 import { fmtClock, fmtPower, fmtRate } from "../lib/format";
 import { beltCapacity, effClock, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
@@ -220,8 +220,9 @@ export default function Inspector({
             <div className="drawer-row">
               <span className="drawer-row-name">Footprint</span>
               <span className="t-data-12">
-                {footprintOf(selectedGroup.machine).w}×{footprintOf(selectedGroup.machine).l} m · ×
-                {selectedGroup.count} → {fmtRate(footprintArea(selectedGroup.machine, selectedGroup.count))} m²
+                {footprintFor(gamedata, selectedGroup.machine).w} ×{" "}
+                {footprintFor(gamedata, selectedGroup.machine).l} m · ×{selectedGroup.count} →{" "}
+                {fmtRate(footprintArea(footprintFor(gamedata, selectedGroup.machine), selectedGroup.count))} m²
               </span>
             </div>
             <div className="insp-note">

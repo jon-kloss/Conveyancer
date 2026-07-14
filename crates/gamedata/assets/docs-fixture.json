@@ -256,7 +256,8 @@
     "ClassName": "Build_ConstructorMk1_C",
     "mDisplayName": "Constructor",
     "mPowerConsumption": "4.000000",
-    "mManufacturingSpeed": "1.000000"
+    "mManufacturingSpeed": "1.000000",
+    "mClearanceData": "((ClearanceBox=(Min=(X=-400.000000,Y=-500.000000,Z=0.000000),Max=(X=400.000000,Y=500.000000,Z=600.000000),IsValid=True)),(Type=CT_Soft,ClearanceBox=(Min=(X=-20.000000,Y=-20.000000,Z=0.000000),Max=(X=20.000000,Y=20.000000,Z=250.000000),IsValid=True),RelativeTransform=(Translation=(X=-165.000000,Y=-465.000000,Z=600.000000)),ExcludeForSnapping=True),(Type=CT_Soft,ClearanceBox=(Min=(X=-25.000000,Y=-25.000000,Z=0.000000),Max=(X=25.000000,Y=25.000000,Z=130.000000),IsValid=True),RelativeTransform=(Translation=(X=210.000000,Y=-465.000000,Z=600.000000)),ExcludeForSnapping=True))"
    },
    {
     "ClassName": "Build_AssemblerMk1_C",

@@ -24,7 +24,9 @@ pub enum DbError {
 ///    silently drop unlocked-alternate resolution.
 ///
 /// Absence of the key = stale, which covers every pre-existing cache.
-const SCHEMA_VERSION: &str = "2";
+/// v3: `Machine.footprint_m` (serde-default None) joined the persisted shape —
+/// pre-v3 blobs would silently read as "no clearance data".
+const SCHEMA_VERSION: &str = "3";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

@@ -89,6 +89,7 @@ export default function AddGroupMenu({
           // Burn recipes produce the pseudo power item — tag them with the
           // nameplate MW instead of repeating the generator's name.
           const isPower = r.products?.[0]?.[0] === "__PowerMW";
+          const machineCls = r.producedIn[0] ?? "";
           return (
             <button key={r.className} className="addgroup-item" onClick={() => add(r.className)}>
               <ItemIcon item={r.products?.[0]?.[0] ?? ""} displayName={r.displayName} size={20} />
@@ -96,8 +97,13 @@ export default function AddGroupMenu({
               <span className="mono addgroup-sub">
                 {isPower
                   ? `⚡ ${r.products[0][1]} MW`
-                  : gamedata.machines[r.producedIn[0]]?.displayName?.toUpperCase()}
+                  : gamedata.machines[machineCls]?.displayName?.toUpperCase()}
               </span>
+              <ItemIcon
+                item={machineCls}
+                displayName={gamedata.machines[machineCls]?.displayName}
+                size={20}
+              />
             </button>
           );
         })}
