@@ -40,7 +40,13 @@ function FootprintStrip({
     <div className="fp-strip" title={`${f.w} × ${f.l} m each — top-down footprint (${source})`}>
       <div className="fp-outlines">
         {Array.from({ length: shown }, (_, i) => (
-          <span key={i} className="fp-box" style={{ width: w, height: l }} />
+          <span key={i} className="fp-box" style={{ width: w, height: l }}>
+            {/* the machine render sits on the first pad; the rest stay bare
+                outlines so a ×12 bank reads as pads, not a sprite sheet */}
+            {i === 0 && (
+              <img src={`/icons/${machine}.png`} alt="" draggable={false} onError={(e) => e.currentTarget.remove()} />
+            )}
+          </span>
         ))}
         {count > shown && <span className="fp-more mono">+{count - shown}</span>}
       </div>

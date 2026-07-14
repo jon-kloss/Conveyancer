@@ -145,11 +145,23 @@
   max-width: 176px;
 }
 .fp-box {
-  /* top-down machine footprint — a solid block reads as a machine, not an
-     empty checkbox (the faint hatch vanished at these small sizes). */
-  border: 1px solid var(--steel-500);
+  /* top-down build pad: a crisp OUTLINE (a solid fill read as a broken-image
+     placeholder). The first pad carries the machine render clipped to the
+     pad's proportions — "the machine on its foundation"; siblings stay bare. */
+  border: 1px solid var(--steel-400);
   border-radius: 1px;
-  background: var(--steel-600);
+  background: var(--steel-900);
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.fp-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: auto;
+  opacity: 0.95;
 }
 .fp-more {
   font-size: 9px;
