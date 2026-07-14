@@ -31,10 +31,18 @@ export default function RouteDrawer({ route }: { route: Route }) {
   const sat = dr?.saturation ?? 0;
   const level = sat >= 0.95 ? "crit" : sat >= 0.7 ? "warn" : "";
 
+  // Header tile: the routed item (single-item manifests in v1). An empty
+  // manifest keeps the placeholder — there is nothing honest to show.
+  const routedItem = route.manifest[0]?.[0] ?? null;
+
   return (
     <aside className="drawer summary-drawer" data-testid="route-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        {routedItem ? (
+          <ItemIcon item={routedItem} displayName={gamedata.items[routedItem]?.displayName} size={40} />
+        ) : (
+          <div className="icon-ph s40" />
+        )}
         <div className="drawer-title-block">
           <div className="t-title">BELT ROUTE</div>
           <div className="mono drawer-sub">
@@ -313,11 +321,17 @@ function TransportDrawer({ route }: { route: Route }) {
   const truck = route.kind.kind === "truck" ? route.kind.spec : null;
   const drone = route.kind.kind === "drone" ? route.kind.spec : null;
   const short = throughput > 0 && demand > throughput + 1e-6;
+  // Header tile: the routed item (rail manifests are single-item in v1).
+  const routedItem = route.manifest[0]?.[0] ?? null;
 
   return (
     <aside className="drawer summary-drawer" data-testid="route-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        {routedItem ? (
+          <ItemIcon item={routedItem} displayName={gamedata.items[routedItem]?.displayName} size={40} />
+        ) : (
+          <div className="icon-ph s40" />
+        )}
         <div className="drawer-title-block">
           <div className="t-title">{title}</div>
           <div className="mono drawer-sub">

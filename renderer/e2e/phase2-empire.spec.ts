@@ -177,6 +177,12 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await expect(page.getByTestId("route-drawer")).toContainText("BELT ROUTE");
   await expect(page.getByTestId("route-drawer")).toContainText("Iron Ingot");
 
+  // the drawer header carries the routed item's REAL icon (not a placeholder):
+  // an actually-loaded <img> inside the ItemIcon chip
+  const headerIcon = page.getByTestId("route-drawer").locator(".drawer-header .item-chip img");
+  await expect(headerIcon).toBeVisible();
+  expect(await headerIcon.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+
   // tier changes re-derive capacity (MK.1 = 60/min)
   await page.getByTestId("route-tier-select").selectOption("1");
   await expect(page.getByTestId("route-drawer")).toContainText("60/min CAP");

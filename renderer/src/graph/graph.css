@@ -400,6 +400,33 @@
   font-weight: 700;
 }
 
+/* ---- animated flow (MOTION = THROUGHPUT) ----
+   A neutral-ink dash overlay travels along flowing belts; the base edge keeps
+   its status color and weight untouched — motion is an orthogonal channel.
+   Speed comes from utilization via --flow-speed (set inline per edge);
+   the keyframe travels exactly one dash period (5 + 13 = 18px), so the loop
+   is seamless. Negative dashoffset moves dashes source→target. */
+.edge-flowing {
+  fill: none;
+  stroke: var(--ink-100);
+  stroke-opacity: 0.45;
+  stroke-width: 2;
+  stroke-dasharray: 5 13;
+  stroke-linecap: round;
+  pointer-events: none;
+  animation: edge-flow var(--flow-speed, 2s) linear infinite;
+}
+@keyframes edge-flow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .edge-flowing {
+    animation: none;
+  }
+}
+
 /* ---- belt labels ---- */
 .belt-label {
   position: absolute;

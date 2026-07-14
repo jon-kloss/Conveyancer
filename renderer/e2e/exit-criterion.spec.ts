@@ -212,6 +212,11 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   // belt saturation coloring: labels show n/cap · %
   await expect(page.locator(".belt-label").first()).toContainText("%");
 
+  // MOTION = THROUGHPUT: with the chain solved every belt carries flow, so
+  // every edge gains the animated moving-dash overlay path. (No deterministic
+  // idle edge exists at this point — the whole chain feeds the target.)
+  await expect(page.locator("path.edge-flowing")).toHaveCount(9);
+
   // belts are orthogonal runs (edgeLayout), not beziers: no cubic segments
   const edgePath = await page.locator(".react-flow__edge path").first().getAttribute("d");
   expect(edgePath).not.toContain("C");

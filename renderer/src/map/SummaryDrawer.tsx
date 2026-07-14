@@ -32,11 +32,20 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
   // Distinct product lines this factory ships — drives the multi-output guidance.
   const outputLines = new Set(outputs.map((p) => p.item)).size;
   const projected = factory.status === "planned" ? "projected" : "";
+  // Header tile: the dominant OUTPUT item — what this factory ships (highest
+  // derived rate wins). A factory with no outputs yet keeps the placeholder.
+  const dominant = outputs.length
+    ? [...outputs].sort((a, b) => (df?.ports[b.id] ?? b.rate) - (df?.ports[a.id] ?? a.rate))[0]
+    : null;
 
   return (
     <aside className="drawer summary-drawer" data-testid="summary-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        {dominant ? (
+          <ItemIcon item={dominant.item} displayName={gamedata.items[dominant.item]?.displayName} size={40} />
+        ) : (
+          <div className="icon-ph s40" />
+        )}
         <div className="drawer-title-block">
           {editingName ? (
             <input

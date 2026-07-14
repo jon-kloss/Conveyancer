@@ -3,6 +3,7 @@
 // orthogonal runs from edgeLayout (consistent anchors, rounded corners, hop
 // arcs over crossed belts). Cross-floor belts are lifts (⇅).
 
+import type { CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { flowLevel } from "../lib/format";
 import { fmtRate, fmtPercent } from "../lib/format";
@@ -40,6 +41,14 @@ const STROKE = {
   crit: { width: 6, dash: "6 4", color: "var(--flow-crit)" },
 } as const;
 
+/** MOTION = THROUGHPUT: animation-duration for one dash period, mapped from
+ *  utilization — ~4s trickle at 0% up to 0.8s when saturated (clamped). The
+ *  keyframes travel a fixed 18px period, so speed scales inversely. */
+function flowSpeed(saturation: number): string {
+  const u = Math.max(0, Math.min(1, saturation));
+  return `${(4 - 3.2 * u).toFixed(2)}s`;
+}
+
 export default function BeltEdgeView(props: EdgeProps) {
   const data = props.data as BeltEdgeData;
 
@@ -65,6 +74,10 @@ export default function BeltEdgeView(props: EdgeProps) {
   const capacity = beltCapacity(data.edge.tier);
   const s = data.flowOverlay ? STROKE[level] : { width: 2, dash: undefined, color: "var(--steel-500)" };
   const isCrit = data.flowOverlay && level === "crit";
+  // MOTION = THROUGHPUT: only edges with derived flow > 0 animate; idle belts
+  // stay static. Motion rides a separate neutral-ink overlay path so the base
+  // line keeps its status color + weight (color stays status-only).
+  const flowing = data.flowOverlay && data.flow > 0;
   // Very short belts can't carry the full chip — compact to the saturation %
   // (the load signal), full detail on hover and in the inspector. CRIT belts
   // always show the full chip: the alarm outranks tidiness.
@@ -128,6 +141,21 @@ export default function BeltEdgeView(props: EdgeProps) {
           opacity: data.dimmed ? 0.15 : 1,
         }}
       />
+      {flowing && (
+        // moving-highlight overlay: dashes travel source→target (negative
+        // dashoffset animation along the RF source→target path direction)
+        <path
+          d={path}
+          className="edge-flowing"
+          data-testid={`edge-flowing-${data.edge.id}`}
+          style={
+            {
+              "--flow-speed": flowSpeed(data.saturation),
+              opacity: data.dimmed ? 0.15 : undefined,
+            } as CSSProperties
+          }
+        />
+      )}
       {pads.map((pt, i) => (
         // lift pads: square nubs where a cross-floor belt meets its cards
         <rect
