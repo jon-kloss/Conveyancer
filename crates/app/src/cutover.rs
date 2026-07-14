@@ -27,7 +27,7 @@ use serde::Serialize;
 
 use gamedata::docs::GameData;
 
-use crate::buildqueue::{derive_build_queue, BuildStepState};
+use crate::buildqueue::{derive_build_queue, BuildStep, BuildStepState};
 
 /// Minutes of downtime attributed to tearing down one machine — a DOCUMENTED
 /// estimate (Principle 10: the production *rate* in a dip is computed and honest;
@@ -180,13 +180,20 @@ pub(crate) fn supplied_items(state: &PlanState, factory: &Factory) -> Vec<String
     items
 }
 
-/// Derive every cutover from canonical state. Pure over `(state, gamedata)`.
-pub fn derive_cutovers(state: &PlanState, gd: &GameData) -> Vec<Cutover> {
+/// Derive every cutover from canonical state, reusing an ALREADY-COMPUTED build
+/// queue (the empire-solve path computes it once into `derived.build_queue` and
+/// hands it here, avoiding a second `derive_build_queue` pass). Pure over
+/// `(state, gamedata, build_steps)`.
+pub fn derive_cutovers_with(
+    state: &PlanState,
+    gd: &GameData,
+    build_steps_queue: &[BuildStep],
+) -> Vec<Cutover> {
     // Build-queue completion for the BuildNew phase, indexed by step id.
     let build_steps: std::collections::BTreeMap<Id, (BuildStepState, bool, bool)> =
-        derive_build_queue(state, gd)
-            .into_iter()
-            .map(|s| (s.id, (s.state, s.done, s.overridden)))
+        build_steps_queue
+            .iter()
+            .map(|s| (s.id.clone(), (s.state, s.done, s.overridden)))
             .collect();
 
     let resolve_override = |id: &Id, derived_done: bool| -> (bool, bool) {
@@ -315,6 +322,14 @@ pub fn derive_cutovers(state: &PlanState, gd: &GameData) -> Vec<Cutover> {
             .then_with(|| a.new_factory.cmp(&b.new_factory))
     });
     cutovers
+}
+
+/// Derive every cutover from canonical state. Pure over `(state, gamedata)`.
+/// Thin wrapper for on-demand callers (dissolve path, `cutover_plan`) that don't
+/// already hold a build queue — it computes one and delegates to
+/// [`derive_cutovers_with`].
+pub fn derive_cutovers(state: &PlanState, gd: &GameData) -> Vec<Cutover> {
+    derive_cutovers_with(state, gd, &derive_build_queue(state, gd))
 }
 
 /// Shape canonical state to a phase boundary `k` for a downtime scratch-solve.

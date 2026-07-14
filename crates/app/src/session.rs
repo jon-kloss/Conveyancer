@@ -722,33 +722,47 @@ impl Session {
                 ));
             }
         }
-        // Per-circuit before→after power (mock 3a banner). Match each after
-        // circuit to its before self by LARGEST member-set overlap — the grid
-        // `name` is index-based and renumbers when sites are added. No overlap
-        // ⇒ a newly-formed grid (delta = the full after values).
-        let mut circuit_impacts: Vec<CircuitImpact> = Vec::new();
-        for ac in &after.circuits {
-            let after_set: std::collections::BTreeSet<&Id> = ac.members.iter().collect();
-            let matched = before
+        // Per-circuit before→after power (mock 3a banner). Grid `name` is
+        // index-based and renumbers when sites are added, so membership overlap —
+        // not name — is the identity link. Attribute each BEFORE grid to its
+        // PRIMARY destination (the after grid it shares the most members with),
+        // then aggregate per after grid: a MERGE sums its sources' demand/gen and
+        // a SPLIT attributes the whole before grid to ONE child, so the sibling
+        // reads as newly-formed (no double-counting). This replaces a per-after
+        // single-match that mis-summed both directions. No before grid maps to an
+        // after ⇒ that grid is newly-formed (before = 0, delta = full after values).
+        type BeforeAgg<'a> = (f64, f64, std::collections::BTreeSet<&'a Id>);
+        let mut before_for_after: std::collections::BTreeMap<usize, BeforeAgg> =
+            std::collections::BTreeMap::new();
+        for bc in &before.circuits {
+            let bc_set: std::collections::BTreeSet<&Id> = bc.members.iter().collect();
+            let primary = after
                 .circuits
                 .iter()
-                .map(|bc| {
-                    let overlap = bc.members.iter().filter(|m| after_set.contains(m)).count();
-                    (overlap, bc)
+                .enumerate()
+                .map(|(i, ac)| {
+                    let overlap = ac.members.iter().filter(|m| bc_set.contains(m)).count();
+                    (overlap, i)
                 })
                 .filter(|(overlap, _)| *overlap > 0)
                 .max_by_key(|(overlap, _)| *overlap)
-                .map(|(_, bc)| bc);
-            let (demand_before, gen_before, before_set) = match matched {
-                Some(bc) => (
-                    bc.demand_mw,
-                    bc.generation_mw,
-                    bc.members
-                        .iter()
-                        .collect::<std::collections::BTreeSet<&Id>>(),
-                ),
-                None => (0.0, 0.0, std::collections::BTreeSet::new()),
-            };
+                .map(|(_, i)| i);
+            if let Some(i) = primary {
+                let entry = before_for_after
+                    .entry(i)
+                    .or_insert_with(|| (0.0, 0.0, std::collections::BTreeSet::new()));
+                entry.0 += bc.demand_mw;
+                entry.1 += bc.generation_mw;
+                entry.2.extend(bc.members.iter());
+            }
+        }
+        let mut circuit_impacts: Vec<CircuitImpact> = Vec::new();
+        for (i, ac) in after.circuits.iter().enumerate() {
+            let after_set: std::collections::BTreeSet<&Id> = ac.members.iter().collect();
+            let (demand_before, gen_before, before_set) = before_for_after
+                .get(&i)
+                .map(|(d, g, s)| (*d, *g, s.clone()))
+                .unwrap_or((0.0, 0.0, std::collections::BTreeSet::new()));
             let touched = before_set != after_set
                 || (ac.demand_mw - demand_before).abs() > 1e-6
                 || (ac.generation_mw - gen_before).abs() > 1e-6;
@@ -982,14 +996,35 @@ impl Session {
             })
             .unwrap_or(false);
         let baseline_positive = baseline.values().any(|r| *r > EPS);
+        // Discriminate WHY nothing is produced. If every one of the old factory's
+        // group recipes resolves in the catalog, the factory is real but STARVED
+        // (its inputs aren't supplied in the current solve) — the fix is to route
+        // its feed. If any recipe is unknown, it's an imported factory the bundled
+        // fixture catalog can't solve — point the player at FICSIT_DOCS_JSON.
+        let recipes_known = self
+            .state
+            .factories
+            .get(&cutover.old_factory)
+            .map(|old| {
+                old.groups
+                    .iter()
+                    .filter_map(|gid| self.state.groups.get(gid))
+                    .all(|g| self.gamedata.recipes.contains_key(&g.recipe))
+            })
+            .unwrap_or(false);
         let (downtime_available, unavailable_reason) = if declared_positive && !baseline_positive {
-            (
-                false,
-                Some(format!(
+            let reason = if recipes_known {
+                format!(
+                    "{} produces nothing in the current solve — its inputs are starved; route its feed, then retry",
+                    cutover.old_name
+                )
+            } else {
+                format!(
                     "{} does not produce in the current solve — imported factories may need a real recipe catalog (set FICSIT_DOCS_JSON to your game's Docs.json)",
                     cutover.old_name
-                )),
-            )
+                )
+            };
+            (false, Some(reason))
         } else {
             (true, None)
         };
@@ -1004,11 +1039,22 @@ impl Session {
                 let rate = row.get(item).copied().unwrap_or(0.0);
                 if rate < base - EPS {
                     dips.push(Dip {
+                        // k=1 (Switch) is a TIMED teardown window — the machine-
+                        // count estimate is the honest wall-clock. k=2 (Dismantle)
+                        // is steady-state: a dip that persists there is a PERMANENT
+                        // shortfall (the new factory doesn't cover the old output),
+                        // not a timed window, so a wall-clock estimate would be a
+                        // lie — zero it. (The renderer labels the k=2 dip
+                        // "PERMANENT SHORTFALL" in batch D.)
+                        est_hours: if k < 2 {
+                            crate::cutover::est_hours(old_machines)
+                        } else {
+                            0.0
+                        },
                         phase: k as u8,
                         item: item.clone(),
                         rate,
                         baseline: base,
-                        est_hours: crate::cutover::est_hours(old_machines),
                     });
                 }
             }
@@ -1988,7 +2034,9 @@ impl Session {
         // recomputed here like circuits/deficits (no stored ordering entity).
         derived.build_queue = derive_build_queue(&self.state, &self.gamedata);
         // Cutovers: cheap presence/steps projection (no scratch-solves here).
-        derived.cutovers = derive_cutovers(&self.state, &self.gamedata);
+        // Reuse the queue just computed above rather than deriving it twice.
+        derived.cutovers =
+            crate::cutover::derive_cutovers_with(&self.state, &self.gamedata, &derived.build_queue);
         derived.recompute_us = started.elapsed().as_micros() as u64;
         derived
     }

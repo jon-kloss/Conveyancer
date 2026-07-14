@@ -1284,3 +1284,167 @@ fn wizard_milestone_carries_into_proposal_and_persists() {
         assert_eq!(m.rate, 30.0);
     }
 }
+
+/// A power-line proposal item that DELETES an existing route (for split tests).
+fn delete_route_item(route: &Id) -> ProposalItem {
+    ProposalItem {
+        id: new_id(),
+        kind: ProposalItemKind::Modify,
+        included: true,
+        label: "⚡ cut power line".into(),
+        detail: "grid split".into(),
+        impact: "power".into(),
+        commands: vec![Command::DeleteRoute { id: route.clone() }],
+        aliases: vec![None],
+        depends_on: vec![],
+        sync: None,
+    }
+}
+
+/// T7 (P1 before-attribution) — MERGE: two separate before-grids fold into ONE
+/// after-grid. The merged row's `demand_before` must SUM both source grids (no
+/// drop): the old per-after single-match attributed only one. A bridging load
+/// (created but ungridded until the proposal wires it) makes the merge visible.
+#[test]
+fn grid_merge_sums_both_before_grids_demand() {
+    let mut s = Session::in_memory(None).unwrap();
+    let pa = gen_factory(&mut s, "PLANT A", 60.0);
+    let la = load_factory(&mut s, "LOAD A", 15.0); // 1 constructor ≈ 4 MW
+    let pb = gen_factory(&mut s, "PLANT B", 60.0);
+    let lb = load_factory(&mut s, "LOAD B", 15.0);
+    // two independent grids already in the plan
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Power,
+        from: pa.clone(),
+        to: la.clone(),
+        path: vec![pos(0.0, 0.0), pos(1.0, 1.0)],
+    }])
+    .unwrap();
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Power,
+        from: pb.clone(),
+        to: lb.clone(),
+        path: vec![pos(0.0, 0.0), pos(1.0, 1.0)],
+    }])
+    .unwrap();
+    // a bridging load — exists but ungridded (draws 0 until the proposal ties it)
+    let lc = load_factory(&mut s, "BRIDGE LOAD", 15.0);
+
+    let before = s.solve_all_readonly();
+    assert_eq!(before.circuits.len(), 2, "two separate before grids");
+    let sum_before_demand: f64 = before.circuits.iter().map(|c| c.demand_mw).sum();
+    let one_grid_demand = before.circuits[0].demand_mw;
+    assert!(one_grid_demand > 1e-6, "each grid draws power");
+
+    // the proposal wires LOAD A → BRIDGE → PLANT B, merging both grids into one
+    // and adding the bridge's draw.
+    let pid = store_proposal(
+        &mut s,
+        vec![power_route_item(&la, &lc), power_route_item(&lc, &pb)],
+    );
+    let cons = s.eval_proposal(&pid).unwrap();
+
+    assert_eq!(
+        cons.circuit_impacts.len(),
+        1,
+        "both grids merge into one touched grid: {:?}",
+        cons.circuit_impacts
+    );
+    let ci = &cons.circuit_impacts[0];
+    // the merged row's before demand is the SUM of BOTH source grids, not one.
+    assert!(
+        (ci.demand_before_mw - sum_before_demand).abs() < 1e-6,
+        "demand_before sums both grids ({sum_before_demand}), got {}",
+        ci.demand_before_mw
+    );
+    assert!(
+        ci.demand_before_mw > one_grid_demand + 1e-6,
+        "not a single-grid attribution (would have dropped the other): {ci:?}"
+    );
+    // and the bridge load pushes after-demand strictly above the merged before.
+    assert!(
+        ci.demand_after_mw > ci.demand_before_mw + 1e-6,
+        "the bridge adds draw: {ci:?}"
+    );
+}
+
+/// T7 (P1 before-attribution) — SPLIT: one before-grid divides into TWO
+/// after-grids when the proposal cuts the bridge route. The before grid's demand
+/// must be attributed to exactly ONE child (its primary destination) — NOT
+/// double-counted onto both rows — and the sibling reads as newly-formed
+/// (before = 0). The old per-after single-match matched the lone before grid to
+/// BOTH children, double-counting its demand.
+#[test]
+fn grid_split_does_not_double_count_before_demand() {
+    let mut s = Session::in_memory(None).unwrap();
+    let pa = gen_factory(&mut s, "PLANT A", 60.0);
+    let la = load_factory(&mut s, "LOAD A", 15.0);
+    let pb = gen_factory(&mut s, "PLANT B", 60.0);
+    let lb = load_factory(&mut s, "LOAD B", 15.0);
+    // one grid: PLANT A—LOAD A and PLANT B—LOAD B, bridged by LOAD A—LOAD B.
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Power,
+        from: pa.clone(),
+        to: la.clone(),
+        path: vec![pos(0.0, 0.0), pos(1.0, 1.0)],
+    }])
+    .unwrap();
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Power,
+        from: pb.clone(),
+        to: lb.clone(),
+        path: vec![pos(0.0, 0.0), pos(1.0, 1.0)],
+    }])
+    .unwrap();
+    let bridge = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Power,
+            from: la.clone(),
+            to: lb.clone(),
+            path: vec![pos(0.0, 0.0), pos(1.0, 1.0)],
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+
+    let before = s.solve_all_readonly();
+    assert_eq!(before.circuits.len(), 1, "one bridged grid before the cut");
+    let orig_demand = before.circuits[0].demand_mw;
+    assert!(orig_demand > 1e-6, "the grid draws power");
+
+    // the proposal cuts the bridge → two independent after-grids.
+    let pid = store_proposal(&mut s, vec![delete_route_item(&bridge)]);
+    let cons = s.eval_proposal(&pid).unwrap();
+
+    assert_eq!(
+        cons.circuit_impacts.len(),
+        2,
+        "the cut yields two touched after grids: {:?}",
+        cons.circuit_impacts
+    );
+    // the before grid's demand is counted ONCE across the two rows, not twice.
+    let total_before: f64 = cons
+        .circuit_impacts
+        .iter()
+        .map(|c| c.demand_before_mw)
+        .sum();
+    assert!(
+        (total_before - orig_demand).abs() < 1e-6,
+        "before demand attributed once ({orig_demand}), not double-counted: got {total_before}"
+    );
+    // one child inherits the whole before grid; the sibling reads newly-formed.
+    assert!(
+        cons.circuit_impacts
+            .iter()
+            .any(|c| (c.demand_before_mw - orig_demand).abs() < 1e-6),
+        "one child carries the whole before grid: {:?}",
+        cons.circuit_impacts
+    );
+    assert!(
+        cons.circuit_impacts
+            .iter()
+            .any(|c| c.demand_before_mw == 0.0 && c.generation_before_mw == 0.0),
+        "the sibling reads as newly-formed (before = 0): {:?}",
+        cons.circuit_impacts
+    );
+}

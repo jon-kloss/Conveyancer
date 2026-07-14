@@ -26,6 +26,13 @@ fn mach(class: &str, recipe: &str, x: f64, y: f64) -> ImportMachine {
     }
 }
 
+fn mach_clock(class: &str, recipe: &str, x: f64, y: f64, clock: f64) -> ImportMachine {
+    ImportMachine {
+        clock,
+        ..mach(class, recipe, x, y)
+    }
+}
+
 /// Import a single ◆ built factory (one machine) and return its factory id.
 fn import_built(s: &mut Session, name: &str, recipe: &str, x: f64, y: f64) -> Id {
     s.import_save(ImportSnapshot {
@@ -573,4 +580,162 @@ fn replaces_nulled_when_old_factory_removed_on_reimport() {
     );
     // synthetic switch-step id helper is stable/namespaced
     assert_eq!(switch_step_id(&old, SCREW), format!("switch:{old}:{SCREW}"));
+}
+
+/// T1 (C1) — a manual Switch override (and a Dismantle override) must SURVIVE an
+/// UNRELATED re-import that dissolves stale overrides. The switch step id is a
+/// synthetic `switch:<old>:<item>` that no build-queue step carries, so the
+/// dangling test would wrongly drop it; C1 unions cutover step ids into the
+/// derived set first. The old ◆ still exists here (an unrelated seed reclock is
+/// the only drift), so both overrides are live intent and must persist.
+#[test]
+fn switch_and_dismantle_overrides_survive_unrelated_reimport() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_seed, old) = import_seed_and_old(&mut s);
+    // the old ◆ supplies screws downstream → the Switch phase has one step
+    add_port(&mut s, &old, PortDirection::Out, SCREW, 40.0);
+    let new = planned_screw_factory(&mut s, "NEW SCREWS", 400.0, 0.0);
+    s.edit(vec![Command::SetFactoryReplaces {
+        id: new.clone(),
+        replaces: Some(old.clone()),
+    }])
+    .unwrap();
+
+    let sid = switch_step_id(&old, SCREW);
+    // pin the Switch step (manual — belts are invisible) AND the Dismantle step
+    // (keyed on the old factory id) done by hand.
+    s.edit(vec![Command::SetBuildDone {
+        id: sid.clone(),
+        done: Some(true),
+    }])
+    .unwrap();
+    s.edit(vec![Command::SetBuildDone {
+        id: old.clone(),
+        done: Some(true),
+    }])
+    .unwrap();
+
+    let read_switch = |s: &Session| {
+        derive_cutovers(&s.state, &s.gamedata)
+            .into_iter()
+            .find(|c| c.new_factory == new)
+            .and_then(|c| c.steps.into_iter().find(|st| st.id == sid))
+    };
+    let st = read_switch(&s).expect("switch step derived");
+    assert!(
+        st.done && st.overridden,
+        "switch pinned done before re-import"
+    );
+
+    // UNRELATED divergent re-import: OLD present & unchanged (so the cutover
+    // survives), but the SEED factory reclocked in game → an UpdateGroup drift
+    // whose accept runs dissolve_stale_overrides.
+    let outcome = s
+        .import_save(ImportSnapshot {
+            save_name: "SEED DRIFT".into(),
+            machines: vec![
+                mach_clock(
+                    "Build_ConstructorMk1_C",
+                    "Recipe_IngotIron_C",
+                    5000.0,
+                    5000.0,
+                    0.5,
+                ),
+                mach("Build_ConstructorMk1_C", "Recipe_Screw_C", 0.0, 0.0),
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+    let pid = match outcome {
+        app::session::ImportOutcome::Drift { proposal, .. } => proposal,
+        other => panic!("expected drift, got {other:?}"),
+    };
+    s.accept_proposal(&pid).unwrap();
+
+    // the old ◆ still exists (only the seed drifted)
+    assert!(
+        s.state.factories.contains_key(&old),
+        "old survives re-import"
+    );
+    // the SWITCH override survived the dissolve pass and still reads done
+    assert!(
+        s.state.build_overrides.contains_key(&sid),
+        "switch override survives dissolve"
+    );
+    let st = read_switch(&s).expect("switch step still derived");
+    assert!(
+        st.done && st.overridden,
+        "switch step still reads done+overridden after re-import"
+    );
+    // the DISMANTLE override (keyed on the still-present old factory id) survives
+    assert!(
+        s.state.build_overrides.contains_key(&old),
+        "dismantle override survives while the old factory still exists"
+    );
+}
+
+/// A ◇ screw factory whose recipe RESOLVES in the catalog but whose input is not
+/// fed → it solves to 0 (starved), unlike `starved_factory` (no group at all).
+fn starved_resolvable_factory(s: &mut Session, name: &str, x: f64, y: f64) -> Id {
+    let f = planned_factory(s, name, x, y);
+    // a catalog-known recipe, but NO input edge → the group is starved to 0.
+    s.edit(vec![Command::AddGroup {
+        factory: f.clone(),
+        machine: "Build_ConstructorMk1_C".into(),
+        recipe: "Recipe_Screw_C".into(),
+        count: 1,
+        clock: 1.0,
+        graph_pos: GraphPos { x: 0.0, y: 0.0 },
+        floor: 0,
+    }])
+    .unwrap();
+    add_port(s, &f, PortDirection::Out, SCREW, 40.0);
+    f
+}
+
+/// T4 (C3) — when the old factory's recipes ALL RESOLVE but its inputs are
+/// starved, `cutover_plan` must report the STARVATION-worded reason (route its
+/// feed), NOT the FICSIT_DOCS_JSON catalog message. And when the new ◇ re-claims
+/// the old ◆'s node, `hard` (node_reuse) is set.
+#[test]
+fn downtime_unavailable_starvation_reason_and_node_reuse_hard() {
+    let mut s = Session::in_memory(None).unwrap();
+    // OLD: resolvable screw recipe, no feed → starved to 0 despite declaring 40.
+    let old = starved_resolvable_factory(&mut s, "SCREW WORKS", 0.0, 0.0);
+    // OLD claims a node the NEW will re-claim.
+    s.edit(vec![Command::ClaimNode {
+        factory: old.clone(),
+        node: "bp_resourcenode777".into(),
+        extractor: "Build_MinerMk2_C".into(),
+        clock: 1.0,
+    }])
+    .unwrap();
+    let new = planned_screw_factory(&mut s, "NEW SCREWS", 400.0, 0.0);
+    // NEW re-claims the SAME node (node reuse → unavoidable build-window downtime).
+    s.edit(vec![Command::ClaimNode {
+        factory: new.clone(),
+        node: "bp_resourcenode777".into(),
+        extractor: "Build_MinerMk2_C".into(),
+        clock: 1.0,
+    }])
+    .unwrap();
+    // link new → old directly (the SetFactoryReplaces guard wants a ◆ target).
+    s.state.factories.get_mut(&new).unwrap().replaces = Some(old.clone());
+
+    let plan = s.cutover_plan(new.clone()).unwrap();
+    assert!(
+        !plan.downtime_available,
+        "resolvable-but-starved old solves to 0 → downtime unavailable"
+    );
+    let reason = plan.unavailable_reason.expect("a reason is set");
+    assert!(
+        reason.contains("starved") && reason.contains("route its feed"),
+        "starvation-worded reason, got: {reason}"
+    );
+    assert!(
+        !reason.contains("FICSIT_DOCS_JSON"),
+        "not the catalog message (recipes resolve), got: {reason}"
+    );
+    // node reuse → hard downtime flag set.
+    assert!(plan.hard, "new re-claims old's node → hard (node_reuse)");
 }

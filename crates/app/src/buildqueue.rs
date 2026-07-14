@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use gamedata::docs::GameData;
 
+use crate::cutover::derive_cutovers;
 use crate::import::nearest_built_match;
 
 /// Derived completion of a step, in the ◇◈◆ grammar. `Partial` (◈) is a
@@ -87,6 +88,12 @@ fn step_number(state: &PlanState, created_by: &CreatedBy) -> u32 {
 
 /// Does a ◆ built twin near `pos` already have a group of this (machine,
 /// recipe)? The per-group completion test behind factory rollups.
+///
+/// PRESENCE, not count/clock, is intentional: this shares the coarse 250m
+/// nearest-match rule with re-import drift detection — a twin group of the same
+/// (machine, recipe) means "this step exists in-game", and magnitude (how many /
+/// what clock) lives in the milestone bar, not here. A count-sensitive test would
+/// double-flag the same build as drift AND incomplete.
 fn built_twin_has(state: &PlanState, pos: &MapPos, machine: &str, recipe: &str) -> bool {
     let Some(twin) = nearest_built_match(state, pos) else {
         return false;
@@ -151,16 +158,24 @@ fn item_name(gd: &GameData, item: &str) -> String {
 pub fn derive_build_queue(state: &PlanState, gd: &GameData) -> Vec<BuildStep> {
     let mut steps: Vec<BuildStep> = Vec::new();
 
-    // Memoized milestone progress per (proposal) — attached to a step when its
-    // creating proposal carries a milestone.
+    // Milestone progress, attached to a step when its creating proposal carries a
+    // milestone. `built_production` is a full-empire group scan, so memoize it per
+    // distinct milestone ITEM (many steps share a proposal, hence an item) — this
+    // turns an O(steps × groups) cost into O(distinct-items × groups).
+    let production_cache: std::cell::RefCell<std::collections::BTreeMap<String, f64>> =
+        std::cell::RefCell::new(std::collections::BTreeMap::new());
     let progress_for = |created_by: &CreatedBy| -> Option<BuildProgress> {
         let CreatedBy::Proposal(pid) = created_by else {
             return None;
         };
         let m = state.proposals.get(pid)?.milestone.as_ref()?;
+        let built = *production_cache
+            .borrow_mut()
+            .entry(m.item.clone())
+            .or_insert_with(|| built_production(state, gd, &m.item));
         Some(BuildProgress {
             item: m.item.clone(),
-            built: built_production(state, gd, &m.item),
+            built,
             total: m.total,
         })
     };
@@ -358,10 +373,24 @@ pub fn dissolve_stale_overrides(
 ) {
     use planner_core::state::COLL_BUILD_OVERRIDES;
     // Derived answer per step id, ignoring the override (state == Done).
-    let derived_done: std::collections::BTreeMap<Id, bool> = derive_build_queue(state, gd)
+    let mut derived_done: std::collections::BTreeMap<Id, bool> = derive_build_queue(state, gd)
         .into_iter()
         .map(|s| (s.id, s.state == BuildStepState::Done))
         .collect();
+    // Cutover step ids (Switch `switch:…` synthetics and the Dismantle key on the
+    // old factory id) are ALSO valid override targets but are NOT build-queue
+    // steps, so the dangling test above would wrongly drop their overrides. Union
+    // them in with their derived completion (Switch is always Pending ⇒ false; the
+    // manual override then reads as a real disagreement and survives). `or_insert`
+    // keeps any build-queue answer that already covers the id (e.g. the BuildNew
+    // step, which is a real factory step).
+    for c in derive_cutovers(state, gd) {
+        for s in c.steps {
+            derived_done
+                .entry(s.id)
+                .or_insert(s.state == BuildStepState::Done);
+        }
+    }
     let redundant_or_dangling: Vec<Id> = state
         .build_overrides
         .values()

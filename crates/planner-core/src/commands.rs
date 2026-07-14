@@ -243,6 +243,13 @@ pub enum Command {
     /// Manually assert (or clear) a build-queue step's completion (W1c).
     /// `Some(done)` upserts the override; `None` removes it, reverting the step
     /// to its derived state. Metadata, not a ◆ mutation — no `require_planned`.
+    ///
+    /// The `id` is NOT validated against a live step: planner-core has no view of
+    /// the derived queue/cutover projection (which lives in the `app` crate and
+    /// mints synthetic ids like `switch:<fid>:<item>`). An override for an id that
+    /// no step carries is an inert sparse overlay — it changes nothing until a
+    /// matching step appears, and it auto-dissolves on the next re-import via
+    /// `dissolve_stale_overrides`. So validation can't (and needn't) live here.
     SetBuildDone {
         id: Id,
         done: Option<bool>,
