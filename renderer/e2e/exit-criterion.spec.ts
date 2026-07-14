@@ -34,11 +34,14 @@ async function connect(page: Page, source: string, target: string) {
   // pointer-over fires, and the whole gesture can still miss under contention.
   // Retry generously with a neutral-position reset between attempts — a stuck
   // half-drag from a missed attempt otherwise swallows the next one.
-  await src.scrollIntoViewIfNeeded();
-  await dst.scrollIntoViewIfNeeded();
   await src.waitFor({ state: "visible" });
   await dst.waitFor({ state: "visible" });
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    // Re-scroll EVERY attempt: each landed belt adds labels and shifts layout,
+    // so coordinates measured before the previous connect go stale mid-chain
+    // (CI reproduced a miss on belt 3 of 7 that never happens locally).
+    await src.scrollIntoViewIfNeeded();
+    await dst.scrollIntoViewIfNeeded();
     const a = await src.boundingBox();
     const b = await dst.boundingBox();
     if (!a || !b) throw new Error(`handle not found: ${source} → ${target}`);
@@ -52,14 +55,15 @@ async function connect(page: Page, source: string, target: string) {
     await page.mouse.move(sx, sy); // tiny wiggle to register drag start
     await page.mouse.move(tx, ty, { steps: 16 });
     await page.mouse.move(tx, ty); // settle on target so pointer-over fires
-    await page.waitForTimeout(60);
+    await page.waitForTimeout(60 + attempt * 40);
     await page.mouse.up();
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(400 + attempt * 100);
     if ((await page.locator(".belt-label").count()) === before + 1) return;
-    // Reset any half-committed drag before retrying.
+    // Reset any half-committed drag before retrying, with growing backoff so a
+    // contended runner gets breathing room instead of six identical fast misses.
     await page.mouse.up().catch(() => {});
     await page.mouse.move(sx, sy - 120);
-    await page.waitForTimeout(120);
+    await page.waitForTimeout(150 + attempt * 100);
   }
   throw new Error(`connect failed after retries: ${source} → ${target}`);
 }
