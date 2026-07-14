@@ -394,6 +394,34 @@ impl Session {
         if cmds.is_empty() {
             return Err(SessionError::Internal("empty command list".into()));
         }
+        // B3: planner-core can't validate a `SetBuildDone` id (it never sees the
+        // derived queue, which mints synthetic `switch:<fid>:<item>` ids), but
+        // the app layer CAN. Reject an id no build-queue or cutover step carries
+        // so a bogus overlay is refused instead of silently upserting an inert
+        // override. Built once, and only when a SetBuildDone is actually present.
+        if cmds
+            .iter()
+            .any(|c| matches!(c, Command::SetBuildDone { .. }))
+        {
+            let valid: BTreeSet<Id> = derive_build_queue(&self.state, &self.gamedata)
+                .into_iter()
+                .map(|s| s.id)
+                .chain(
+                    derive_cutovers(&self.state, &self.gamedata)
+                        .into_iter()
+                        .flat_map(|c| c.steps.into_iter().map(|s| s.id)),
+                )
+                .collect();
+            for cmd in &cmds {
+                if let Command::SetBuildDone { id, .. } = cmd {
+                    if !valid.contains(id) {
+                        return Err(SessionError::Domain(DomainError::Invalid {
+                            message: format!("no build step {id} to mark done"),
+                        }));
+                    }
+                }
+            }
+        }
         let mut tx = Transaction::new(cmds[0].label());
         for cmd in &cmds {
             match commands::apply(&mut self.state, cmd) {
@@ -1212,16 +1240,22 @@ impl Session {
         // undo journal / plan_hash, surfaced through hydrate as `unlocked`. With
         // the trimmed fixture catalog gamedata.schematics is empty, so this
         // degrades to an empty set and alternates stay locked exactly as before.
-        self.unlocked = snapshot
+        let resolved: BTreeSet<String> = snapshot
             .unlocked_schematics
             .iter()
             .filter_map(|s| self.gamedata.schematics.get(s))
             .flatten()
             .cloned()
             .collect();
-        let _ = self
-            .file
-            .set_unlocked(&serde_json::to_string(&self.unlocked).unwrap_or_else(|_| "[]".into()));
+        // Only overwrite when the parse actually resolved alts: a transient
+        // absent/failed schematic set (empty `resolved`) must not re-lock alts
+        // the previous import unlocked. Empty → leave `self.unlocked` intact.
+        if !resolved.is_empty() {
+            self.unlocked = resolved;
+            let _ = self.file.set_unlocked(
+                &serde_json::to_string(&self.unlocked).unwrap_or_else(|_| "[]".into()),
+            );
+        }
         let clusters = crate::import::cluster(&snapshot, &self.gamedata);
         let has_built = self
             .state
@@ -1892,7 +1926,6 @@ impl Session {
         // only; `drift` fires when a plan-local override disagrees with the
         // ambient catalog coordinate past the correction threshold. Save-only
         // nodes (absent from the catalog) have nothing to disagree with.
-        const NODE_DRIFT_M: f64 = 30.0;
         let mut by_node: BTreeMap<String, u32> = BTreeMap::new();
         for c in self.state.node_claims.values() {
             *by_node.entry(c.node.clone()).or_insert(0) += 1;
@@ -1908,14 +1941,15 @@ impl Session {
                 .nodes
                 .iter()
                 .find(|n| n.id == node)
-                .map(|n| (n.x - pos.x).hypot(n.y - pos.y) > NODE_DRIFT_M)
+                .map(|n| (n.x - pos.x).hypot(n.y - pos.y) > crate::import::NODE_DRIFT_M)
                 .unwrap_or(false)
         };
-        let node_ids: BTreeSet<String> = by_node
-            .keys()
-            .cloned()
-            .chain(self.state.node_overrides.keys().cloned())
-            .collect();
+        // Only claimed nodes render: iterate `by_node` alone. An override-only
+        // (zero-claim) node stays inert in canonical state and auto-dissolves on
+        // re-import via `dissolve_stale_node_overrides`, so it never draws an
+        // owner-less dot. A claimed node's `drifted()` still consults its
+        // override (path unchanged).
+        let node_ids: BTreeSet<String> = by_node.keys().cloned().collect();
         for node in node_ids {
             let claims = by_node.get(&node).copied().unwrap_or(0);
             let drift = drifted(&node);

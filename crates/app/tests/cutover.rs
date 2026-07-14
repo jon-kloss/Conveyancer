@@ -739,3 +739,62 @@ fn downtime_unavailable_starvation_reason_and_node_reuse_hard() {
     // node reuse → hard downtime flag set.
     assert!(plan.hard, "new re-claims old's node → hard (node_reuse)");
 }
+
+/// B3 — the app-layer `SetBuildDone` guard: planner-core can't validate a step
+/// id, but `Session::edit` CAN (it derives the queue + cutovers). A bogus id is
+/// rejected with a clean error; a genuine build-queue step id and a synthetic
+/// `switch:<old>:<item>` cutover step id both pass.
+#[test]
+fn set_build_done_rejects_bogus_id_accepts_real_step_ids() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_seed, old) = import_seed_and_old(&mut s);
+    add_port(&mut s, &old, PortDirection::Out, SCREW, 40.0);
+    let new = planned_screw_factory(&mut s, "NEW SCREWS", 400.0, 0.0);
+    s.edit(vec![Command::SetFactoryReplaces {
+        id: new.clone(),
+        replaces: Some(old.clone()),
+    }])
+    .unwrap();
+
+    // a bogus id belongs to no build-queue or cutover step → rejected.
+    let err = s.edit(vec![Command::SetBuildDone {
+        id: "switch:no-such-factory:Desc_Nope_C".into(),
+        done: Some(true),
+    }]);
+    assert!(err.is_err(), "bogus SetBuildDone id must be rejected");
+    assert!(
+        !s.state
+            .build_overrides
+            .contains_key("switch:no-such-factory:Desc_Nope_C"),
+        "rejected id never upserts an override"
+    );
+
+    // a real build-queue step id (the planned ◇ factory) is accepted.
+    let queue_id = s
+        .solve_all_readonly()
+        .build_queue
+        .into_iter()
+        .map(|st| st.id)
+        .find(|id| id == &new)
+        .expect("planned factory is a build-queue step");
+    s.edit(vec![Command::SetBuildDone {
+        id: queue_id.clone(),
+        done: Some(true),
+    }])
+    .expect("real build-queue step id accepted");
+
+    // a real synthetic switch:<old>:<item> cutover step id is accepted.
+    let sid = switch_step_id(&old, SCREW);
+    assert!(
+        derive_cutovers(&s.state, &s.gamedata)
+            .into_iter()
+            .flat_map(|c| c.steps)
+            .any(|st| st.id == sid),
+        "switch step is a derived cutover step"
+    );
+    s.edit(vec![Command::SetBuildDone {
+        id: sid,
+        done: Some(true),
+    }])
+    .expect("real switch cutover step id accepted");
+}

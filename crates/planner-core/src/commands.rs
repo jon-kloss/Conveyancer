@@ -250,6 +250,8 @@ pub enum Command {
     /// no step carries is an inert sparse overlay — it changes nothing until a
     /// matching step appears, and it auto-dissolves on the next re-import via
     /// `dissolve_stale_overrides`. So validation can't (and needn't) live here.
+    /// (The `app` layer — which CAN derive the valid step ids — rejects a bogus
+    /// id at the `Session::edit` dispatch before it reaches this arm.)
     SetBuildDone {
         id: Id,
         done: Option<bool>,

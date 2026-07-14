@@ -105,6 +105,10 @@ pub struct Cluster {
 pub struct ClusterExtractor {
     pub class: String,
     pub position: MapPos,
+    /// Serde-default because a `ClusterExtractor` is persisted inside
+    /// `SyncOp::CreateCluster`; older proposals lack the field.
+    #[serde(default = "one")]
+    pub clock: f64,
     #[serde(default)]
     pub node_actor_id: Option<String>,
 }
@@ -133,7 +137,7 @@ const NODE_MATCH_M: f64 = REMATCH_M;
 /// A miner whose position differs from its bound snapshot node by MORE than this
 /// is the ground truth — write a plan-local corrected position. Chosen above the
 /// community-extraction coordinate noise so normal binding stays silent.
-const NODE_DRIFT_M: f64 = 30.0;
+pub(crate) const NODE_DRIFT_M: f64 = 30.0;
 
 /// The plan-local id a save-only node (no catalog match) claims under.
 fn save_node_key(e: &ClusterExtractor) -> String {
@@ -397,6 +401,7 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
                     y: e.y,
                     z: e.z,
                 },
+                clock: e.clock,
                 node_actor_id: e.node_actor_id.clone(),
             });
         }
@@ -660,7 +665,7 @@ pub fn write_built_layer(
                 node: b.node,
                 factory: fid.clone(),
                 extractor: e.class.clone(),
-                clock: 1.0,
+                clock: e.clock.clamp(0.01, 2.5),
                 save_node_id: b.save_node_id,
                 status: Status::Built,
                 created_by: CreatedBy::Import(import_id.to_string()),
@@ -900,11 +905,10 @@ pub fn diff_against_built(
                     }
                     let claim = claims[0];
                     let e = miners[0];
-                    // Only catalog nodes reconcile a position: a `save:<id>` node
-                    // IS wherever its miner is (no catalog to drift from).
-                    if claim.node.starts_with("save:") {
-                        continue;
-                    }
+                    // Both catalog and `save:<id>` nodes reconcile position:
+                    // `resolved_node_pos` returns the override pos for a save
+                    // node, so a relocated save-only miner past the threshold
+                    // emits a reviewable correction like any catalog node.
                     let resolved = resolved_node_pos(world, &state.node_overrides, &claim.node);
                     let moved = resolved
                         .map(|r| (r.x - e.position.x).hypot(r.y - e.position.y))
