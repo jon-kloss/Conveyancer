@@ -8,6 +8,7 @@ import { DEFAULT_DRONE_SPEC, DEFAULT_RAIL_SPEC, DEFAULT_TRUCK_SPEC } from "../st
 import type { RailSpec, Route, RouteKind } from "../state/types";
 import TrainAnswerBlock from "./TrainAnswerBlock";
 import { trainAnswerFromMath } from "./trainAnswer";
+import ItemIcon from "../lib/ItemIcon";
 
 export default function RouteDrawer({ route }: { route: Route }) {
   const plan = useStore((s) => s.plan);
@@ -71,7 +72,7 @@ export default function RouteDrawer({ route }: { route: Route }) {
         <h3 className="t-label">MANIFEST</h3>
         {route.manifest.map(([item, rate]) => (
           <div className="drawer-row" key={item}>
-            <div className="icon-ph s20" />
+            <ItemIcon item={item} displayName={gamedata.items[item]?.displayName} size={20} />
             <span className="drawer-row-name">{gamedata.items[item]?.displayName ?? item}</span>
             <span className="t-data-12 projected">
               {fmtRate(rate)}
@@ -350,7 +351,7 @@ function TransportDrawer({ route }: { route: Route }) {
         <h3 className="t-label">MANIFEST</h3>
         {route.manifest.map(([item, rate]) => (
           <div className="drawer-row" key={item}>
-            <div className="icon-ph s20" />
+            <ItemIcon item={item} displayName={gamedata.items[item]?.displayName} size={20} />
             <span className="drawer-row-name">{gamedata.items[item]?.displayName ?? item}</span>
             <span className="t-data-12 projected">
               {fmtRate(rate)}

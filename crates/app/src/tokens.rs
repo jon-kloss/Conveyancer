@@ -53,6 +53,22 @@ pub const COLORS: &[Token] = tokens![
     "flow-crit-dark" => "#7A2622",
     "underclock" => "#5BC8C0",
     "underclock-dark" => "#2A5F57",
+    // Resource identity — MAP DATA ONLY, never a UI signal. Muted, low-chroma
+    // terrain tints so a player can read node type at a glance (iron vs copper
+    // vs oil) without competing with the reserved verbs (signal orange, plan
+    // blue, flow status). Keyed by extracted resource; purity stays the ring.
+    "resource-iron" => "#6E7D8C",
+    "resource-copper" => "#B0663C",
+    "resource-limestone" => "#B3A078",
+    "resource-coal" => "#4A5057",
+    "resource-caterium" => "#C6A03C",
+    "resource-quartz" => "#C07EA8",
+    "resource-sulfur" => "#B9BE4A",
+    "resource-oil" => "#7C67B0",
+    "resource-bauxite" => "#B57C5E",
+    "resource-uranium" => "#7BAF54",
+    "resource-sam" => "#96587F",
+    "resource-generic" => "#5A6570",
 ];
 
 pub const TYPOGRAPHY: &[Token] = tokens![

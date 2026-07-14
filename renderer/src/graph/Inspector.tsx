@@ -8,6 +8,7 @@ import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
 import { footprintOf, footprintArea } from "./footprints";
 import { fmtClock, fmtPower, fmtRate } from "../lib/format";
 import { beltCapacity, effClock, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 const CLOCK_STEPS = [0.5, 0.75, 1.0, 1.5, 2.5];
 
@@ -237,7 +238,7 @@ export default function Inspector({
               const sat = cap > 0 ? rate / cap : 0;
               return (
                 <div className="drawer-row" key={item}>
-                  <div className="icon-ph s20" />
+                  <ItemIcon item={item} displayName={gamedata.items[item]?.displayName} size={20} />
                   <span className="drawer-row-name">{gamedata.items[item]?.displayName ?? item}</span>
                   <span className="minibar">
                     <span className={sat >= 0.95 ? "crit" : sat >= 0.7 ? "warn" : ""} style={{ width: `${Math.min(100, sat * 100)}%` }} />
@@ -251,7 +252,7 @@ export default function Inspector({
             })}
             {gamedata.recipes[selectedGroup.recipe]?.products.map(([item]) => (
               <div className="drawer-row" key={item}>
-                <div className="icon-ph s20" />
+                <ItemIcon item={item} displayName={gamedata.items[item]?.displayName} size={20} />
                 <span className="drawer-row-name">→ {gamedata.items[item]?.displayName ?? item}</span>
                 <span className={`t-data-12 ${isProjected || selectedGroup.status === "planned" ? "projected" : ""}`}>
                   {item === POWER_ITEM ? (

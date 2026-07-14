@@ -6,6 +6,7 @@ import { useStore } from "../state/store";
 import { extractionRate, EXTRACTORS } from "./maputil";
 import { fmtRate } from "../lib/format";
 import type { WorldNode } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export default function NodeDrawer({ node }: { node: WorldNode }) {
   const plan = useStore((s) => s.plan);
@@ -51,7 +52,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   return (
     <aside className="drawer summary-drawer" data-testid="node-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        <ItemIcon item={node.item} displayName={item} size={40} />
         <div className="drawer-title-block">
           <div className="t-title">{item.toUpperCase()}</div>
           <div className="mono drawer-sub">

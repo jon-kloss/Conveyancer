@@ -4,6 +4,7 @@ import { useMemo, useState, type RefObject } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../state/store";
 import type { Id } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export default function AddGroupMenu({
   at,
@@ -80,7 +81,7 @@ export default function AddGroupMenu({
       <div className="addgroup-list">
         {recipes.map((r) => (
           <button key={r.className} className="addgroup-item" onClick={() => add(r.className)}>
-            <div className="icon-ph s20" />
+            <ItemIcon item={r.products?.[0]?.[0] ?? ""} displayName={r.displayName} size={20} />
             <span>{r.displayName}</span>
             <span className="mono addgroup-sub">
               {gamedata.machines[r.producedIn[0]]?.displayName?.toUpperCase()}

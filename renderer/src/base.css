@@ -214,6 +214,28 @@ button {
 .icon-ph.s28 { width: 28px; height: 28px; }
 .icon-ph.s40 { width: 40px; height: 40px; }
 
+/* ---- item chip: deterministic colour + monogram (supersedes icon-ph for
+   items). Accent tints the tile + border; monogram stays light for contrast
+   across the whole palette (dark coal → light caterium). ---- */
+.item-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--chip-accent, var(--steel-600)) 20%, var(--steel-800));
+  border: 1px solid color-mix(in srgb, var(--chip-accent, var(--steel-600)) 55%, transparent);
+  color: var(--ink-100);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+}
+.item-chip.s20 { width: 20px; height: 20px; font-size: 9px; }
+.item-chip.s28 { width: 28px; height: 28px; font-size: 11px; }
+.item-chip.s40 { width: 40px; height: 40px; font-size: 15px; }
+
 /* ---- scrollbars, node-editor grade ---- */
 ::-webkit-scrollbar {
   width: 8px;

@@ -66,6 +66,11 @@
   flex-direction: column;
   min-height: 320px;
 }
+/* Import flow steps (parsing / done / error) are sparse — size to content
+   instead of the stepped wizard's fixed body height. */
+.wizard-body.import-body {
+  min-height: auto;
+}
 
 .wizard-goal-sentence {
   display: flex;

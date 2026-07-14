@@ -32,6 +32,18 @@
   --flow-crit-dark: #7A2622;
   --underclock: #5BC8C0;
   --underclock-dark: #2A5F57;
+  --resource-iron: #6E7D8C;
+  --resource-copper: #B0663C;
+  --resource-limestone: #B3A078;
+  --resource-coal: #4A5057;
+  --resource-caterium: #C6A03C;
+  --resource-quartz: #C07EA8;
+  --resource-sulfur: #B9BE4A;
+  --resource-oil: #7C67B0;
+  --resource-bauxite: #B57C5E;
+  --resource-uranium: #7BAF54;
+  --resource-sam: #96587F;
+  --resource-generic: #5A6570;
   --font-display: 'Rajdhani', 'Arial Narrow', sans-serif;
   --font-body: 'Barlow', 'Helvetica Neue', sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;

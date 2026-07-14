@@ -393,7 +393,46 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
 
         {tab === "power" && (
           <>
-            {circuitRows.length === 0 && powerRows.length === 0 && (
+            {(derived.totalPowerMw > 0 || derived.totalGenerationMw > 0) &&
+              (() => {
+                // Empire balance up top — the question a player actually asks:
+                // am I generating enough, and how much headroom before a
+                // brownout? Circuits below break it down per grid; this stays
+                // meaningful even for an imported empire with no derived grids.
+                const gen = derived.totalGenerationMw;
+                const draw = derived.totalPowerMw;
+                const net = gen - draw;
+                const headroom = circuitHeadroom(gen, draw);
+                const level = gen > 0 ? powerLevel(headroom) : draw > 0 ? "warn" : "ok";
+                return (
+                  <div className={`audit-row power-summary ${level === "crit" ? "crit" : ""}`} data-testid="power-summary">
+                    <span className="audit-name">Empire power</span>
+                    <span className="mono audit-tier">BALANCE</span>
+                    <span className={`mono audit-load ${level}`}>
+                      {gen > 0 ? fmtPercent(headroom) : "NO GEN"}
+                    </span>
+                    <span className="audit-bar">
+                      <span
+                        className={level === "ok" ? "" : level}
+                        style={{ width: `${Math.min(100, gen > 0 ? (draw / gen) * 100 : 100)}%` }}
+                      />
+                    </span>
+                    <span className="mono audit-proj projected">
+                      {gen > 0 ? (
+                        <>
+                          {fmtPower(draw)} draw of {fmtPower(gen)} generated · {net >= 0 ? "+" : "−"}
+                          {fmtPower(Math.abs(net))} headroom
+                        </>
+                      ) : (
+                        <>{fmtPower(draw)} draw · generation not captured (no grid in this import)</>
+                      )}
+                    </span>
+                    <span className="mono audit-trend">—</span>
+                    <span className="audit-actions" />
+                  </div>
+                );
+              })()}
+            {circuitRows.length === 0 && powerRows.length === 0 && derived.totalGenerationMw === 0 && (
               <div className="drawer-empty">No powered machines yet — grids appear once power lines join factories.</div>
             )}
             {circuitRows.map((c) => (

@@ -778,6 +778,22 @@ export class MapCanvasLayer extends L.Layer {
     const fontMono = css("--font-mono");
     const inkGhost = css("--ink-ghost");
     const ink100 = css("--ink-100");
+    // Resource identity fill (map data, not a UI signal): read type at a glance.
+    // Palette resolved once per redraw, indexed by extracted resource class.
+    const resourceGeneric = css("--resource-generic");
+    const resourceFill: Record<string, string> = {
+      Desc_OreIron_C: css("--resource-iron"),
+      Desc_OreCopper_C: css("--resource-copper"),
+      Desc_Stone_C: css("--resource-limestone"),
+      Desc_Coal_C: css("--resource-coal"),
+      Desc_OreGold_C: css("--resource-caterium"),
+      Desc_RawQuartz_C: css("--resource-quartz"),
+      Desc_Sulfur_C: css("--resource-sulfur"),
+      Desc_LiquidOil_C: css("--resource-oil"),
+      Desc_OreBauxite_C: css("--resource-bauxite"),
+      Desc_OreUranium_C: css("--resource-uranium"),
+      Desc_SAM_C: css("--resource-sam"),
+    };
 
     // 459 real nodes at world zoom are a wall of rings — dots shrink as the
     // view widens so factories and flows stay the foreground layer
@@ -798,6 +814,16 @@ export class MapCanvasLayer extends L.Layer {
       ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2);
       ctx.fillStyle = canvasBg;
       ctx.fill();
+
+      // resource-identity fill: the disc is tinted by extracted type so iron /
+      // copper / oil read apart at a glance. Free nodes sit a touch dimmer than
+      // claimed so the orange claim dot still leads the eye.
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.globalAlpha = state.claimed ? 1 : 0.72;
+      ctx.fillStyle = resourceFill[node.item] ?? resourceGeneric;
+      ctx.fill();
+      ctx.globalAlpha = 1;
 
       // purity ring: pure solid / normal dashed / impure dotted
       ctx.beginPath();

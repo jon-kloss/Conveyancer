@@ -6,6 +6,7 @@
 import { useMemo } from "react";
 import { useStore } from "../state/store";
 import type { MachineGroup } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
 
 export default function RecipeStrip({ group }: { group: MachineGroup }) {
   const gamedata = useStore((s) => s.gamedata);
@@ -49,7 +50,7 @@ export default function RecipeStrip({ group }: { group: MachineGroup }) {
               onClick={() => pick(r.className)}
               title={r.displayName}
             >
-              <div className="icon-ph s28" />
+              <ItemIcon item={r.products?.[0]?.[0] ?? ""} displayName={r.displayName} size={28} />
               <span className="recipe-tile-name">{r.displayName}</span>
               <span className="mono recipe-tile-sub">
                 {locked ? "NOT UNLOCKED" : gamedata.machines[r.producedIn[0]]?.displayName?.toUpperCase() ?? ""}
