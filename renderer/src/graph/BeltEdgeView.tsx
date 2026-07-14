@@ -1,11 +1,11 @@
-// Belt edge with the flow encoding (mock 1e): color + thickness + pattern agree,
-// plus the always-present mono label chip `n/cap · %`. Paths are belt-style
-// orthogonal runs from edgeLayout (consistent anchors, rounded corners, hop
-// arcs over crossed belts). Cross-floor belts are lifts (⇅).
+// Belt edge with the flow encoding (efficiency grammar): color + thickness +
+// pattern agree, plus the always-present mono label chip `n/cap · %`. Paths
+// are belt-style orthogonal runs from edgeLayout (consistent anchors, rounded
+// corners, hop arcs over crossed belts). Cross-floor belts are lifts (⇅).
 
 import type { CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
-import { flowLevel } from "../lib/format";
+import { flowBand, type FlowBand } from "../lib/format";
 import { fmtRate, fmtPercent } from "../lib/format";
 import { beltCapacity, type BeltEdge } from "../state/types";
 import type { EdgeGeom } from "./edgeLayout";
@@ -21,6 +21,9 @@ export interface BeltEdgeData {
   edge: BeltEdge;
   flow: number;
   saturation: number;
+  /** solver-named evidence this belt caps demanded throughput (GraphView
+   *  derives it from the factory's shortfall/ceiling bindings) */
+  bottleneck: boolean;
   projected: boolean;
   flowOverlay: boolean;
   settled: boolean;
@@ -35,11 +38,20 @@ export interface BeltEdgeData {
   [key: string]: unknown;
 }
 
-const STROKE = {
-  ok: { width: 2, dash: undefined, color: "var(--flow-ok)" },
-  warn: { width: 4, dash: "10 5", color: "var(--flow-warn)" },
-  crit: { width: 6, dash: "6 4", color: "var(--flow-crit)" },
-} as const;
+// Efficiency grammar (DECISIONS): green = good (>50% utilized, incl. a FULL
+// belt meeting demand — optimal), amber dashed = under-used (flowing ≤50%),
+// red heavy = bottleneck (solver-named: this belt caps demanded throughput).
+const STROKE: Record<FlowBand, { width: number; dash?: string; color: string }> = {
+  good: { width: 2, dash: undefined, color: "var(--flow-ok)" },
+  under: { width: 2, dash: "10 5", color: "var(--flow-warn)" },
+  bottleneck: { width: 6, dash: "6 4", color: "var(--flow-crit)" },
+};
+
+const BAND_NOTE: Record<FlowBand, string> = {
+  good: "",
+  under: " · UNDER-USED",
+  bottleneck: " · BOTTLENECK — this belt caps demanded throughput",
+};
 
 /** MOTION = THROUGHPUT: animation-duration for one dash period, mapped from
  *  utilization — ~4s trickle at 0% up to 0.8s when saturated (clamped). The
@@ -70,20 +82,21 @@ export default function BeltEdgeView(props: EdgeProps) {
     });
   }
 
-  const level = flowLevel(data.saturation);
+  const band = flowBand(data.saturation, data.flow, data.bottleneck);
   const capacity = beltCapacity(data.edge.tier);
-  const s = data.flowOverlay ? STROKE[level] : { width: 2, dash: undefined, color: "var(--steel-500)" };
-  const isCrit = data.flowOverlay && level === "crit";
+  const s = data.flowOverlay ? STROKE[band] : { width: 2, dash: undefined, color: "var(--steel-500)" };
+  const isBottleneck = data.flowOverlay && band === "bottleneck";
   // MOTION = THROUGHPUT: only edges with derived flow > 0 animate; idle belts
-  // stay static. Motion rides a separate neutral-ink overlay path so the base
-  // line keeps its status color + weight (color stays status-only).
+  // stay static — independent of the band (an under-used belt still trickles).
+  // Motion rides a separate neutral-ink overlay path so the base line keeps
+  // its status color + weight (color stays status-only).
   const flowing = data.flowOverlay && data.flow > 0;
   // Very short belts can't carry the full chip — compact to the saturation %
-  // (the load signal), full detail on hover and in the inspector. CRIT belts
-  // always show the full chip: the alarm outranks tidiness.
-  const compact = !isCrit && !props.selected && (data.geom?.pathLen ?? Infinity) < 150;
+  // (the load signal), full detail on hover and in the inspector. BOTTLENECK
+  // belts always show the full chip: the alarm outranks tidiness.
+  const compact = !isBottleneck && !props.selected && (data.geom?.pathLen ?? Infinity) < 150;
   const liftTag = data.lift ? `⇅ F${data.srcFloor}→F${data.dstFloor}` : "";
-  const fullText = `${liftTag ? liftTag + " · " : ""}${fmtRate(data.flow)}/${fmtRate(capacity)} · ${fmtPercent(data.saturation)} MK.${data.edge.tier}`;
+  const fullText = `${liftTag ? liftTag + " · " : ""}${fmtRate(data.flow)}/${fmtRate(capacity)} · ${fmtPercent(data.saturation)} MK.${data.edge.tier}${data.flowOverlay ? BAND_NOTE[band] : ""}`;
 
   // Floor-filtered view: the belt runs to a lift portal at the card edge.
   // Clicking the portal jumps to the connected floor with this belt selected.
@@ -171,14 +184,14 @@ export default function BeltEdgeView(props: EdgeProps) {
       ))}
       <EdgeLabelRenderer>
         <div
-          className={`belt-label mono ${isCrit ? "crit" : ""} ${compact ? "compact" : ""} ${
+          className={`belt-label mono ${data.flowOverlay ? band : ""} ${compact ? "compact" : ""} ${
             data.projected ? "projected" : ""
           } ${data.settled ? "settle" : ""} ${props.selected ? "selected" : ""} ${data.dimmed ? "dimmed" : ""}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           title={fullText}
           data-testid={`belt-label-${data.edge.id}`}
         >
-          {isCrit && "⚠ "}
+          {isBottleneck && "⚠ "}
           {data.lift && <span className="belt-lift">{compact ? "⇅ " : `${liftTag} · `}</span>}
           {compact ? (
             fmtPercent(data.saturation)

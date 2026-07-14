@@ -445,7 +445,9 @@
   padding: 0 4px;
   font-size: 9px;
 }
-.belt-label.crit {
+/* efficiency grammar: the alarm chip is the BOTTLENECK (solver-named), not a
+   merely full belt; .under is a hook class (the stroke carries the amber) */
+.belt-label.bottleneck {
   background: var(--flow-crit);
   border-color: var(--flow-crit);
   color: var(--on-signal);
@@ -459,7 +461,7 @@
   color: var(--ink-500);
   font-size: 9px;
 }
-.belt-label.crit .belt-tier {
+.belt-label.bottleneck .belt-tier {
   color: var(--on-signal);
 }
 

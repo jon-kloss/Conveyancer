@@ -3,7 +3,7 @@
 // The full rail/truck/drone math block arrives in Phase 4.
 
 import { useStore } from "../state/store";
-import { fmtClockS, fmtKm, fmtPercent, fmtPower, fmtRate } from "../lib/format";
+import { fmtClockS, fmtKm, fmtPercent, fmtPower, fmtRate, flowBand, routeBottleneck } from "../lib/format";
 import { DEFAULT_DRONE_SPEC, DEFAULT_RAIL_SPEC, DEFAULT_TRUCK_SPEC } from "../state/types";
 import type { RailSpec, Route, RouteKind } from "../state/types";
 import TrainAnswerBlock from "./TrainAnswerBlock";
@@ -29,7 +29,11 @@ export default function RouteDrawer({ route }: { route: Route }) {
   const dstFactory = dstPort ? plan.factories[dstPort.factory] : null;
   const tier = route.kind.kind === "belt" ? route.kind.tier : 0;
   const sat = dr?.saturation ?? 0;
-  const level = sat >= 0.95 ? "crit" : sat >= 0.7 ? "warn" : "";
+  // Efficiency band (shared authority in lib/format): amber = under-used,
+  // red = bottleneck (deficit through a full route); a full belt meeting
+  // demand stays quiet — optimal.
+  const band = flowBand(sat, dr?.flow ?? 0, routeBottleneck(route.id, sat, derived.deficits));
+  const level = band === "good" ? "" : band;
 
   // Header tile: the routed item (single-item manifests in v1). An empty
   // manifest keeps the placeholder — there is nothing honest to show.

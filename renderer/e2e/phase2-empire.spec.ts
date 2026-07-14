@@ -228,6 +228,14 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await expect(page.getByTestId("audit-drawer")).toBeVisible();
   await page.locator(".audit-tab", { hasText: "DEFICITS" }).click();
   await expect(page.getByTestId("audit-drawer")).toContainText("ROD CITY starved of Iron Ingot");
+
+  // EFFICIENCY GRAMMAR honesty: ROD CITY starves because upstream dipped to
+  // 10/min — the ingot route itself is SLACK, so it must NOT read bottleneck
+  // red (the belt isn't the constraint); it reads UNDER-USED amber. No row
+  // in this dipped empire has honest bottleneck evidence.
+  await page.locator(".audit-tab", { hasText: "SATURATION" }).click();
+  await expect(page.locator(".audit-load.under").first()).toBeVisible();
+  await expect(page.locator(".audit-load.bottleneck")).toHaveCount(0);
   await page.keyboard.press("Tab");
 
   // ---- POWER overlay chip toggles with key 2 ----

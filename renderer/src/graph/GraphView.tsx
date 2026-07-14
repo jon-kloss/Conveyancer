@@ -34,7 +34,7 @@ import ItemIcon from "../lib/ItemIcon";
 import { isEditableTarget } from "../lib/keys";
 import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
 import FloorPlates from "./FloorPlates";
-import { fmtRate, fmtPercent } from "../lib/format";
+import { fmtRate, fmtPercent, bottleneckEdges } from "../lib/format";
 import { beltCapacity } from "../state/types";
 import "./graph.css";
 
@@ -333,6 +333,8 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const edges: Edge[] = useMemo(() => {
     if (!factory) return [];
     const beltEdges = Object.values(plan.edges).filter((e) => e.factory === factoryId);
+    // Solver-named capacity bindings — the honest red (efficiency grammar).
+    const bottlenecks = bottleneckEdges(df);
     const geoms: Record<string, NodeGeom> = {};
     for (const n of nodes) {
       const m = (n as { measured?: { width?: number; height?: number } }).measured;
@@ -409,6 +411,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           edge: e,
           flow: d?.flow ?? 0,
           saturation: d?.saturation ?? 0,
+          bottleneck: bottlenecks.has(e.id),
           projected: isProjected || e.status === "planned",
           flowOverlay,
           settled: settled.has(`/edges/${e.id}`),

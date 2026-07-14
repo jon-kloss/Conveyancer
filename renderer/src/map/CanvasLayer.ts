@@ -5,6 +5,7 @@
 
 import L from "leaflet";
 import type { World, WorldNode } from "../state/types";
+import { flowBand } from "../lib/format";
 import { toLatLng } from "./maputil";
 
 export interface NodeRenderState {
@@ -26,6 +27,9 @@ export interface RouteRender {
   saturation: number;
   flow: number;
   capacity: number;
+  /** honest red: downstream registers a deficit through this route while it
+   *  runs at full capacity (MapView derives it from Derived.deficits) */
+  bottleneck: boolean;
   /** transport kind — drives the on-line glyph notation (ties, squares, dots) */
   kind: "belt" | "rail" | "truck" | "drone";
   /** label chip suffix: MK.n for belts, RAIL/TRUCK/DRONE for transports */
@@ -403,8 +407,8 @@ export class MapCanvasLayer extends L.Layer {
     }
   }
 
-  /** Flow/route encoding per mock 1e. Planned routes are always
-   *  blueprint-dashed; saturation rides the label chip (color + italic). */
+  /** Flow/route encoding (efficiency grammar). Planned routes are always
+   *  blueprint-dashed; utilization rides the label chip (color + italic). */
   /** Walk a polyline and invoke fn at every `spacing` px (phase-offset by
    *  spacing/2 so glyphs stay clear of the endpoints) with the local angle. */
   private alongLine(
@@ -435,7 +439,10 @@ export class MapCanvasLayer extends L.Layer {
     for (const r of this.data.routes) {
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
       if (pts.length < 2) continue;
-      const level = r.saturation >= 0.95 ? "crit" : r.saturation >= 0.7 ? "warn" : "ok";
+      // efficiency grammar: green = good (incl. FULL meeting demand), amber
+      // dashed = under-used (≤50%), heavy red = bottleneck (deficit through a
+      // full route) — same authority as the graph edges (lib/format).
+      const band = flowBand(r.saturation, r.flow, r.bottleneck);
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
       for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
@@ -446,10 +453,12 @@ export class MapCanvasLayer extends L.Layer {
       } else {
         ctx.strokeStyle = r.selected
           ? css("--signal-500")
-          : css(level === "crit" ? "--flow-crit" : level === "warn" ? "--flow-warn" : "--flow-ok");
-        ctx.lineWidth = level === "crit" ? 6 : level === "warn" ? 4 : 2;
-        // drones read as dotted air routes; saturation grammar overrides
-        ctx.setLineDash(level === "ok" ? (r.kind === "drone" ? [2, 5] : []) : level === "warn" ? [10, 5] : [6, 4]);
+          : css(band === "bottleneck" ? "--flow-crit" : band === "under" ? "--flow-warn" : "--flow-ok");
+        ctx.lineWidth = band === "bottleneck" ? 6 : 2;
+        // drones read as dotted air routes; the band grammar overrides
+        ctx.setLineDash(
+          band === "good" ? (r.kind === "drone" ? [2, 5] : []) : band === "under" ? [10, 5] : [6, 4],
+        );
       }
       ctx.stroke();
       ctx.setLineDash([]);
@@ -505,7 +514,7 @@ export class MapCanvasLayer extends L.Layer {
     for (const r of byPriority) {
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
       if (pts.length < 2) continue;
-      const level = r.saturation >= 0.95 ? "crit" : r.saturation >= 0.7 ? "warn" : "ok";
+      const band = flowBand(r.saturation, r.flow, r.bottleneck);
       const mid = pts[Math.floor((pts.length - 1) / 2)];
       const mid2 = pts[Math.min(pts.length - 1, Math.floor((pts.length - 1) / 2) + 1)];
       const cx = (mid.x + mid2.x) / 2;
@@ -517,9 +526,10 @@ export class MapCanvasLayer extends L.Layer {
       )}%  ${r.tag}`;
       ctx.font = `italic 500 9px ${css("--font-mono")}`;
       const w = ctx.measureText(text).width + 10;
-      const bg = level === "crit" ? css("--flow-crit") : css("--steel-800");
+      const bg = band === "bottleneck" ? css("--flow-crit") : css("--steel-800");
       const border = r.selected ? css("--signal-500") : css("--steel-600");
-      const ink = level === "crit" ? css("--on-signal") : level === "warn" ? css("--flow-warn") : css("--bp-400");
+      const ink =
+        band === "bottleneck" ? css("--on-signal") : band === "under" ? css("--flow-warn") : css("--bp-400");
       if (this.placeChip(cx - w / 2, cy - 8, w, 16)) {
         ctx.fillStyle = bg;
         ctx.strokeStyle = border;

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore, solveChip } from "../state/store";
 import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
 import { footprintFor, footprintArea } from "./footprints";
-import { fmtClock, fmtPower, fmtRate } from "../lib/format";
+import { fmtClock, fmtPower, fmtRate, flowBand, bottleneckEdges } from "../lib/format";
 import { beltCapacity, effClock, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
 
@@ -97,6 +97,9 @@ export default function Inspector({
   const feedEdges = selectedGroup
     ? Object.values(plan.edges).filter((e) => e.to.kind === "group" && e.to.id === selectedGroup.id)
     : [];
+  // Solver-named capacity bindings — the honest bottleneck red (efficiency
+  // grammar: a full feed belt that keeps its machines fed is optimal).
+  const bottlenecks = useMemo(() => bottleneckEdges(df), [df]);
 
   return (
     <aside className="inspector" data-testid="inspector">
@@ -237,12 +240,13 @@ export default function Inspector({
               const feeding = feedEdges.filter((e) => e.item === item);
               const cap = feeding.reduce((acc, e) => acc + beltCapacity(e.tier), 0);
               const sat = cap > 0 ? rate / cap : 0;
+              const band = flowBand(sat, rate, feeding.some((e) => bottlenecks.has(e.id)));
               return (
                 <div className="drawer-row" key={item}>
                   <ItemIcon item={item} displayName={gamedata.items[item]?.displayName} size={20} />
                   <span className="drawer-row-name">{gamedata.items[item]?.displayName ?? item}</span>
                   <span className="minibar">
-                    <span className={sat >= 0.95 ? "crit" : sat >= 0.7 ? "warn" : ""} style={{ width: `${Math.min(100, sat * 100)}%` }} />
+                    <span className={band === "good" ? "" : band} style={{ width: `${Math.min(100, sat * 100)}%` }} />
                   </span>
                   <span className={`t-data-12 ${isProjected || selectedGroup.status === "planned" ? "projected" : ""}`}>
                     {fmtRate(rate)}
@@ -272,12 +276,13 @@ export default function Inspector({
           <section className="insp-section">
             <h3 className="t-label">FEED BELTS</h3>
             {feedEdges.length === 0 && <div className="drawer-empty">No incoming belts.</div>}
-            {feedEdges.map((e) => {
-              const sat = df?.edges[e.id]?.saturation ?? 0;
-              return (
+            {feedEdges.map((e) => (
                 <div className="drawer-row" key={e.id}>
                   <span className="drawer-row-name">{gamedata.items[e.item]?.displayName ?? e.item}</span>
-                  {sat >= 0.7 && <span className={`chip ${sat >= 0.95 ? "crit" : "warn"}`}>UPGRADE?</span>}
+                  {/* efficiency grammar: only a solver-named BOTTLENECK belt
+                      earns the upgrade nudge — a full belt meeting demand is
+                      optimal, not an upgrade prompt */}
+                  {bottlenecks.has(e.id) && <span className="chip crit">UPGRADE?</span>}
                   <select
                     className="mono"
                     style={{ height: 24 }}
@@ -291,8 +296,7 @@ export default function Inspector({
                     ))}
                   </select>
                 </div>
-              );
-            })}
+            ))}
           </section>
         </>
       )}

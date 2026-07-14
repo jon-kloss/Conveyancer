@@ -1,6 +1,8 @@
 // Number formatting: every number in the app is JetBrains Mono tabular-nums;
 // rates carry an attached, smaller unit; projected values are italic (CSS).
 
+import type { DeficitRow, DerivedFactory, Id } from "../state/types";
+
 export function fmtRate(v: number): string {
   if (!isFinite(v)) return "∞";
   const abs = Math.abs(v);
@@ -50,12 +52,54 @@ export function fmtDuration(minutes: number): string {
   return `${h}h ${m}m`;
 }
 
-/** Flow level from saturation (UI spec thresholds: <70 OK, 70–95 WARN, ≥95 CRIT). */
-export type FlowLevel = "ok" | "warn" | "crit";
-export function flowLevel(saturation: number): FlowLevel {
-  if (saturation >= 0.95) return "crit";
-  if (saturation >= 0.7) return "warn";
-  return "ok";
+/** Efficiency grammar for belt/route flow (DECISIONS): belts don't jam — a
+ *  ratio-perfect build runs its belts at 100% and that is OPTIMAL, not
+ *  critical. Bands:
+ *  - "under": flowing but ≤50% utilized — over-built or starved upstream
+ *    (flow-warn amber; 30 on a 60-belt lands here).
+ *  - "good": >50% utilized and not a bottleneck, INCLUDING a full belt whose
+ *    consumers are satisfied (flow-ok green).
+ *  - "bottleneck": the link provably caps demanded throughput (flow-crit
+ *    red). Utilization alone NEVER makes a bottleneck — callers must pass
+ *    solver evidence (see bottleneckEdges / routeBottleneck).
+ *  Idle (flow = 0) stays "good": zero-flow belts keep today's quiet render
+ *  and never animate — idle is not "under-used".
+ *  The single banding authority for BeltEdgeView strokes, map route
+ *  polylines/chips, the audit SATURATION tab, and the status bar. */
+export type FlowBand = "under" | "good" | "bottleneck";
+export function flowBand(saturation: number, flow: number, bottleneck = false): FlowBand {
+  if (bottleneck) return "bottleneck";
+  if (flow > 0 && saturation <= 0.5) return "under";
+  return "good";
+}
+
+/** "Running at capacity" within solver float noise. */
+const FULL = 0.999;
+
+/** Belt edges the solver NAMES as the binding capacity constraint — the
+ *  honest bottleneck evidence for a factory's graph. Two sources:
+ *  - a reported shortfall (unmet target) whose binding is this belt;
+ *  - the target ceiling binding this belt while the belt actually runs full
+ *    (the clamped-at-ceiling state the inspector's ⛔ strip declares).
+ *  A ceiling that merely names the NEXT constraint while the target sits
+ *  below it leaves the belt slack — not a bottleneck. */
+export function bottleneckEdges(df: DerivedFactory | undefined | null): Set<Id> {
+  const out = new Set<Id>();
+  if (!df) return out;
+  for (const s of Object.values(df.shortfalls ?? {})) {
+    if (s.missing > 1e-9 && s.binding?.kind === "belt_capacity") out.add(s.binding.edge);
+  }
+  const b = df.targetCeiling?.binding;
+  if (b?.kind === "belt_capacity" && (df.edges[b.edge]?.saturation ?? 0) >= FULL) out.add(b.edge);
+  return out;
+}
+
+/** A map route is a bottleneck only when downstream registers a deficit
+ *  THROUGH it while the route runs at full capacity — the link itself caps
+ *  the demanded throughput. A deficit on a slack route is an upstream
+ *  production problem, not this route's. */
+export function routeBottleneck(routeId: Id, saturation: number, deficits: DeficitRow[]): boolean {
+  return saturation >= FULL && deficits.some((d) => d.route === routeId);
 }
 
 /** Circuit headroom: fraction of generation left as margin (SDD §12; mirrors
@@ -66,9 +110,12 @@ export function circuitHeadroom(generationMw: number, demandMw: number): number 
   return demandMw > 0 ? -1 : 1;
 }
 
+/** Power margin levels keep congestion semantics — grids DO brown out. */
+export type PowerLevel = "ok" | "warn" | "crit";
+
 /** Power level from headroom (thresholds: ≥20% OK, 5–20% WARN, <5% CRIT). The
  *  single source for the audit rows, the PWR chip, and the review banner. */
-export function powerLevel(headroom: number): FlowLevel {
+export function powerLevel(headroom: number): PowerLevel {
   if (headroom < 0.05) return "crit";
   if (headroom < 0.2) return "warn";
   return "ok";

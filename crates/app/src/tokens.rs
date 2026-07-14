@@ -44,7 +44,12 @@ pub const COLORS: &[Token] = tokens![
     "bp-600" => "#2A5F96",
     "bp-ghost" => "rgba(86,168,255,.08)",
     "bp-dim-text" => "#5A86B3",
-    // Flow — saturation/status, always paired with a redundant channel
+    // Flow — status only, always paired with a redundant channel. Efficiency
+    // grammar (DECISIONS): flow-ok = GOOD (>50% utilized, including a FULL
+    // belt meeting demand — optimal), flow-warn = UNDER-USED (flowing ≤50%:
+    // over-built or starved upstream), flow-crit = BOTTLENECK (the link
+    // provably caps demanded throughput — solver-named, never a bare % cut).
+    // Hexes unchanged from the congestion era; only the meanings moved.
     "flow-ok" => "#46C07A",
     "flow-ok-dark" => "#1E4531",
     "flow-warn" => "#E5A83B",

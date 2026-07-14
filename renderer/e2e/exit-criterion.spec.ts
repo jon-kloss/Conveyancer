@@ -212,9 +212,17 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   // belt saturation coloring: labels show n/cap · %
   await expect(page.locator(".belt-label").first()).toContainText("%");
 
+  // EFFICIENCY GRAMMAR: at ~1.3/min the whole chain runs at ≤50% of rated
+  // capacity — flowing-but-under-utilized belts honestly read UNDER-USED
+  // (amber), and none reads bottleneck red (nothing caps demand here).
+  await expect(page.locator(".belt-label.under").first()).toBeVisible();
+  await expect(page.locator(".belt-label.bottleneck")).toHaveCount(0);
+
   // MOTION = THROUGHPUT: with the chain solved every belt carries flow, so
-  // every edge gains the animated moving-dash overlay path. (No deterministic
-  // idle edge exists at this point — the whole chain feeds the target.)
+  // every edge gains the animated moving-dash overlay path — including the
+  // UNDER-band belts just asserted (motion is orthogonal to the band). (No
+  // deterministic idle edge exists at this point — the whole chain feeds the
+  // target.)
   await expect(page.locator("path.edge-flowing")).toHaveCount(9);
 
   // belts are orthogonal runs (edgeLayout), not beziers: no cubic segments
@@ -277,9 +285,18 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   const clamped = parseFloat(await page.getByTestId("target-value").innerText());
   expect(Math.abs(clamped - 60 / 18)).toBeLessThan(0.05);
 
+  // EFFICIENCY GRAMMAR: red requires evidence, and here it exists — the solve
+  // is clamped AT the ceiling whose binding names the screw belt, and that
+  // belt runs full. Exactly one belt reads BOTTLENECK (⚠ chip); a merely full
+  // belt elsewhere would stay green.
+  await expect(page.locator(".belt-label.bottleneck")).toHaveCount(1);
+  await expect(page.locator(".belt-label.bottleneck")).toContainText("⚠");
+
   // ---- undo includes the solve (counts revert with the rate) ----
   await page.keyboard.press("ControlOrMeta+z");
   await page.waitForTimeout(300);
+  // ...and the bottleneck evidence reverts with it — no red without a cap.
+  await expect(page.locator(".belt-label.bottleneck")).toHaveCount(0);
   const afterUndo = parseFloat(await page.getByTestId("target-value").innerText());
   expect(Math.abs(afterUndo - rate)).toBeLessThan(0.05);
 
