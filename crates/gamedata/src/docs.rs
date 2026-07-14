@@ -26,6 +26,11 @@ pub struct Item {
     /// MJ per item — drives generator fuel-burn synthesis.
     #[serde(default)]
     pub energy_mj: f64,
+    /// FGResourceDescriptor — a world-sourced raw (ores, water, oil, nitrogen).
+    /// Raws can still appear as recipe products (Unpackage Water), but a
+    /// planner must source them from extractors, never from those recipes.
+    #[serde(default)]
+    pub is_resource: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -282,6 +287,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         form: s(c, "mForm"),
                         stack_size: s(c, "mStackSize"),
                         energy_mj: f(c, "mEnergyValue"),
+                        is_resource: fg == "FGResourceDescriptor",
                     };
                     if !item.class_name.is_empty() {
                         gd.items.insert(item.class_name.clone(), item);
@@ -515,6 +521,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             form: "RF_POWER".to_string(),
             stack_size: String::new(),
             energy_mj: 0.0,
+            is_resource: false,
         },
     );
 
@@ -646,6 +653,26 @@ mod tests {
             gd.schematics.get("Schematic_TestAlt_C"),
             Some(&vec!["Recipe_Alternate_Screw_C".to_string()]),
             "recipe unlock is captured; the slot-unlock is ignored"
+        );
+    }
+
+    #[test]
+    fn resource_descriptors_carry_is_resource() {
+        // World-sourced raws must be distinguishable from craftables: the real
+        // catalog produces water via Unpackage Water, and a planner that treats
+        // water as craftable recurses through the packaging pair forever.
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        assert!(
+            gd.items["Desc_OreIron_C"].is_resource,
+            "ore is a raw resource"
+        );
+        assert!(
+            gd.items["Desc_LiquidOil_C"].is_resource,
+            "crude oil is a raw resource"
+        );
+        assert!(
+            !gd.items["Desc_IronIngot_C"].is_resource,
+            "an ingot is a craftable, not a world resource"
         );
     }
 

@@ -355,8 +355,15 @@ export default function WizardModal() {
               })}
             </div>
             <div className="wizard-log mono" ref={logRef} data-testid="wizard-log">
-              {log.map((l, i) => (
-                <div key={i}>
+              {/* Render only the tail: a runaway or genuinely huge solve can
+                  stream tens of thousands of lines, and mounting them all
+                  freezes the page — the scrollback beyond this window carries
+                  no decision the review step doesn't already surface. */}
+              {log.length > 400 && (
+                <div className="wl-phase">… {log.length - 400} earlier lines</div>
+              )}
+              {log.slice(-400).map((l, i) => (
+                <div key={log.length - Math.min(log.length, 400) + i}>
                   <span className="wl-phase">{l.phase}</span> {l.line}
                 </div>
               ))}
