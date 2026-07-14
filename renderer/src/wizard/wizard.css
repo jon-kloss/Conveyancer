@@ -78,11 +78,6 @@
   gap: 10px;
   flex-wrap: wrap;
 }
-.wizard-item-select {
-  height: 32px;
-  min-width: 220px;
-  font-size: 13px;
-}
 .wizard-rate {
   width: 88px;
   height: 32px;

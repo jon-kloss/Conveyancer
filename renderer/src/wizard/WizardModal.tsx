@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtDuration, fmtRate } from "../lib/format";
+import ItemCombobox from "../lib/ItemCombobox";
 import type { WizardConstraints, WizardGoal, WizardInfeasible, WizardLogLine } from "../state/types";
 import "./wizard.css";
 
@@ -184,18 +185,7 @@ export default function WizardModal() {
           <div className="wizard-body">
             <div className="wizard-goal-sentence">
               <span className="t-label">PRODUCE</span>
-              <select
-                className="mono wizard-item-select"
-                value={item}
-                onChange={(e) => setItem(e.target.value)}
-                data-testid="wizard-item"
-              >
-                {craftable.map((i) => (
-                  <option key={i.className} value={i.className}>
-                    {i.displayName}
-                  </option>
-                ))}
-              </select>
+              <ItemCombobox items={craftable} value={item} onChange={setItem} testid="wizard-item" />
               <span className="t-label">AT</span>
               <input
                 type="number"

@@ -26,7 +26,8 @@ test("empty → build → reopen: resume dashboard auto-presents (R1)", async ({
   // ---- 2. add work: draft + accept a proposal → a ◇ planned build step ----
   await page.getByTestId("door-wizard").click();
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await page.selectOption('[data-testid="wizard-item"]', "Desc_IronPlate_C");
+  await page.getByTestId("wizard-item").fill("iron plate");
+  await page.getByTestId("wizard-item-option").first().click();
   await page.fill('[data-testid="wizard-rate"]', "10");
   await page.click('[data-testid="wizard-solve"]');
   await expect(page.getByTestId("proposal-review")).toBeVisible({ timeout: 15_000 });

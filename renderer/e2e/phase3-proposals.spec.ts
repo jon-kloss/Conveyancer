@@ -17,7 +17,8 @@ test("wizard → reviewable proposal → partial accept → undo", async ({ page
   // P opens the wizard; goal: 25 iron plates/min (nothing produces plates yet)
   await page.keyboard.press("p");
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await page.selectOption('[data-testid="wizard-item"]', "Desc_IronPlate_C");
+  await page.getByTestId("wizard-item").fill("iron plate");
+  await page.getByTestId("wizard-item-option").first().click();
   await page.fill('[data-testid="wizard-rate"]', "25");
   await page.click('[data-testid="wizard-solve"]');
 
@@ -75,7 +76,7 @@ test("audit FIX WITH SOLVER pre-fills the wizard goal", async ({ page }) => {
   await expect(row).toBeVisible();
   await row.locator(".chip", { hasText: "FIX WITH SOLVER" }).click();
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await expect(page.getByTestId("wizard-item")).toHaveValue("Desc_IronIngot_C");
+  await expect(page.getByTestId("wizard-item")).toHaveValue("Iron Ingot");
   await page.keyboard.press("Escape");
 });
 
@@ -135,7 +136,8 @@ test("total-quantity goal: milestone ladder + carried proposal chip", async ({ p
   // P opens the wizard; pick a craftable item + rate
   await page.keyboard.press("p");
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await page.selectOption('[data-testid="wizard-item"]', "Desc_IronPlate_C");
+  await page.getByTestId("wizard-item").fill("iron plate");
+  await page.getByTestId("wizard-item-option").first().click();
   await page.fill('[data-testid="wizard-rate"]', "8");
 
   // toggle TOTAL-QUANTITY GOAL on and set the huge total the game hands out

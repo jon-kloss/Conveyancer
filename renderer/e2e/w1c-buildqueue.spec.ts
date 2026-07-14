@@ -23,7 +23,8 @@ test("derived build queue + resume dashboard: override, undo, auto-present", asy
   // draft + accept a proposal → guarantees a ◇ planned build step
   await page.keyboard.press("p");
   await expect(page.getByTestId("wizard-modal")).toBeVisible();
-  await page.selectOption('[data-testid="wizard-item"]', "Desc_IronPlate_C");
+  await page.getByTestId("wizard-item").fill("iron plate");
+  await page.getByTestId("wizard-item-option").first().click();
   await page.fill('[data-testid="wizard-rate"]', "10");
   await page.click('[data-testid="wizard-solve"]');
   await expect(page.getByTestId("proposal-review")).toBeVisible({ timeout: 15_000 });
