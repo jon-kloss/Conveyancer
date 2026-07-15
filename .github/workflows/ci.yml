@@ -69,6 +69,9 @@ jobs:
       - name: typecheck
         working-directory: renderer
         run: pnpm typecheck
+      - name: unit tests (vitest)
+        working-directory: renderer
+        run: pnpm test
       - name: icon manifest ↔ public/icons in sync
         run: node scripts/check-icon-manifest.mjs
       - name: build
