@@ -31,6 +31,31 @@ jobs:
       - name: wasm pkg in sync
         run: ./scripts/regen-wasm.sh check
 
+  # Web Phase 2: prove the core compiles AND runs on wasm32. The `web` crate
+  # wraps `Session` over MemoryPlanStore (no rusqlite / ureq / tiny_http); the
+  # node smoke actually executes hydrate + edit in wasm, not just builds it.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: persist builds without rusqlite
+        run: cargo build -p persist --no-default-features
+      - name: build web for wasm32
+        run: cargo build -p web --target wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - name: web wasm smoke (node)
+        working-directory: crates/web
+        run: wasm-pack test --node
+
   shell:
     runs-on: ubuntu-latest
     steps:
@@ -114,7 +139,7 @@ jobs:
         working-directory: renderer
         run: pnpm exec playwright install-deps chromium
       - name: prebuild dev-bridge # so the webServer 180s timeout never eats a cold compile
-        run: cargo build -p app --no-default-features --bin dev-bridge
+        run: cargo build -p app --no-default-features --features bridge --bin dev-bridge
       - name: e2e
         working-directory: renderer
         run: pnpm exec playwright test --trace=retain-on-failure

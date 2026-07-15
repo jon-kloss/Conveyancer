@@ -38,7 +38,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `cargo run -p app --no-default-features --bin dev-bridge`,
+      command: `cargo run -p app --no-default-features --features bridge --bin dev-bridge`,
       cwd: "..",
       port: 8791,
       reuseExistingServer: false,
