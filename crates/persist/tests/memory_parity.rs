@@ -431,3 +431,86 @@ fn commit_fault_parity() {
         assert!(state.factories.is_empty(), "no entity row written");
     }
 }
+
+/// Web snapshot round-trip (Phase 3): a `MemoryPlanStore` driven through the
+/// full script — including redo-tail truncation AND KV/list writes — exports
+/// to bytes, reconstructs, and reads back OBSERVATIONALLY IDENTICAL. This is
+/// the durability contract the web worker relies on: `export_snapshot` →
+/// IndexedDB → `from_snapshot_bytes` reconstitutes the exact plan (canonical
+/// state, undo journal + cursor, and every meta/card/mute the store held).
+#[test]
+fn snapshot_export_import_round_trips() {
+    let (steps, fid) = truncation_script();
+    let mut memory = MemoryPlanStore::new();
+    replay(&mut memory, &steps);
+    // Exercise the KV + list surfaces too, so the round-trip covers everything
+    // Session hydrates, not just the entity rows + journal.
+    memory.set_view_state(r#"{"openFactory":null}"#).unwrap();
+    memory.set_unlocked(r#"["Recipe_Alt_C"]"#).unwrap();
+    memory
+        .set_purchased_schematics(r#"["Schematic_3-1_C"]"#)
+        .unwrap();
+    memory.save_advisor_gate(r#"{"armed":true}"#).unwrap();
+    memory
+        .save_advisor_card("card-1", r#"{"id":"card-1"}"#)
+        .unwrap();
+    memory
+        .add_mute("power_swing", "2026-07-15T00:00:00Z")
+        .unwrap();
+
+    let before = observe(&memory);
+    let bytes = memory
+        .export_snapshot()
+        .expect("MemoryPlanStore exports a blob");
+    let restored = MemoryPlanStore::from_snapshot_bytes(&bytes).unwrap();
+
+    // Canonical state, journal, and cursor survive byte-identical.
+    assert_eq!(before, observe(&restored), "load() round-trips");
+    // The rewound-then-recommitted cursor and the surviving factory content.
+    let (state, entries, cursor) = restored.load().unwrap();
+    assert_eq!(
+        state.factories.get(&fid).map(|f| f.name.as_str()),
+        Some("D")
+    );
+    assert_eq!(
+        cursor,
+        entries.len(),
+        "cursor at the tip after the final commit"
+    );
+    // Every KV/list accessor round-trips.
+    assert_eq!(
+        restored.view_state().as_deref(),
+        Some(r#"{"openFactory":null}"#)
+    );
+    assert_eq!(restored.unlocked().as_deref(), Some(r#"["Recipe_Alt_C"]"#));
+    assert_eq!(
+        restored.purchased_schematics().as_deref(),
+        Some(r#"["Schematic_3-1_C"]"#)
+    );
+    assert_eq!(
+        restored.advisor_gate().as_deref(),
+        Some(r#"{"armed":true}"#)
+    );
+    assert_eq!(
+        restored.load_advisor_cards().unwrap(),
+        vec![r#"{"id":"card-1"}"#.to_string()]
+    );
+    assert_eq!(
+        restored.load_mutes().unwrap(),
+        vec!["power_swing".to_string()]
+    );
+}
+
+/// A snapshot with an unknown `version` is rejected, not silently mis-loaded.
+#[test]
+fn snapshot_rejects_unknown_version() {
+    let mut memory = MemoryPlanStore::new();
+    let (steps, _fid) = truncation_script();
+    replay(&mut memory, &steps);
+    let bytes = memory.export_snapshot().unwrap();
+    // Bump the version field in the raw JSON and confirm reconstruction refuses.
+    let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    v["version"] = serde_json::json!(9999);
+    let tampered = serde_json::to_vec(&v).unwrap();
+    assert!(MemoryPlanStore::from_snapshot_bytes(&tampered).is_err());
+}
