@@ -9,6 +9,7 @@ pub mod chat;
 pub mod cutover;
 pub mod import;
 pub mod jobs;
+pub mod opportunities;
 pub mod session;
 pub mod wizard;
 

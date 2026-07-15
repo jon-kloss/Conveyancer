@@ -16,10 +16,10 @@ import {
   type FlowBand,
 } from "../lib/format";
 import { beltCapacity } from "../state/types";
-import type { AltOpportunity } from "../state/types";
+import type { AltOpportunity, AuditTab } from "../state/types";
 import "./audit.css";
 
-type Tab = "saturation" | "deficits" | "power" | "drift" | "optimizer";
+type Tab = AuditTab;
 
 /** Cargo route kinds audited for saturation (A3.1): throughput vs demand.
  *  Pipe is excluded — not creatable in the UI, no derived flow/capacity. */
@@ -176,6 +176,17 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
   const setWizard = useStore((s) => s.setWizard);
   const [tab, setTab] = useState<Tab>("saturation");
   const [pinned, setPinned] = useState(false);
+
+  // PR 9 openAudit action: consume a store-level tab request (App has already
+  // opened the drawer for it) and clear it so it fires once.
+  const auditRequest = useStore((s) => s.auditRequest);
+  const clearAuditRequest = useStore((s) => s.clearAuditRequest);
+  useEffect(() => {
+    if (auditRequest) {
+      setTab(auditRequest);
+      clearAuditRequest();
+    }
+  }, [auditRequest, clearAuditRequest]);
 
   const itemName = (cls: string) => gamedata.items[cls]?.displayName ?? cls;
 

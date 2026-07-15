@@ -17,6 +17,7 @@ import type {
   ImportSnapshot,
   InitPayload,
   JobProgress,
+  Opportunity,
   Proposal,
   ProposalConsequence,
   RouteKind,
@@ -52,6 +53,8 @@ export interface Backend {
   optimizeEmpire(): Promise<AltOpportunity[]>;
   /** W2b-D: adopt an alternate empire-wide → draft review proposal(s) (◆ never mutated). */
   optimizeAdopt(recipe: string): Promise<AdoptOutcome>;
+  /** PR 9: ranked next-move opportunities — a derived, read-only projection. */
+  nextMoves(): Promise<Opportunity[]>;
   importRun(snapshot: ImportSnapshot): Promise<ImportOutcome>;
   advisorDismiss(id: string): Promise<AdvisorFeed>;
   advisorUnmute(rule: string): Promise<AdvisorFeed>;
@@ -122,6 +125,9 @@ class TauriBackend implements Backend {
   }
   optimizeAdopt(recipe: string) {
     return this.invoke<AdoptOutcome>("optimize_adopt", { recipe });
+  }
+  nextMoves() {
+    return this.invoke<Opportunity[]>("next_moves");
   }
   importRun(snapshot: ImportSnapshot) {
     return this.invoke<ImportOutcome>("import_run", { snapshot });
@@ -210,6 +216,10 @@ class BridgeBackend implements Backend {
   }
   optimizeAdopt(recipe: string) {
     return this.call<AdoptOutcome>("optimize/adopt", { method: "POST", body: JSON.stringify({ recipe }) });
+  }
+  async nextMoves() {
+    const r = await this.call<{ opportunities: Opportunity[] }>("next");
+    return r.opportunities;
   }
   importRun(snapshot: ImportSnapshot) {
     return this.call<ImportOutcome>("import/run", { method: "POST", body: JSON.stringify(snapshot) });

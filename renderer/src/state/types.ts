@@ -504,6 +504,45 @@ export interface AdoptOutcome {
   note: string | null;
 }
 
+// ---- opportunity engine (PR 9): ranked next moves, derived + read-only ----
+
+/** Audit-drawer tab ids — shared by the drawer and the openAudit action. */
+export type AuditTab = "saturation" | "deficits" | "power" | "drift" | "optimizer";
+
+/** Candidate family, in ranking-class order (broken → milestone → savings →
+ *  growth). A family without evidence emits nothing — honest silence. */
+export type OpportunityKind =
+  | "power_deficit"
+  | "deficit_repair"
+  | "route_bottleneck_fix"
+  | "power_margin"
+  | "milestone_gap"
+  | "alt_adopt"
+  | "under_extracted"
+  | "untapped_node";
+
+/** Every action lands on an EXISTING pipe: wizard prefill, map selection, or
+ *  an audit tab — the engine never edits the plan. */
+export type OpportunityAction =
+  | { kind: "wizardGoal"; item: string; rate: number }
+  | { kind: "selectRoute"; id: Id }
+  | { kind: "selectNode"; id: string }
+  | { kind: "selectFactory"; id: Id }
+  | { kind: "openAudit"; tab: AuditTab };
+
+/** One ranked next move. Fetched via nextMoves() when the dashboard opens —
+ *  never part of hydrate or the per-edit derived. `id` is deterministic
+ *  (kind + subject); `evidence` numbers are formatted Rust-side. */
+export interface Opportunity {
+  id: string;
+  kind: OpportunityKind;
+  title: string;
+  evidence: string;
+  /** item class for the ItemIcon chip, when one is on stage */
+  item?: string;
+  action: OpportunityAction;
+}
+
 export interface Derived {
   factories: Record<Id, DerivedFactory>;
   nodes: Record<string, { claims: number; conflict: boolean; drift: boolean }>;

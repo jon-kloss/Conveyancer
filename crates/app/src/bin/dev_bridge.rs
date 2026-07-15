@@ -197,6 +197,12 @@ fn main() -> anyhow::Result<()> {
                         Err(e) => err(422, e),
                     }
                 }
+                // ---- PR 9 opportunity engine ----
+                // Read-only ranked next moves, computed on demand over a fresh
+                // solve (same species as the advisor feed) — nothing persisted.
+                (Method::Get, "/api/next") => {
+                    ok(&serde_json::json!({ "opportunities": s.next_moves() }))
+                }
                 // ---- W2b-D empire alternate-recipe optimizer ----
                 // Read-only ranked opportunities (empty in the fixture — no
                 // unlocked alternates, honest degradation).

@@ -7,6 +7,7 @@ import type {
   AdoptOutcome,
   AdvisorFeed,
   AltOpportunity,
+  AuditTab,
   Command,
   CutoverPlan,
   Derived,
@@ -15,6 +16,7 @@ import type {
   GameData,
   Id,
   LastImport,
+  Opportunity,
   Plan,
   ViewState,
   World,
@@ -119,6 +121,11 @@ export interface AppStore {
   unlocked: Set<string>;
   /** resume dashboard overlay — auto-presents once per plan (viewState.resumeSeen) */
   dashboardOpen: boolean;
+  /** pending "open the audit drawer on this tab" request (PR 9 openAudit
+      action). The drawer's open flag lives in App.tsx local state, so this is
+      the one store-visible signal: App opens the drawer when it appears, the
+      drawer selects the tab and clears it. */
+  auditRequest: AuditTab | null;
 
   hydrate(): Promise<void>;
   /** Resolves with the created ids, or null when the backend refused the
@@ -159,6 +166,11 @@ export interface AppStore {
   /** W2b-D: adopt an alternate empire-wide → drafts the review proposal(s) and
       opens the first in review. Returns the outcome, or null on refusal. */
   optimizeAdopt(recipe: string): Promise<AdoptOutcome | null>;
+  /** PR 9: fetch the ranked next-move list (read-only; [] on refusal). */
+  nextMoves(): Promise<Opportunity[]>;
+  /** PR 9: ask for the audit drawer on a specific tab (openAudit action). */
+  openAuditTab(tab: AuditTab): void;
+  clearAuditRequest(): void;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -187,6 +199,7 @@ export const useStore = create<AppStore>((set, get) => ({
   lastImport: null,
   unlocked: new Set(),
   dashboardOpen: false,
+  auditRequest: null,
 
   async hydrate() {
     try {
@@ -380,6 +393,25 @@ export const useStore = create<AppStore>((set, get) => ({
       get().reportCmdError(errText(e));
       return null;
     }
+  },
+
+  // PR 9: the opportunity list is derived/advisory — a read-only fetch, never
+  // a mutation. Empty on a healthy finished base (honest quiet).
+  async nextMoves() {
+    try {
+      return await backend.nextMoves();
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return [];
+    }
+  },
+
+  openAuditTab(tab) {
+    set({ auditRequest: tab });
+  },
+
+  clearAuditRequest() {
+    set({ auditRequest: null });
   },
 
   // W2b-D: the optimizer is derived/advisory — a read-only fetch, never a

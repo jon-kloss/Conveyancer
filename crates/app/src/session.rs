@@ -2256,6 +2256,20 @@ impl Session {
         self.empire_solve(&T0Edit::Recompute, None)
     }
 
+    /// Ranked next-move opportunities (PR 9). Computed on demand over a fresh
+    /// read-only solve, exactly like the advisor feed — no persistence, no new
+    /// commands, nothing undoable (a read-only projection).
+    pub fn next_moves(&mut self) -> Vec<crate::opportunities::Opportunity> {
+        let derived = self.solve_all_readonly();
+        crate::opportunities::derive_opportunities(
+            &self.state,
+            &self.gamedata,
+            &derived,
+            &self.world,
+            &self.unlocked,
+        )
+    }
+
     /// Read-only train answer-sheet for a PROSPECTIVE route (task #49): given
     /// two factories, a transport kind, a demand rate, and the moved item,
     /// return the trains-needed answer from the canonical transport math. The
