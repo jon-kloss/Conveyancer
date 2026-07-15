@@ -23,7 +23,10 @@ RUN corepack enable
 WORKDIR /app/renderer
 
 # Install deps against the lockfile first (cached until the lockfile changes).
-COPY renderer/package.json renderer/pnpm-lock.yaml ./
+# pnpm-workspace.yaml MUST be here too: it carries the `allowBuilds` approval for
+# esbuild's build script, without which pnpm hard-errors on the ignored build in
+# this non-CI shell (ERR_PNPM_IGNORED_BUILDS).
+COPY renderer/package.json renderer/pnpm-lock.yaml renderer/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Then the renderer sources (includes the committed src/wasm/web-pkg) and build.
