@@ -24,8 +24,10 @@ shell = [
 # feature — `cargo tauri build` enables it implicitly, but we invoke cargo
 # directly, so shipping builds MUST use `--features prod`.
 prod = ["shell", "tauri/custom-protocol"]
-# The headless HTTP dev bridge (tiny_http). Needs a plan file, hence sqlite.
-bridge = ["dep:tiny_http", "sqlite"]
+# The headless HTTP dev bridge (tiny_http). Serves the FULL API — including the
+# AI-rank endpoint — so it needs a plan file (`sqlite`) and the provider client
+# (`native-http`); the e2e AI-rank specs drive that endpoint against a stub.
+bridge = ["dep:tiny_http", "sqlite", "native-http"]
 # The blocking HTTP client (ureq) behind the AI provider call. Off for wasm —
 # `execute_rank` then returns the heuristic fallback (JS fetch is Phase 4).
 native-http = ["dep:ureq"]
