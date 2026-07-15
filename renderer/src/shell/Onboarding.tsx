@@ -18,14 +18,23 @@ export default function Onboarding() {
 
   const done = () => saveViewState({ onboarded: true });
 
+  const onFixture = gamedata.buildVersion === "fixture";
+  // On the web build the catalog comes from an in-app Docs.json upload, not the
+  // desktop FICSIT_DOCS_JSON env var — so give the web-honest instruction.
+  const catalogHint = __WASM_BACKEND__
+    ? onFixture
+      ? "UPLOAD YOUR DOCS.JSON FOR THE FULL RECIPE CATALOG"
+      : "REAL CATALOG LOADED"
+    : "POINT FICSIT_DOCS_JSON AT A REAL INSTALL TO RE-EXTRACT";
+
   return (
     <div className="onboard-card" data-testid="onboarding">
       <div className="t-title" style={{ fontSize: 16 }}>
         THE MAP IS THE FACTORY PLANNER
       </div>
       <div className="mono onboard-source">
-        CATALOG: {gamedata.buildVersion === "fixture" ? "BUNDLED FIXTURE" : `GAME BUILD ${gamedata.buildVersion}`} ·{" "}
-        {Object.keys(gamedata.recipes).length} RECIPES · POINT FICSIT_DOCS_JSON AT A REAL INSTALL TO RE-EXTRACT
+        CATALOG: {onFixture ? "BUNDLED FIXTURE" : `GAME BUILD ${gamedata.buildVersion}`} ·{" "}
+        {Object.keys(gamedata.recipes).length} RECIPES · {catalogHint}
       </div>
       <div className="onboard-doors">
         <button
@@ -61,6 +70,19 @@ export default function Onboarding() {
           <span className="mono onboard-key">S</span>
           <span>Import a save as ◆ built</span>
         </button>
+        {__WASM_BACKEND__ && onFixture && (
+          <button
+            className="onboard-door"
+            onClick={() => {
+              done();
+              document.querySelector<HTMLButtonElement>('[data-testid="btn-upload-docs"]')?.click();
+            }}
+            data-testid="door-docs"
+          >
+            <span className="mono onboard-key">↑</span>
+            <span>Upload your Docs.json</span>
+          </button>
+        )}
       </div>
       <button className="btn btn-ghost" onClick={done} style={{ alignSelf: "center" }} data-testid="onboard-skip">
         JUST THE MAP

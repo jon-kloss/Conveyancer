@@ -29,6 +29,11 @@ const KEY = "current";
 /** Where a blob that fails to reconstruct a session is parked (M2) so a corrupt
  *  or version-mismatched save never bricks the app AND is not silently lost. */
 const CORRUPT_KEY = "current-corrupt";
+/** The uploaded Docs.json (Phase 4a), kept in the SAME object store under its
+ *  own key so a real game catalog survives reloads. `undefined` → the bundled
+ *  fixture compiled into web_bg.wasm. Stored as the raw uploaded bytes (the
+ *  Rust `decode` handles gzip), and passed to `WebSession(docs, plan)` on boot. */
+const DOCS_KEY = "docs";
 
 /** The dispatch envelope Rust returns (M1): `mutated` is the authoritative
  *  "did this write the store?" signal; `result` is the marshaled reply. */
@@ -74,6 +79,29 @@ async function saveBlob(bytes: Uint8Array): Promise<void> {
   });
 }
 
+async function loadDocs(): Promise<Uint8Array | undefined> {
+  const db = await openDb();
+  return new Promise<Uint8Array | undefined>((resolve, reject) => {
+    const req = db.transaction(STORE, "readonly").objectStore(STORE).get(DOCS_KEY);
+    req.onsuccess = () => {
+      const v = req.result as Uint8Array | ArrayBuffer | undefined;
+      if (!v) resolve(undefined);
+      else resolve(v instanceof Uint8Array ? v : new Uint8Array(v));
+    };
+    req.onerror = () => reject(req.error ?? new Error("indexedDB docs get failed"));
+  });
+}
+
+async function saveDocs(bytes: Uint8Array): Promise<void> {
+  const db = await openDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(new Uint8Array(bytes), DOCS_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("indexedDB docs put failed"));
+  });
+}
+
 /** M2: park an unreadable blob under the `-corrupt` key so it is preserved for
  *  debugging/recovery but no longer sits on the boot path. Best-effort — a
  *  failure to back it up must not stop the app from booting fresh. */
@@ -96,18 +124,20 @@ let ready: Promise<void> | null = null;
 function ensureReady(): Promise<void> {
   ready ??= (async () => {
     await init({ module_or_path: wasmUrl });
-    const blob = await loadBlob();
-    // docs_json = undefined → the wasm build's bundled fixture catalog (upload
-    // UX is Phase 4). blob → reconstruct the saved plan, else a fresh empty one.
+    const [blob, docs] = await Promise.all([loadBlob(), loadDocs()]);
+    // docs → a previously-uploaded real Docs.json (Phase 4a); undefined → the
+    // bundled fixture catalog compiled into the wasm. blob → reconstruct the
+    // saved plan, else a fresh empty one.
     if (blob) {
       try {
-        session = new WebSession(undefined, blob);
+        session = new WebSession(docs, blob);
         return;
       } catch (e) {
         // M2: the saved blob is corrupt or from a mismatched SNAPSHOT_VERSION.
         // Durability of one plan must never cost the ability to open the app:
         // back the bad blob up, warn, and boot a FRESH session. (Caching the
-        // rejected promise here would brick the app permanently.)
+        // rejected promise here would brick the app permanently.) The docs are
+        // kept — a bad plan blob must not also discard the uploaded catalog.
         console.warn(
           "[wasm-worker] saved plan is unreadable — starting fresh; a backup was kept under the -corrupt key",
           e,
@@ -115,15 +145,37 @@ function ensureReady(): Promise<void> {
         await backupCorruptBlob(blob);
       }
     }
-    session = new WebSession(undefined, undefined);
+    session = new WebSession(docs, undefined);
   })();
   return ready;
 }
 
+/** Phase 4a: swap in an uploaded Docs.json without losing the current plan.
+ *  gamedata is set only at construction, so this REBUILDS the WebSession from
+ *  the uploaded catalog bytes plus the current plan's exported snapshot, then
+ *  persists both (docs under DOCS_KEY, the re-exported plan under KEY). If no
+ *  session exists yet (upload before first hydrate), construct fresh over the
+ *  saved plan blob. Throws are surfaced to the caller's rejected promise. */
+async function uploadDocs(bytes: Uint8Array): Promise<void> {
+  await ensureReady();
+  const planBlob = session ? session.export_blob() : await loadBlob();
+  // Copy off the wasm heap before the old session is dropped/replaced.
+  const planCopy = planBlob && planBlob.length > 0 ? new Uint8Array(planBlob) : undefined;
+  const next = new WebSession(bytes, planCopy);
+  session = next;
+  await saveDocs(bytes);
+  await saveBlob(session.export_blob());
+}
+
 interface Req {
   id: number;
-  cmd: string;
+  /** Control message kind. Absent → the normal `dispatch(cmd, args)` path.
+   *  "upload_docs" → rebuild the session over an uploaded Docs.json (Phase 4a). */
+  kind?: "upload_docs";
+  cmd?: string;
   args?: unknown;
+  /** upload_docs payload: the raw uploaded Docs.json bytes. */
+  bytes?: Uint8Array;
 }
 
 // Serialize every request behind a single promise chain (see header): a
@@ -173,11 +225,19 @@ function scheduleViewSnapshot(): void {
 }
 
 self.onmessage = (e: MessageEvent<Req>) => {
-  const { id, cmd, args } = e.data;
+  const { id, kind, cmd, args, bytes } = e.data;
   chain = chain.then(async () => {
     try {
+      // Control path: rebuild the session over an uploaded Docs.json (Phase 4a).
+      // Not a `dispatch` — gamedata is construction-only — so it is handled here,
+      // on the same serialization chain so no request interleaves the swap.
+      if (kind === "upload_docs") {
+        await uploadDocs(bytes ?? new Uint8Array());
+        self.postMessage({ id, ok: true, result: undefined });
+        return;
+      }
       await ensureReady();
-      const env = session!.dispatch(cmd, args) as Envelope;
+      const env = session!.dispatch(cmd!, args) as Envelope;
       if (env.mutated) {
         // L1: coalesce the frequent view-state write; every other mutation
         // snapshots inline (and flushes any pending view-state write with it).

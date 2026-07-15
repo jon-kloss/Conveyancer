@@ -15,6 +15,16 @@
 // specs.
 
 import { test, expect, type Page } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+// The bundled fixture catalog on disk — the SAME JSON compiled into the wasm as
+// the default. Uploading it exercises the whole upload→persist→reload path; the
+// observable signal is `buildVersion` flipping "fixture" → "uploaded" (the wasm
+// tags an uploaded Docs.json), which is what turns the first-run upload prompt
+// off. Resolved relative to this spec so cwd does not matter.
+const DOCS_FIXTURE = fileURLToPath(
+  new URL("../../crates/gamedata/assets/docs-fixture.json", import.meta.url),
+);
 
 /** The in-page store + backend handles store.ts exposes in the web build
  *  (__WASM_BACKEND__ guard). Only the members the smoke needs are typed. */
@@ -27,6 +37,7 @@ interface StoreWin {
         factories: Record<string, { name: string }>;
         proposals: Record<string, unknown>;
       };
+      gamedata: { buildVersion: string; recipes: Record<string, unknown> };
       dispatch(cmds: unknown[], opts?: { select?: boolean }): Promise<string[] | null>;
     };
   };
@@ -66,6 +77,12 @@ function proposalCount(page: Page): Promise<number> {
   return page.evaluate(
     () =>
       Object.keys((window as unknown as StoreWin).__ficsitStore.getState().plan.proposals).length,
+  );
+}
+
+function buildVersion(page: Page): Promise<string> {
+  return page.evaluate(
+    () => (window as unknown as StoreWin).__ficsitStore.getState().gamedata.buildVersion,
   );
 }
 
@@ -212,4 +229,42 @@ test("M2: a corrupt saved blob boots fresh, not bricked, and is backed up", asyn
     { dbName: DB_NAME, store: STORE, corruptKey: CORRUPT_KEY },
   );
   expect(backedUp, "the unreadable blob was backed up under the -corrupt key").toBe(true);
+});
+
+// Phase 4a — uploading a Docs.json runs the browser session on a real catalog
+// instead of the bundled fixture, AND that choice survives a reload. Drives the
+// REAL UI: the hidden file input the "UPLOAD DOCS.JSON" button proxies. The
+// worker rebuilds the WebSession over the uploaded bytes (preserving the plan)
+// and persists them under the docs key; on reload the worker reads them back.
+test("Phase 4a: uploading a Docs.json swaps the catalog and persists across reload", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await waitReady(page);
+  expect(await buildVersion(page), "boots on the bundled fixture catalog").toBe("fixture");
+
+  // Upload through the real input the button drives (setInputFiles fires its
+  // onChange → store.uploadDocs → worker rebuild → hydrate). The button is
+  // web-only; the input is present in the built web app (__WASM_BACKEND__).
+  await page.getByTestId("docs-file-input").setInputFiles(DOCS_FIXTURE);
+
+  // The catalog is now a real (uploaded) one: the wasm tags it "uploaded", and
+  // the recipe set is non-empty. This is the signal the first-run prompt reads.
+  await expect
+    .poll(() => buildVersion(page), { timeout: 30_000 })
+    .toBe("uploaded");
+  const recipeCount = await page.evaluate(
+    () =>
+      Object.keys(
+        (window as unknown as StoreWin).__ficsitStore.getState().gamedata.recipes,
+      ).length,
+  );
+  expect(recipeCount, "the uploaded catalog has recipes").toBeGreaterThan(0);
+
+  // RELOAD + PERSIST — the worker reads the docs bytes back out of IndexedDB and
+  // reconstructs the session on the real catalog. If docs were not persisted,
+  // this would fall back to "fixture" (the M-class bug this test guards).
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "the uploaded catalog persisted across reload").toBe("uploaded");
 });

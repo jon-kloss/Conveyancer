@@ -86,6 +86,20 @@ export class WasmBackend implements Backend {
     });
   }
 
+  /** Phase 4a: upload a real Docs.json. This is a worker CONTROL message, not a
+   *  `dispatch` — gamedata is set only at session construction, so the worker
+   *  rebuilds the WebSession over the uploaded catalog while preserving the
+   *  plan. Same id-correlated reply path as `call`; the payload carries `bytes`
+   *  and a `kind` the worker branches on ahead of the dispatch router. */
+  uploadDocs(bytes: Uint8Array): Promise<void> {
+    if (this.deadError) return Promise.reject(this.deadError);
+    const id = ++this.seq;
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.worker.postMessage({ id, kind: "upload_docs", bytes });
+    });
+  }
+
   hydrate() {
     return this.call<InitPayload>("hydrate");
   }
