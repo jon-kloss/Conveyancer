@@ -18,7 +18,10 @@ export default function Onboarding() {
 
   const done = () => saveViewState({ onboarded: true });
 
-  const onFixture = gamedata.buildVersion === "fixture";
+  // Treat "not hydrated yet" (buildVersion is "" until the first hydrate lands)
+  // as the fixture state, so the pre-hydrate empty-plan window doesn't briefly
+  // render "REAL CATALOG LOADED" with the upload door hidden before flipping.
+  const onFixture = !gamedata.buildVersion || gamedata.buildVersion === "fixture";
   // On the web build the catalog comes from an in-app Docs.json upload, not the
   // desktop FICSIT_DOCS_JSON env var — so give the web-honest instruction.
   const catalogHint = __WASM_BACKEND__

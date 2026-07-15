@@ -92,6 +92,54 @@ const DB_NAME = "ficsit-planner";
 const STORE = "plans";
 const KEY = "current";
 const CORRUPT_KEY = "current-corrupt";
+const DOCS_KEY = "docs";
+const DOCS_CORRUPT_KEY = "docs-corrupt";
+
+/** Seed a value under an IndexedDB key in the worker's DB (creates the store if
+ *  the first boot hasn't yet). Used to plant corrupt bytes on the boot path. */
+function seedKey(page: Page, key: string, bytes: number[]): Promise<void> {
+  return page.evaluate(
+    ({ dbName, store, k, b }) =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(store);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(store, "readwrite");
+          tx.objectStore(store).put(new Uint8Array(b), k);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+    { dbName: DB_NAME, store: STORE, k: key, b: bytes },
+  );
+}
+
+/** Read a key from the worker's DB; resolves whether a value is present. */
+function hasKey(page: Page, key: string): Promise<boolean> {
+  return page.evaluate(
+    ({ dbName, store, k }) =>
+      new Promise<boolean>((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(store);
+        req.onsuccess = () => {
+          const db = req.result;
+          const g = db.transaction(store, "readonly").objectStore(store).get(k);
+          g.onsuccess = () => {
+            db.close();
+            resolve(!!g.result);
+          };
+          g.onerror = () => reject(g.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+    { dbName: DB_NAME, store: STORE, k: key },
+  );
+}
 
 test("boots the wasm session, edits, and persists across reload", async ({ page }) => {
   // BOOT — fresh context ⇒ empty IndexedDB ⇒ the bundled fixture plan (no
@@ -267,4 +315,30 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   await page.reload();
   await waitReady(page);
   expect(await buildVersion(page), "the uploaded catalog persisted across reload").toBe("uploaded");
+});
+
+// Phase 4a durability — the docs analogue of M2. A stored Docs.json that a later
+// wasm's parse_docs no longer accepts (a version bump) must NOT brick the boot:
+// ensureReady degrades to the bundled fixture, parks the bad docs under
+// docs-corrupt, and clears the docs key so the next boot doesn't re-throw. This
+// guards the exact "permanent brick on a version bump" hazard the plan-blob M2
+// fix closed, now for the catalog.
+test("Phase 4a: corrupt stored docs boot fresh on the fixture, not bricked", async ({ page }) => {
+  // Boot once so the worker creates the DB + object store.
+  await page.goto("/");
+  await waitReady(page);
+
+  // Plant unparseable bytes under the docs key (as a stale/incompatible catalog).
+  await seedKey(page, DOCS_KEY, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  // Reload — the worker meets the bad docs on boot. The app must still come up
+  // (waitReady asserts error === null) on the BUNDLED FIXTURE, not bricked.
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "bad docs → boots on the bundled fixture").toBe("fixture");
+
+  // The bad docs were parked under docs-corrupt AND the docs key was cleared, so
+  // the next boot won't re-throw on them.
+  expect(await hasKey(page, DOCS_CORRUPT_KEY), "the bad docs were backed up").toBe(true);
+  expect(await hasKey(page, DOCS_KEY), "the bad docs key was cleared off the boot path").toBe(false);
 });

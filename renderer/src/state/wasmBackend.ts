@@ -96,7 +96,10 @@ export class WasmBackend implements Backend {
     const id = ++this.seq;
     return new Promise<void>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.worker.postMessage({ id, kind: "upload_docs", bytes });
+      // TRANSFER the buffer (not structured-clone it): a real Docs.json is
+      // multi-MB and the caller never reuses these bytes after the upload, so
+      // move ownership to the worker instead of copying it across the boundary.
+      this.worker.postMessage({ id, kind: "upload_docs", bytes }, [bytes.buffer]);
     });
   }
 

@@ -34,6 +34,11 @@ const CORRUPT_KEY = "current-corrupt";
  *  fixture compiled into web_bg.wasm. Stored as the raw uploaded bytes (the
  *  Rust `decode` handles gzip), and passed to `WebSession(docs, plan)` on boot. */
 const DOCS_KEY = "docs";
+/** Where uploaded docs that fail to reconstruct a session are parked, mirroring
+ *  CORRUPT_KEY for the plan (Phase 4a). A wasm deploy whose `parse_docs` no
+ *  longer accepts previously-stored bytes must degrade to the bundled fixture,
+ *  never brick the boot — durability of a catalog cannot cost opening the app. */
+const DOCS_CORRUPT_KEY = "docs-corrupt";
 
 /** The dispatch envelope Rust returns (M1): `mutated` is the authoritative
  *  "did this write the store?" signal; `result` is the marshaled reply. */
@@ -119,6 +124,37 @@ async function backupCorruptBlob(bytes: Uint8Array): Promise<void> {
   }
 }
 
+/** Park unreadable uploaded docs under the `-corrupt` key AND clear DOCS_KEY so
+ *  the bad catalog leaves the boot path (a fresh boot degrades to the bundled
+ *  fixture instead of re-throwing on it forever). Best-effort like the blob
+ *  backup — a failure here must not stop the app booting. */
+async function backupCorruptDocs(bytes: Uint8Array): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const os = tx.objectStore(STORE);
+      os.put(new Uint8Array(bytes), DOCS_CORRUPT_KEY);
+      os.delete(DOCS_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("indexedDB docs backup failed"));
+    });
+  } catch (e) {
+    console.warn("[wasm-worker] could not back up the corrupt docs", e);
+  }
+}
+
+/** Construct a WebSession, returning null (not throwing) on failure so the boot
+ *  cascade can degrade one argument at a time. */
+function tryConstruct(docs: Uint8Array | undefined, blob: Uint8Array | undefined): WebSession | null {
+  try {
+    return new WebSession(docs, blob);
+  } catch (e) {
+    console.warn("[wasm-worker] WebSession construction failed", e);
+    return null;
+  }
+}
+
 let session: WebSession | null = null;
 let ready: Promise<void> | null = null;
 function ensureReady(): Promise<void> {
@@ -127,25 +163,51 @@ function ensureReady(): Promise<void> {
     const [blob, docs] = await Promise.all([loadBlob(), loadDocs()]);
     // docs → a previously-uploaded real Docs.json (Phase 4a); undefined → the
     // bundled fixture catalog compiled into the wasm. blob → reconstruct the
-    // saved plan, else a fresh empty one.
+    // saved plan, else a fresh empty one. EITHER argument can make construction
+    // throw — a corrupt/version-mismatched plan blob (M2) OR uploaded docs whose
+    // bytes a newer wasm's parse_docs no longer accepts — so the boot degrades
+    // one argument at a time. Durability of neither the plan NOR the catalog may
+    // cost the ability to open the app; a fresh fixture session always boots.
+
+    // 1. Full fidelity: uploaded catalog + saved plan.
+    session = tryConstruct(docs, blob);
+    if (session) return;
+
+    // 2. Something failed. If a plan blob is present, suspect it first: keep the
+    //    catalog, drop the plan (back it up under -corrupt).
     if (blob) {
-      try {
-        session = new WebSession(docs, blob);
-        return;
-      } catch (e) {
-        // M2: the saved blob is corrupt or from a mismatched SNAPSHOT_VERSION.
-        // Durability of one plan must never cost the ability to open the app:
-        // back the bad blob up, warn, and boot a FRESH session. (Caching the
-        // rejected promise here would brick the app permanently.) The docs are
-        // kept — a bad plan blob must not also discard the uploaded catalog.
+      const s = tryConstruct(docs, undefined);
+      if (s) {
         console.warn(
           "[wasm-worker] saved plan is unreadable — starting fresh; a backup was kept under the -corrupt key",
-          e,
         );
         await backupCorruptBlob(blob);
+        session = s;
+        return;
       }
     }
-    session = new WebSession(docs, undefined);
+
+    // 3. Still failing → the DOCS are unreadable (a wasm/parse_docs change no
+    //    longer accepts the stored bytes). Degrade to the bundled fixture, but
+    //    keep the plan if it loads on the fixture. Park + clear the bad docs so
+    //    the next boot does not re-throw on them.
+    if (docs) {
+      console.warn(
+        "[wasm-worker] uploaded Docs.json is unreadable — falling back to the bundled fixture; a backup was kept under the docs-corrupt key",
+      );
+      await backupCorruptDocs(docs);
+      const s = tryConstruct(undefined, blob);
+      if (s) {
+        session = s;
+        return;
+      }
+      // Plan ALSO unreadable on the fixture → back it up too.
+      if (blob) await backupCorruptBlob(blob);
+    }
+
+    // 4. Nothing salvageable: a fresh fixture session. This construction cannot
+    //    fail (no external bytes) — the app always opens.
+    session = new WebSession(undefined, undefined);
   })();
   return ready;
 }
