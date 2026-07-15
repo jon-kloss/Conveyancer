@@ -10,86 +10,20 @@
 // overrides render with an OVERRIDE badge; route/claim steps are labelled
 // manual-only because completion can't be detected in the save.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtRate } from "../lib/format";
-import ItemIcon from "../lib/ItemIcon";
-import AiSettings from "./AiSettings";
-import type {
-  BuildStep,
-  Cutover,
-  CutoverPlan,
-  CutoverStep,
-  Opportunity,
-  OpportunityKind,
-  RankResponse,
-} from "../state/types";
+import NextMovesFeed from "../next/NextMovesFeed";
+import type { BuildStep, Cutover, CutoverPlan, CutoverStep } from "../state/types";
 import "./dashboard.css";
 
 const GLYPH: Record<string, string> = { pending: "◇", partial: "◈", done: "◆" };
-
-/** Family chip labels for NEXT MOVES cards (PR 9). */
-const MOVE_LABEL: Record<OpportunityKind, string> = {
-  power_deficit: "POWER",
-  deficit_repair: "DEFICIT",
-  route_bottleneck_fix: "ROUTE",
-  power_margin: "MARGIN",
-  milestone_gap: "MILESTONE",
-  alt_adopt: "ALT",
-  under_extracted: "CLOCK",
-  untapped_node: "NODE",
-};
 
 const CUTOVER_PHASES = [
   { key: "build_new", label: "BUILD NEW" },
   { key: "switch", label: "SWITCH" },
   { key: "dismantle", label: "DISMANTLE" },
 ] as const;
-
-/** PR 10 (review M5): fold a FRESH heuristic card list into the ranked view
- *  after a plan edit, without a model round-trip. The model's ORDER is cheap
- *  opinion and may go stale between opens; its PROSE quotes numbers — and
- *  prose never outlives the evidence it quoted. So: keep the model's order
- *  for surviving cards, but every card body comes from the fresh fetch, a
- *  note survives ONLY while its card's evidence is byte-identical to what
- *  the note was written against, vanished cards drop, new cards append in
- *  fresh (heuristic) relative order un-noted, and the headline survives only
- *  while the top card's id AND evidence are both unchanged. Exported pure —
- *  unit-pinnable without mounting the dashboard. */
-export function mergeRank(prev: RankResponse | null, fresh: Opportunity[]): RankResponse {
-  if (!prev || prev.engine !== "model") {
-    // Nothing model-authored to preserve: plain heuristic swap. A prior
-    // fetch error is carried on the object (state stays truthful) but is
-    // never re-surfaced per edit — rankMoves() already chipped it once.
-    return { engine: "heuristic", opportunities: fresh, ...(prev?.error ? { error: prev.error } : {}) };
-  }
-  const freshById = new Map(fresh.map((o) => [o.id, o]));
-  const merged: Opportunity[] = [];
-  for (const p of prev.opportunities) {
-    const f = freshById.get(p.id);
-    if (!f) continue; // subject vanished — the card goes with it
-    freshById.delete(p.id);
-    // Evidence gate: byte-identical evidence keeps the note; any drift drops
-    // it (a "15% headroom" note under refreshed 40% evidence is a visible
-    // self-contradiction).
-    merged.push(p.note !== undefined && f.evidence === p.evidence ? { ...f, note: p.note } : f);
-  }
-  for (const f of fresh) {
-    if (freshById.has(f.id)) merged.push(f); // new since the rank — un-noted
-  }
-  const headlineSurvives =
-    prev.headline !== undefined &&
-    merged.length > 0 &&
-    prev.opportunities.length > 0 &&
-    merged[0].id === prev.opportunities[0].id &&
-    merged[0].evidence === prev.opportunities[0].evidence;
-  return {
-    engine: prev.engine,
-    ...(prev.model !== undefined ? { model: prev.model } : {}),
-    ...(headlineSurvives ? { headline: prev.headline } : {}),
-    opportunities: merged,
-  };
-}
 
 export default function Dashboard() {
   const plan = useStore((s) => s.plan);
@@ -103,12 +37,6 @@ export default function Dashboard() {
   const setWizard = useStore((s) => s.setWizard);
   const markBuildDone = useStore((s) => s.markBuildDone);
   const cutoverPlan = useStore((s) => s.cutoverPlan);
-  const rankMoves = useStore((s) => s.rankMoves);
-  const nextMoves = useStore((s) => s.nextMoves);
-  const openAuditTab = useStore((s) => s.openAuditTab);
-  const requestFly = useStore((s) => s.requestFly);
-  const world = useStore((s) => s.world);
-  const planHash = useStore((s) => s.planHash);
 
   const itemName = (cls: string) => gamedata.items[cls]?.displayName ?? cls;
   const queue = derived.buildQueue;
@@ -142,50 +70,6 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutoverSig, cutoverPlan]);
 
-  // NEXT MOVES (PR 9/10): fetched LAZILY when the dashboard opens — this
-  // component only mounts while dashboardOpen, so mount-fetch IS open-fetch,
-  // and unmount discards the list (no stale cards from a previous plan).
-  // null = still loading → the section stays hidden (no spinner flash).
-  // PR 10: the fetch goes through /api/next/rank, which is card-identical to
-  // /api/next when no model is configured and adds ONLY reorder + attributed
-  // prose (headline/notes) when one is; a failed model call falls back to the
-  // heuristic list with the error surfaced on the status-bar chip (in
-  // rankMoves) — the dashboard itself never blocks on the model.
-  const [rank, setRank] = useState<RankResponse | null>(null);
-  // bumped after an AI-settings save so the list re-ranks immediately
-  const [rankEpoch, setRankEpoch] = useState(0);
-  // Last-writer-wins across BOTH fetch paths below: each fetch takes a seq,
-  // and only the newest one may write — a slow model rank can never clobber
-  // the heuristic merge that a later edit already landed (and vice versa).
-  const fetchSeq = useRef(0);
-
-  // Full model rank ONLY on mount (open) and after a config save (rankEpoch).
-  // The provider is a paid/latent round-trip; an open dashboard must not
-  // re-bill it per edit.
-  useEffect(() => {
-    const seq = ++fetchSeq.current;
-    void rankMoves().then((r) => {
-      if (fetchSeq.current === seq) setRank(r);
-    });
-  }, [rankMoves, rankEpoch]);
-
-  // Plan edits while open: refetch the FREE heuristic list (a card whose
-  // subject vanished refreshes away instead of dead-clicking) and merge it
-  // under the model's standing order via mergeRank — order kept, prose
-  // evidence-gated, no model call. Skip the mount-time run (the effect above
-  // owns the first fetch); the ref-compare also keeps StrictMode's dev
-  // double-invoke from firing a redundant fetch.
-  const lastMergedHash = useRef(planHash);
-  useEffect(() => {
-    if (lastMergedHash.current === planHash) return;
-    lastMergedHash.current = planHash;
-    const seq = ++fetchSeq.current;
-    void nextMoves().then((fresh) => {
-      if (fetchSeq.current === seq) setRank((prev) => mergeRank(prev, fresh));
-    });
-  }, [nextMoves, planHash]);
-  const moves = rank?.opportunities ?? null;
-
   const doneCount = useMemo(() => queue.filter((s) => s.done).length, [queue]);
   const partial = useMemo(() => queue.filter((s) => s.state === "partial"), [queue]);
   const nextStep = useMemo(() => queue.find((s) => !s.done), [queue]);
@@ -203,60 +87,6 @@ export default function Dashboard() {
   );
 
   const dismiss = () => setDashboardOpen(false);
-
-  // Where the camera should land for a select action (M5). Node resolution
-  // uses the SAME precedence as the Rust untapped ranking (post-L3): a cave
-  // node's ENTRANCE always wins (you route via it), the plan-local override
-  // corrects entrance-less nodes, else the catalog x/y. Missing subject →
-  // null (fail-quiet: the selection still dispatches, the map just doesn't
-  // pan — same contract as a GO THERE onto a deleted step).
-  const movePos = (a: Opportunity["action"]): { x: number; y: number } | null => {
-    if (a.kind === "selectFactory") return plan.factories[a.id]?.position ?? null;
-    if (a.kind === "selectNode") {
-      const n = world.nodes.find((w) => w.id === a.id);
-      const pos = n?.entrance ?? plan.nodeOverrides[a.id]?.pos ?? n;
-      return pos ? { x: pos.x, y: pos.y } : null;
-    }
-    if (a.kind === "selectRoute") {
-      const p = plan.routes[a.id]?.path ?? [];
-      if (p.length === 0) return null;
-      // path midpoint: middle vertex, or the average of the middle pair
-      const lo = p[Math.floor((p.length - 1) / 2)];
-      const hi = p[Math.ceil((p.length - 1) / 2)];
-      return { x: (lo.x + hi.x) / 2, y: (lo.y + hi.y) / 2 };
-    }
-    return null;
-  };
-
-  // NEXT MOVES actions — every one lands on an existing pipe: the wizard
-  // prefill (FIX WITH SOLVER pattern), a map selection (same as GO THERE) plus
-  // a camera fly to the subject, or an audit tab. The dashboard always
-  // dismisses so the target shows through.
-  const actMove = (o: Opportunity) => {
-    const a = o.action;
-    if (a.kind === "wizardGoal") {
-      dismiss();
-      setWizard({ open: true, prefill: { item: a.item, rate: a.rate } });
-    } else if (a.kind === "selectRoute" || a.kind === "selectNode" || a.kind === "selectFactory") {
-      setView({ mode: "map" });
-      setSelection(
-        a.kind === "selectRoute"
-          ? { kind: "route", id: a.id }
-          : a.kind === "selectNode"
-            ? { kind: "node", id: a.id }
-            : { kind: "factory", id: a.id },
-      );
-      const pos = movePos(a);
-      if (pos) requestFly(pos);
-      dismiss();
-    } else {
-      dismiss();
-      openAuditTab(a.tab);
-    }
-  };
-
-  const moveVerb = (o: Opportunity) =>
-    o.action.kind === "wizardGoal" ? "PLAN IT" : o.action.kind === "openAudit" ? "OPEN" : "SHOW";
 
   // "go there" — reveal the step on the underlying view, then dismiss so the
   // restored map/factory shows through unchanged.
@@ -484,61 +314,11 @@ export default function Dashboard() {
             )}
           </section>
 
-          {/* NEXT MOVES (PR 9/10): ranked opportunities from derived state.
-              The SECTION HEADER renders unconditionally (review M6): the
-              AiSettings chip is the only way to fix a broken endpoint, so it
-              must never hide behind that endpoint's response. Cards stay
-              gated — loading (moves null) shows the header alone, an empty
-              list gets one honest dim line (a healthy finished base). */}
-          <section className="dash-section" data-testid="next-moves">
-            <div className="dash-move-head">
-              <h3 className="t-label">NEXT MOVES{moves ? ` (${moves.length})` : ""}</h3>
-              <AiSettings onSaved={() => setRankEpoch((n) => n + 1)} />
-            </div>
-            {/* Model headline: attributed prose, never confusable with the
-                solver's evidence lines (AI chip + dim italic). */}
-            {rank?.engine === "model" && rank.headline && (
-              <div className="dash-ai-line" data-testid="ai-headline">
-                <span className="dash-badge ai mono">AI · {rank.model}</span>
-                <span className="dash-ai-text">{rank.headline}</span>
-              </div>
-            )}
-            {(moves ?? []).slice(0, 3).map((o) => (
-              <div className="dash-move" key={o.id} data-testid="next-move">
-                <span className="dash-badge dash-move-kind">{MOVE_LABEL[o.kind]}</span>
-                {o.item && (
-                  <ItemIcon item={o.item} displayName={gamedata.items[o.item]?.displayName} size={20} />
-                )}
-                <span className="dash-step-main">
-                  <span className="dash-step-label">{o.title}</span>
-                  <span className="dash-step-detail mono" data-testid="next-move-evidence">
-                    {o.evidence}
-                  </span>
-                  {/* Model note: commentary ONLY — the evidence line above
-                      stays the authority, byte-identical to heuristic mode. */}
-                  {rank?.engine === "model" && o.note && (
-                    <span className="dash-ai-note" data-testid="next-move-note">
-                      <span className="dash-badge ai mono">AI</span>
-                      <span className="dash-ai-text">{o.note}</span>
-                    </span>
-                  )}
-                </span>
-                <button className="chip warn dash-move-act" data-testid="next-move-action" onClick={() => actMove(o)}>
-                  {moveVerb(o)}
-                </button>
-              </div>
-            ))}
-            {moves && moves.length > 3 && (
-              <div className="dash-line mono dim" data-testid="next-moves-more">
-                +{moves.length - 3} more
-              </div>
-            )}
-            {moves && moves.length === 0 && (
-              <div className="dash-line mono dim" data-testid="next-moves-empty">
-                No open moves — the solver sees nothing to improve.
-              </div>
-            )}
-          </section>
+          {/* NEXT MOVES (PR 9/10/3): the shared feed, reading the single
+              store-owned rank slice — the docked advisor NEXT tab renders the
+              exact same component. `context="dashboard"` dismisses this overlay
+              on every action so the target shows through. */}
+          <NextMovesFeed context="dashboard" />
 
           {/* what's next */}
           {nextStep && (

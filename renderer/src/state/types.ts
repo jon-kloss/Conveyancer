@@ -180,10 +180,20 @@ export interface NodeOverride {
   saveActor?: string | null;
 }
 
+/** PR 3 NEXT-MOVES preferences — plan-scoped advisory filters. They hide
+ *  *suggestions*, never *facts* (a power overdraw is demoted-and-noted, not
+ *  removed). serde-default Rust-side, so absent on pre-PR-3 plans. */
+export interface NextPreferences {
+  noTrains: boolean;
+  ignorePower: boolean;
+}
+
 export interface PlanMeta {
   schemaVersion: number;
   gameBuild: string;
   name: string;
+  /** PR 3 — absent on plans predating it (the store fills a default). */
+  preferences?: NextPreferences;
 }
 
 export interface StyleGuide {
@@ -575,6 +585,28 @@ export interface RankResponse {
   model?: string;
   headline?: string;
   error?: string;
+  opportunities: Opportunity[];
+  /** PR 3 wildcard ideas — model-only and additive; absent on the
+   *  heuristic/offline path (the field is skipped when empty server-side). */
+  wildcards?: Wildcard[];
+}
+
+/** PR 3 — a validated wildcard idea BEYOND the derived candidate list: the one
+ *  labeled, wizard-gated firewall exception. It carries no engine action and no
+ *  trusted numbers. `item` is catalog-validated (absent when the model's hint
+ *  was unknown); `rate` is an editable starting suggestion, never a solver
+ *  fact. "TRY IT" hands it to the wizard — it never writes plan state. */
+export interface Wildcard {
+  title: string;
+  rationale: string;
+  item?: string;
+  rate?: number;
+}
+
+/** POST /api/next/preferences response — the persisted preferences plus a fresh
+ *  heuristic opportunity list. */
+export interface PreferencesView {
+  preferences: NextPreferences;
   opportunities: Opportunity[];
 }
 

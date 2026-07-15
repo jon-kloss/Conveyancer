@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore, errText } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtRate } from "../lib/format";
+import NextMovesFeed from "../next/NextMovesFeed";
 import type { AdvisorCard, ChatReply, ChatScope, ContextSnapshot } from "../state/types";
 import "./advisor.css";
 
@@ -19,7 +20,11 @@ export default function AdvisorPanel() {
   const advisor = useStore((s) => s.advisor);
   const open = useStore((s) => s.advisorOpen);
   const setOpen = useStore((s) => s.setAdvisorOpen);
-  const [tab, setTab] = useState<"feed" | "chat">("feed");
+  // PR 3: the active tab lives in the STORE so the status-bar NEXT chip can
+  // deep-link to it. NEXT joins the FEED|CHAT union.
+  const tab = useStore((s) => s.advisorTab);
+  const setTab = useStore((s) => s.setAdvisorTab);
+  const nextCount = useStore((s) => s.rank?.opportunities.length ?? 0);
 
   const activeCards = advisor.cards.filter((c) => !c.dismissed);
 
@@ -69,6 +74,14 @@ export default function AdvisorPanel() {
           FEED
           {activeCards.length > 0 && <span className="audit-badge">{activeCards.length}</span>}
         </button>
+        <button
+          className={`audit-tab t-label ${tab === "next" ? "active" : ""}`}
+          data-testid="advisor-tab-next"
+          onClick={() => setTab("next")}
+        >
+          NEXT
+          {nextCount > 0 && <span className="audit-badge">{nextCount}</span>}
+        </button>
         <button className={`audit-tab t-label ${tab === "chat" ? "active" : ""}`} onClick={() => setTab("chat")}>
           CHAT
         </button>
@@ -76,7 +89,15 @@ export default function AdvisorPanel() {
           MODEL CALLS {advisor.callsThisHour}/{advisor.callBudget}·H
         </span>
       </div>
-      {tab === "feed" ? <Feed cards={activeCards} muted={advisor.muted} /> : <Chat />}
+      {tab === "feed" ? (
+        <Feed cards={activeCards} muted={advisor.muted} />
+      ) : tab === "next" ? (
+        <div className="advisor-body">
+          <NextMovesFeed context="panel" />
+        </div>
+      ) : (
+        <Chat />
+      )}
       <footer className="advisor-foot mono">
         The advisor never edits your plan — every suggestion becomes a proposal you review.
       </footer>

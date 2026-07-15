@@ -19,7 +19,9 @@ import type {
   ImportSnapshot,
   InitPayload,
   JobProgress,
+  NextPreferences,
   Opportunity,
+  PreferencesView,
   Proposal,
   ProposalConsequence,
   RankResponse,
@@ -61,6 +63,9 @@ export interface Backend {
   /** PR 10: rank-and-narrate over the SAME candidates as nextMoves. Always
    *  answers — unconfigured or failed model calls return the heuristic list. */
   nextRank(): Promise<RankResponse>;
+  /** PR 3: persist plan-scoped NEXT preferences (not undoable, outside
+   *  plan_hash). Returns the updated view. */
+  setPreferences(prefs: NextPreferences): Promise<PreferencesView>;
   /** PR 10: public model-config view (hasKey boolean, never the key). */
   aiConfig(): Promise<AiConfigPublic>;
   /** PR 10: set the in-memory model config (nothing persisted in v1). */
@@ -141,6 +146,9 @@ class TauriBackend implements Backend {
   }
   nextRank() {
     return this.invoke<RankResponse>("next_rank");
+  }
+  setPreferences(prefs: NextPreferences) {
+    return this.invoke<PreferencesView>("set_next_preferences", { prefs });
   }
   aiConfig() {
     return this.invoke<AiConfigPublic>("ai_config_get");
@@ -242,6 +250,9 @@ class BridgeBackend implements Backend {
   }
   nextRank() {
     return this.call<RankResponse>("next/rank", { method: "POST" });
+  }
+  setPreferences(prefs: NextPreferences) {
+    return this.call<PreferencesView>("next/preferences", { method: "POST", body: JSON.stringify(prefs) });
   }
   aiConfig() {
     return this.call<AiConfigPublic>("ai/config");

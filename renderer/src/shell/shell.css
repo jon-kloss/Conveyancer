@@ -132,6 +132,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* PR 3 NEXT chip: the #1 move's title, truncated with an ellipsis. */
+.sb-next {
+  max-width: 30ch;
+  cursor: pointer;
+}
+.sb-next .sb-next-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-100);
+}
 .sb-gen {
   color: var(--ink-500);
 }

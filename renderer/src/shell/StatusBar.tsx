@@ -12,9 +12,16 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   const setView = useStore((s) => s.setView);
   const setSelection = useStore((s) => s.setSelection);
   const setDashboardOpen = useStore((s) => s.setDashboardOpen);
+  const setAdvisorOpen = useStore((s) => s.setAdvisorOpen);
+  const setAdvisorTab = useStore((s) => s.setAdvisorTab);
   const cmdError = useStore((s) => s.cmdError);
   const clearCmdError = useStore((s) => s.clearCmdError);
   const [expanded, setExpanded] = useState(false);
+
+  // PR 3: the always-visible hook into the docked NEXT feed — the #1 move's
+  // title, truncated. Hidden when there are no moves or the rank is still null
+  // (honest quiet, no flash). Click deep-links to the advisor NEXT tab.
+  const topMove = useStore((s) => s.rank?.opportunities[0] ?? null);
 
   // Build-queue resume affordance: Done/total chip that reopens the dashboard.
   const buildQueue = derived.buildQueue;
@@ -124,6 +131,19 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
           title="Resume — build queue (H)"
         >
           ▶ RESUME {buildDone}/{buildQueue.length}
+        </button>
+      )}
+      {topMove && (
+        <button
+          className="sb-item mono sb-next"
+          data-testid="sb-next"
+          onClick={() => {
+            setAdvisorOpen(true);
+            setAdvisorTab("next");
+          }}
+          title={`Next move: ${topMove.title}`}
+        >
+          ▶ NEXT: <span className="sb-next-title">{topMove.title}</span>
         </button>
       )}
       {cmdError && (
