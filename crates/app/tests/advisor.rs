@@ -458,9 +458,9 @@ fn failed_edit_persists_no_advisor_cards() {
     let mut s = Session::in_memory(None).unwrap();
     let (_a, out) = build_starvable(&mut s);
     assert!(s.advisor.cards.is_empty(), "healthy empire, no cards");
-    let disk_cards_before = s.file.load_advisor_cards().unwrap().len();
+    let disk_cards_before = s.store.load_advisor_cards().unwrap().len();
 
-    s.file.faults.fail_commits = 1;
+    s.store.faults_mut().fail_commits = 1;
     assert!(s
         .edit(vec![Command::SetPortRate {
             id: out.clone(),
@@ -473,7 +473,7 @@ fn failed_edit_persists_no_advisor_cards() {
         s.advisor.cards
     );
     assert_eq!(
-        s.file.load_advisor_cards().unwrap().len(),
+        s.store.load_advisor_cards().unwrap().len(),
         disk_cards_before,
         "no phantom persisted cards"
     );
@@ -486,7 +486,7 @@ fn failed_edit_persists_no_advisor_cards() {
         }])
         .unwrap();
     assert!(resp.advisor.cards.iter().any(|c| c.rule == "new_deficit"));
-    assert!(s.file.load_advisor_cards().unwrap().len() > disk_cards_before);
+    assert!(s.store.load_advisor_cards().unwrap().len() > disk_cards_before);
 }
 
 /// Review minor M12: rate-parse failures must not be misreported as item-match
