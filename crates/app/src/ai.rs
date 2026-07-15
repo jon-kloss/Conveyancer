@@ -51,15 +51,16 @@ const PROSE_CLAMP: usize = 240;
 pub const RANK_SYSTEM_PROMPT: &str = "\
 You are a Satisfactory factory advisor inside FICSIT Planner.
 You receive the planner's derived empire state and a FIXED list of candidate next moves.
+The candidates arrive pre-sorted in the planner's own heuristic order — a sane baseline; depart from it only where you see a clear reason.
 The planner already did all the math. You never calculate anything.
 Your only job: RANK the candidates by what the player should do first, and say why, briefly.
 Rules:
 - Reference only candidate ids from the given list. Never invent a candidate or an action.
-- Every number you mention must appear verbatim in the provided evidence. Never derive new numbers.
+- Every number you mention must appear verbatim in the provided state, candidate titles, or evidence lines. Never derive, sum, or convert numbers.
 - Broken things (overdrawn grids, starved factories) usually outrank growth ideas; use judgment on ties.
-- Keep the headline to one sentence naming the single best next move and why it is first.
-- Keep each note to one short sentence about that candidate's rank.
-Reply with STRICT JSON only — no markdown, no code fences — exactly this shape:
+- Headline: one calm sentence, at most 25 words, naming the single best next move and why it is first.
+- Notes: one calm sentence each, at most 20 words, about that candidate's rank.
+Reply with STRICT JSON only — no markdown, no code fences, no text before or after the JSON — exactly this shape:
 {\"order\": [\"<candidate id>\", ...], \"headline\": \"<one sentence>\", \"notes\": {\"<candidate id>\": \"<one sentence>\"}}
 \"order\" must list every candidate id exactly once; \"notes\" entries are optional.";
 
@@ -434,6 +435,60 @@ pub enum RankPrep {
     Call(RankJob),
 }
 
+/// Rank-call projection of the empire snapshot: [`crate::chat::compact_state`]
+/// (Empire scope) REUSED, then post-processed for the model — the chat surface
+/// and the rank call share ONE derivation; this is a view over it, not a fork.
+/// Measured on an 80-factory megabase the unprojected payload was ~16.7k chars
+/// (past Ollama's default 4k-token context — silent truncation for exactly the
+/// local-small-model user the settings hint courts):
+///
+/// - factories lose their `id`: NAMES are the join key everywhere the model
+///   reads (titles, evidence, deficit rows), and 80 ULIDs are ~2k chars the
+///   model never needs.
+/// - zero-rate outputs are dropped, EXCEPT on factories whose `status` is
+///   `built`: a BUILT factory producing zero is the anomaly itself —
+///   filtering it would hide the WHY behind the deficit cards — while
+///   planned/under-construction zeros are definitional clutter (nothing
+///   unbuilt produces yet).
+/// - deficit rows swap the factory ULID for the factory NAME and drop the
+///   `port`/`route` ids the model cannot join on anything.
+/// - circuits and totals pass through untouched.
+pub fn rank_state(s: &mut Session) -> serde_json::Value {
+    let mut state = crate::chat::compact_state(s, &crate::chat::ContextScope::Empire).payload;
+    if let Some(factories) = state.get_mut("factories").and_then(|f| f.as_array_mut()) {
+        for f in factories {
+            let built = f.get("status").and_then(|st| st.as_str()) == Some("built");
+            let Some(obj) = f.as_object_mut() else {
+                continue;
+            };
+            obj.remove("id");
+            if !built {
+                if let Some(outputs) = obj.get_mut("outputs").and_then(|o| o.as_object_mut()) {
+                    outputs.retain(|_, rate| rate.as_f64().unwrap_or(0.0) > 0.0);
+                }
+            }
+        }
+    }
+    if let Some(deficits) = state.get_mut("deficits").and_then(|d| d.as_array_mut()) {
+        for row in deficits {
+            let name = row
+                .get("factory")
+                .and_then(|id| id.as_str())
+                .and_then(|id| s.state.factories.get(id))
+                .map(|f| f.name.clone());
+            let Some(obj) = row.as_object_mut() else {
+                continue;
+            };
+            obj.remove("port");
+            obj.remove("route");
+            if let Some(name) = name {
+                obj.insert("factory".into(), serde_json::Value::String(name));
+            }
+        }
+    }
+    state
+}
+
 /// PHASE 1 (under the session lock — the caller's lock scope should end the
 /// moment this returns). Candidates come from the SAME derivation as GET
 /// /api/next ([`Session::next_moves`] — never a second source of truth);
@@ -448,8 +503,9 @@ pub fn prepare_rank(s: &mut Session) -> RankPrep {
         return RankPrep::Done(heuristic(candidates, None));
     }
     // Context = the SAME empire snapshot the chat surface shows the user
-    // (chat::compact_state) — dense, aggregated, nothing the UI can't show.
-    let ctx = crate::chat::compact_state(s, &crate::chat::ContextScope::Empire);
+    // (chat::compact_state), post-projected for the rank call by
+    // [`rank_state`]: names replace ULIDs, definitional zeros drop out.
+    let state = rank_state(s);
     let cand_view: Vec<serde_json::Value> = candidates
         .iter()
         .map(|c| {
@@ -461,7 +517,7 @@ pub fn prepare_rank(s: &mut Session) -> RankPrep {
             })
         })
         .collect();
-    let user = serde_json::json!({ "state": ctx.payload, "candidates": cand_view }).to_string();
+    let user = serde_json::json!({ "state": state, "candidates": cand_view }).to_string();
     RankPrep::Call(RankJob {
         base_url: s.ai.base_url.trim_end_matches('/').to_string(),
         model: s.ai.model.clone(),

@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use app::ai::{
-    apply_model_ranking, config_public, rank_next_moves, set_config, AiConfig, AiConfigUpdate,
-    ModelReply, DEFAULT_TIMEOUT_SECS,
+    apply_model_ranking, config_public, rank_next_moves, rank_state, set_config, AiConfig,
+    AiConfigUpdate, ModelReply, DEFAULT_TIMEOUT_SECS,
 };
 use app::opportunities::{Opportunity, OpportunityAction, OpportunityKind};
 use app::Session;
@@ -480,6 +480,9 @@ fn rank_honors_stub_reorder_and_sends_key_and_candidates() {
     let mut s = seeded_session();
     let ids = heuristic_ids(&mut s);
     assert!(ids.len() >= 2, "seed must yield two candidates: {ids:?}");
+    // First-created factory (IRON BAY's producer): its ULID rode along in the
+    // pre-projection payload and must be absent from the request now.
+    let first_factory_ulid = s.state.factories.values().next().unwrap().id.clone();
 
     // The stub reverses whatever candidate ids arrive in the user message.
     let (base, captured) = stub_provider(Box::new(|request: &str| {
@@ -506,7 +509,13 @@ fn rank_honors_stub_reorder_and_sends_key_and_candidates() {
         });
         (200, completion(&content.to_string()))
     }));
-    set_config(&mut s, cfg(&base, "stub-1", Some("test-key-123"), None));
+    // Trailing slash on the configured base (S10): set_config trims it, so
+    // the "POST /v1/chat/completions" assert below pins the trim — a double
+    // slash would surface as "POST /v1//chat/completions".
+    set_config(
+        &mut s,
+        cfg(&format!("{base}/"), "stub-1", Some("test-key-123"), None),
+    );
 
     let resp = rank_next_moves(&mut s);
     assert_eq!(resp.engine, "model");
@@ -536,7 +545,101 @@ fn rank_honors_stub_reorder_and_sends_key_and_candidates() {
     for id in &ids {
         assert!(req.contains(&id.replace('/', "\\/")) || req.contains(id.as_str()));
     }
+    // S5: the configured model name travels in the body.
+    assert!(req.contains("\"model\":\"stub-1\""));
+    // S1: the empire state travels in the user message — factory NAMES are
+    // the join key and survive the rank_state projection…
+    assert!(req.contains("IRON BAY"), "state must travel in the request");
+    // …while factory ULIDs are projected OUT (M2).
+    assert!(
+        !req.contains(first_factory_ulid.as_str()),
+        "factory ULIDs must not reach the model"
+    );
     assert!(req.contains("You never calculate anything"));
+    assert!(req.contains("no text before or after the JSON"));
+}
+
+// ---------- rank_state projection (M2) ----------
+
+#[test]
+fn rank_state_keeps_built_zeros_filters_planned_zeros_and_drops_ids() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.ai = AiConfig::from_lookup(|_| None);
+    // Two factories, each with one zero-rate output port and no machines.
+    let mut make = |name: &str, x: f64| -> Id {
+        let fid = s
+            .edit(vec![Command::CreateFactory {
+                name: name.into(),
+                position: MapPos { x, y: 0.0, z: 0.0 },
+                region: "GRASS FIELDS".into(),
+            }])
+            .unwrap()
+            .created[0]
+            .clone();
+        s.edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: GraphPos { x: 0.0, y: 0.0 },
+        }])
+        .unwrap();
+        fid
+    };
+    let built = make("BUILT ZERO", 0.0);
+    let _planned = make("PLANNED ZERO", 1000.0);
+    // Commands create Planned only (the import layer owns ◆ built); flip the
+    // state directly — rank_state reads `status` straight off the plan state.
+    s.state.factories.get_mut(&built).unwrap().status = Status::Built;
+    let state = rank_state(&mut s);
+    let factories = state["factories"].as_array().unwrap();
+    assert_eq!(factories.len(), 2);
+    for f in factories {
+        assert!(f.get("id").is_none(), "factory ids are projected out: {f}");
+    }
+    let by_name = |n: &str| {
+        factories
+            .iter()
+            .find(|f| f["name"] == n)
+            .unwrap_or_else(|| panic!("factory {n} missing"))
+    };
+    let built_outputs = by_name("BUILT ZERO")["outputs"].as_object().unwrap();
+    assert_eq!(
+        built_outputs.get("Desc_IronIngot_C"),
+        Some(&serde_json::json!(0.0)),
+        "a BUILT factory producing zero is the anomaly itself — its zero stays"
+    );
+    let planned_outputs = by_name("PLANNED ZERO")["outputs"].as_object().unwrap();
+    assert!(
+        planned_outputs.is_empty(),
+        "planned zero-rate outputs are clutter and must be filtered: {planned_outputs:?}"
+    );
+}
+
+#[test]
+fn rank_state_deficits_carry_names_not_ulids() {
+    let mut s = seeded_session();
+    let names: Vec<String> = s.state.factories.values().map(|f| f.name.clone()).collect();
+    let ulids: Vec<String> = s.state.factories.keys().cloned().collect();
+    let state = rank_state(&mut s);
+    let deficits = state["deficits"].as_array().unwrap();
+    assert!(!deficits.is_empty(), "seed must produce deficit rows");
+    for row in deficits {
+        let f = row["factory"].as_str().unwrap();
+        assert!(
+            names.iter().any(|n| n == f),
+            "deficit factory must be a NAME the model can join on: {row}"
+        );
+        assert!(
+            !ulids.iter().any(|u| u == f),
+            "no factory ULID may survive the projection: {row}"
+        );
+        assert!(
+            row.get("port").is_none() && row.get("route").is_none(),
+            "port/route ids are unjoinable noise and must be dropped: {row}"
+        );
+    }
 }
 
 #[test]
