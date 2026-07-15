@@ -1,0 +1,39 @@
+[package]
+name = "web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The whole command/session core, WITHOUT its native features: no shell,
+# no bridge (tiny_http), no native-http (ureq), and — via `default-features
+# = false` on app's persist/gamedata edges — no sqlite (rusqlite). What's
+# left is the pure Rust `Session` the wasm build wraps.
+app = { path = "../app", default-features = false }
+planner-core = { path = "../planner-core" }
+# MemoryPlanStore is the wasm store (IndexedDB is Phase 3); no sqlite.
+persist = { path = "../persist", default-features = false }
+wasm-bindgen = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
+# Legible wasm panics in the browser console (cheap; dev + prod).
+console_error_panic_hook = "0.1"
+
+# ULIDs (planner-core) need randomness. rand 0.9 → getrandom 0.3, which needs
+# the JS backend on wasm — enable its feature here and set the cfg backend in
+# .cargo/config.toml. ULID's clock is already wasm-safe (web-time, internal).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# wasm-opt needs a github download the build environment may not allow; the
+# unoptimized module runs fine for the Phase 2 build+run proof — optimize when
+# a toolchain is present (mirrors solver-wasm).
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

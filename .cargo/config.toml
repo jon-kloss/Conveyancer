@@ -1,0 +1,8 @@
+# getrandom 0.3 (pulled in by rand 0.9 → ulid) has no default backend on
+# wasm32-unknown-unknown: it must be told to use the JS backend, which bridges
+# to the browser/node `crypto.getRandomValues`. This is the modern getrandom
+# equivalent of the old 0.2 "js" feature. Paired with the wasm-only
+# `getrandom = { features = ["wasm_js"] }` dep in crates/web. Harmless for the
+# solver-wasm build (it pulls no getrandom, so the cfg is simply unread).
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
