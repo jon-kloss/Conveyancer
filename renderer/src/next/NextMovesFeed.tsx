@@ -145,7 +145,7 @@ export default function NextMovesFeed({ context }: { context: "dashboard" | "pan
     <section className="dash-section" data-testid="next-moves">
       <div className="dash-move-head">
         <h3 className="t-label">NEXT MOVES{moves ? ` (${moves.length})` : ""}</h3>
-        <AiSettings onSaved={bumpRankEpoch} />
+        <AiSettings onSaved={bumpRankEpoch} context={context} />
       </div>
 
       {/* PR 3 preference chips — advisory filters that hide suggestions (never

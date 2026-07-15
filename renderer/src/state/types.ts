@@ -559,6 +559,11 @@ export interface Opportunity {
 
 // ---- bring-your-own-model ranking (PR 10): rank + narrate, never calculate ----
 
+/** M2: which NEXT-MOVES header owns the open AI-settings popover. Both feeds
+ *  (dashboard + panel) can mount at once, so the flag is context-scoped — an
+ *  instance treats itself as open only when the flag equals its own context. */
+export type AiSettingsContext = "dashboard" | "panel";
+
 /** GET/POST /api/ai/config view — the key NEVER round-trips (hasKey only). */
 export interface AiConfigPublic {
   configured: boolean;

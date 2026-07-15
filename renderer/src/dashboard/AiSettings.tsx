@@ -13,6 +13,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../state/store";
+import type { AiSettingsContext } from "../state/types";
 
 const PRESETS = [
   { label: "OpenAI", baseUrl: "https://api.openai.com/v1" },
@@ -52,13 +53,23 @@ const cleartextRisk = (base: string): boolean => {
   }
 };
 
-export default function AiSettings({ onSaved }: { onSaved: () => void }) {
+export default function AiSettings({
+  onSaved,
+  context,
+}: {
+  onSaved: () => void;
+  context: AiSettingsContext;
+}) {
   const aiConfig = useStore((s) => s.aiConfig);
   const fetchAiConfig = useStore((s) => s.fetchAiConfig);
   const saveAiConfig = useStore((s) => s.saveAiConfig);
-  // M7: store-held so App's Escape handler can close the popover first.
-  const open = useStore((s) => s.aiSettingsOpen);
-  const setOpen = useStore((s) => s.setAiSettingsOpen);
+  // M7: store-held so App's Escape handler can close the popover first. M2:
+  // the flag is context-scoped — this instance is open only when it owns the
+  // flag, so the sibling header's <AiSettings/> can't cross-wire it.
+  const open = useStore((s) => s.aiSettingsOpen === context);
+  const setAiSettingsOpen = useStore((s) => s.setAiSettingsOpen);
+  const close = () => setAiSettingsOpen(null);
+  const toggle = () => setAiSettingsOpen(open ? null : context);
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   /** transient — cleared on every close path, never stored anywhere else */
@@ -74,9 +85,16 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
   }, [fetchAiConfig]);
 
   // The deference flag must not leak: the dashboard unmounts this component
-  // wholesale (overlay close, plan switch), and a stale true would make App's
-  // next Escape a silent no-op layer.
-  useEffect(() => () => useStore.getState().setAiSettingsOpen(false), []);
+  // wholesale (overlay close, plan switch), and a stale flag would make App's
+  // next Escape a silent no-op layer. M2: clear ONLY if this instance still
+  // owns the flag, so unmounting one header never slams the sibling's open
+  // popover shut.
+  useEffect(
+    () => () => {
+      if (useStore.getState().aiSettingsOpen === context) useStore.getState().setAiSettingsOpen(null);
+    },
+    [context],
+  );
 
   // Key hygiene: whichever way the popover closes (CLOSE, save, Escape,
   // scrim click), the transient key draft dies with it.
@@ -111,7 +129,7 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
     });
     if (ok) {
       setKeyDraft("");
-      setOpen(false);
+      close();
       onSaved();
     }
   };
@@ -124,14 +142,14 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
         className="chip dash-ai-chip"
         data-testid="ai-chip"
         title="Bring-your-own-model settings — the model ranks and narrates; it never calculates"
-        onClick={() => setOpen(!open)}
+        onClick={toggle}
       >
         ⚙ {chipLabel}
       </button>
       {open && (
         // Transparent scrim one z under the pop: outside clicks close it
         // without a document listener and without activating what's beneath.
-        <div className="dash-ai-scrim" data-testid="ai-scrim" onClick={() => setOpen(false)} />
+        <div className="dash-ai-scrim" data-testid="ai-scrim" onClick={close} />
       )}
       {open && (
         <div
@@ -143,7 +161,7 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
             // isEditableTarget, so the popover owns that Escape itself.
             if (e.key === "Escape") {
               e.stopPropagation();
-              setOpen(false);
+              close();
             }
           }}
         >
@@ -230,7 +248,7 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
             Small/fast models are plenty — the planner does the math; the model does the talking.
           </div>
           <div className="dash-ai-actions">
-            <button className="btn btn-ghost" onClick={() => setOpen(false)}>
+            <button className="btn btn-ghost" onClick={close}>
               CLOSE
             </button>
             <button className="btn btn-primary" data-testid="ai-save" onClick={() => void save()}>

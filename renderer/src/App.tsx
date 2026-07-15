@@ -125,9 +125,11 @@ export default function App() {
         // handler fires before any popover-local listener could — so the
         // popover defers through the store (aiSettingsOpen, the same pattern
         // as wizard/reviewing above) and Escape closes the TOP layer only:
-        // popover first, dashboard on the next press.
-        if (st.aiSettingsOpen) {
-          st.setAiSettingsOpen(false);
+        // popover first, dashboard on the next press. M2: the flag now names
+        // the owning header (context) rather than a bare boolean — non-null
+        // means some popover is open; closing clears it wholesale.
+        if (st.aiSettingsOpen !== null) {
+          st.setAiSettingsOpen(null);
           e.preventDefault();
           e.stopImmediatePropagation();
           return;
