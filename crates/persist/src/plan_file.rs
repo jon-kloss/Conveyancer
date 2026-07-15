@@ -1,6 +1,12 @@
 //! `world.ficsit` — SQLite plan file (SDD §10). Tables double as the undo
 //! journal. WAL mode; every committed command writes in one transaction, so
 //! there is never unsaved state; a rolling `.bak` is taken on open.
+//!
+//! `SqlitePlanStore` is the desktop [`PlanStore`] impl. The `open`/`in_memory`
+//! constructors and the WAL/`.bak`/`:memory:` specifics stay INHERENT (off the
+//! trait) — trait objects can't carry constructors, and those file concerns
+//! don't generalize to a browser store. The `PlanStore` surface `Session`
+//! drives lives in the trait impl below.
 
 use std::path::{Path, PathBuf};
 
@@ -8,6 +14,8 @@ use planner_core::patch::{PatchBatch, PatchOp};
 use planner_core::state::{PlanMeta, PlanState};
 use planner_core::undo::UndoEntry;
 use rusqlite::Connection;
+
+use crate::store::PlanStore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PersistError {
@@ -46,7 +54,7 @@ pub struct FaultPlan {
     pub fail_checkpoints: u32,
 }
 
-pub struct PlanFile {
+pub struct SqlitePlanStore {
     conn: Connection,
     pub path: PathBuf,
     /// Injected-failure counters (tests only).
@@ -54,7 +62,12 @@ pub struct PlanFile {
     pub faults: FaultPlan,
 }
 
-impl PlanFile {
+/// Historical name for [`SqlitePlanStore`] (it was `PlanFile` before the
+/// [`PlanStore`] trait was extracted). Kept as an alias so every desktop caller
+/// and test that names `PlanFile` compiles unchanged.
+pub type PlanFile = SqlitePlanStore;
+
+impl SqlitePlanStore {
     /// Open (or create) a plan file. Takes the rolling `.bak` before touching
     /// an existing file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PersistError> {
@@ -84,8 +97,49 @@ impl PlanFile {
         })
     }
 
+    fn get_meta(&self, key: &str) -> Result<String, rusqlite::Error> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+    }
+
+    fn set_meta(&self, key: &str, value: &str) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            (key, value),
+        )?;
+        Ok(())
+    }
+
+    /// Mirror a batch of entity-level ops into rows.
+    fn apply_rows(&self, batch: &PatchBatch) -> Result<(), PersistError> {
+        for op in batch {
+            let path = op.path().trim_start_matches('/');
+            let Some((collection, id)) = path.split_once('/') else {
+                return Err(PersistError::Corrupt(format!("bad path {path}")));
+            };
+            if collection == "meta" {
+                continue; // plan meta is rewritten wholesale below
+            }
+            match op {
+                PatchOp::Add { value, .. } | PatchOp::Replace { value, .. } => {
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO entities (id, collection, json) VALUES (?1, ?2, ?3)",
+                        (id, collection, serde_json::to_string(value)?),
+                    )?;
+                }
+                PatchOp::Remove { .. } => {
+                    self.conn
+                        .execute("DELETE FROM entities WHERE id = ?1", [id])?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PlanStore for SqlitePlanStore {
     /// Hydrate canonical state + the applied undo journal.
-    pub fn load(&self) -> Result<(PlanState, Vec<UndoEntry>, usize), PersistError> {
+    fn load(&self) -> Result<(PlanState, Vec<UndoEntry>, usize), PersistError> {
         let mut state = PlanState::default();
         if let Ok(json) = self.get_meta("plan_meta") {
             state.meta = serde_json::from_str::<PlanMeta>(&json)?;
@@ -141,48 +195,9 @@ impl PlanFile {
         Ok((state, entries, cursor))
     }
 
-    fn get_meta(&self, key: &str) -> Result<String, rusqlite::Error> {
-        self.conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
-    }
-
-    fn set_meta(&self, key: &str, value: &str) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
-            (key, value),
-        )?;
-        Ok(())
-    }
-
-    /// Mirror a batch of entity-level ops into rows.
-    fn apply_rows(&self, batch: &PatchBatch) -> Result<(), PersistError> {
-        for op in batch {
-            let path = op.path().trim_start_matches('/');
-            let Some((collection, id)) = path.split_once('/') else {
-                return Err(PersistError::Corrupt(format!("bad path {path}")));
-            };
-            if collection == "meta" {
-                continue; // plan meta is rewritten wholesale below
-            }
-            match op {
-                PatchOp::Add { value, .. } | PatchOp::Replace { value, .. } => {
-                    self.conn.execute(
-                        "INSERT OR REPLACE INTO entities (id, collection, json) VALUES (?1, ?2, ?3)",
-                        (id, collection, serde_json::to_string(value)?),
-                    )?;
-                }
-                PatchOp::Remove { .. } => {
-                    self.conn
-                        .execute("DELETE FROM entities WHERE id = ?1", [id])?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Persist one committed command: entity rows + undo entry + cursor, atomically.
     /// `applied` is how many undo entries are applied after this commit.
-    pub fn commit(
+    fn commit(
         &mut self,
         entry: &UndoEntry,
         meta: &PlanMeta,
@@ -218,7 +233,7 @@ impl PlanFile {
     }
 
     /// Persist an undo/redo move: entity rows + cursor, atomically.
-    pub fn checkpoint(
+    fn checkpoint(
         &mut self,
         batch: &PatchBatch,
         meta: &PlanMeta,
@@ -242,7 +257,7 @@ impl PlanFile {
     /// Persist window/zoom state (UI restores position on reopen — Principle 1).
     /// Advisor feed persistence — outside the undo journal by design: cards
     /// record what the advisor SAW; undoing a plan edit must not eat them.
-    pub fn save_advisor_card(&self, id: &str, json: &str) -> Result<(), PersistError> {
+    fn save_advisor_card(&self, id: &str, json: &str) -> Result<(), PersistError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO advisor_cards (id, json) VALUES (?1, ?2)",
             (id, json),
@@ -250,13 +265,13 @@ impl PlanFile {
         Ok(())
     }
 
-    pub fn load_advisor_cards(&self) -> Result<Vec<String>, PersistError> {
+    fn load_advisor_cards(&self) -> Result<Vec<String>, PersistError> {
         let mut stmt = self.conn.prepare("SELECT json FROM advisor_cards")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn add_mute(&self, rule: &str, at: &str) -> Result<(), PersistError> {
+    fn add_mute(&self, rule: &str, at: &str) -> Result<(), PersistError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO mutes (rule, muted_at) VALUES (?1, ?2)",
             (rule, at),
@@ -264,13 +279,13 @@ impl PlanFile {
         Ok(())
     }
 
-    pub fn remove_mute(&self, rule: &str) -> Result<(), PersistError> {
+    fn remove_mute(&self, rule: &str) -> Result<(), PersistError> {
         self.conn
             .execute("DELETE FROM mutes WHERE rule = ?1", [rule])?;
         Ok(())
     }
 
-    pub fn load_mutes(&self) -> Result<Vec<String>, PersistError> {
+    fn load_mutes(&self) -> Result<Vec<String>, PersistError> {
         let mut stmt = self.conn.prepare("SELECT rule FROM mutes")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -280,21 +295,21 @@ impl PlanFile {
     /// times) as an opaque JSON blob — joins cards/mutes outside the undo
     /// journal: it records what the advisor already REPORTED, and undoing a
     /// plan edit must not re-arm those reports.
-    pub fn save_advisor_gate(&self, json: &str) -> Result<(), PersistError> {
+    fn save_advisor_gate(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("advisor_gate", json)?;
         Ok(())
     }
 
-    pub fn advisor_gate(&self) -> Option<String> {
+    fn advisor_gate(&self) -> Option<String> {
         self.get_meta("advisor_gate").ok()
     }
 
-    pub fn set_view_state(&self, json: &str) -> Result<(), PersistError> {
+    fn set_view_state(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("view_state", json)?;
         Ok(())
     }
 
-    pub fn view_state(&self) -> Option<String> {
+    fn view_state(&self) -> Option<String> {
         self.get_meta("view_state").ok()
     }
 
@@ -302,12 +317,12 @@ impl PlanFile {
     /// dashboard's "what changed since last import" line. Lives in the meta KV
     /// store alongside view_state/advisor_gate, NOT the undo journal: it records
     /// what the last import DID, and undoing a plan edit must not rewrite it.
-    pub fn set_last_import(&self, json: &str) -> Result<(), PersistError> {
+    fn set_last_import(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("last_import", json)?;
         Ok(())
     }
 
-    pub fn last_import(&self) -> Option<String> {
+    fn last_import(&self) -> Option<String> {
         self.get_meta("last_import").ok()
     }
 
@@ -317,12 +332,12 @@ impl PlanFile {
     /// last_import, NOT the undo journal: undoing a plan edit must not toggle
     /// unlocks, and it is excluded from plan_hash. Tolerant default — old plan
     /// files with no "unlocked" blob load as an empty set.
-    pub fn set_unlocked(&self, json: &str) -> Result<(), PersistError> {
+    fn set_unlocked(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("unlocked", json)?;
         Ok(())
     }
 
-    pub fn unlocked(&self) -> Option<String> {
+    fn unlocked(&self) -> Option<String> {
         self.get_meta("unlocked").ok()
     }
 
@@ -332,12 +347,12 @@ impl PlanFile {
     /// `unlocked`, NOT the undo journal: undoing a plan edit must not toggle
     /// progression, and it is excluded from plan_hash. Tolerant default — old
     /// plan files with no "purchased_schematics" blob load as an empty set.
-    pub fn set_purchased_schematics(&self, json: &str) -> Result<(), PersistError> {
+    fn set_purchased_schematics(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("purchased_schematics", json)?;
         Ok(())
     }
 
-    pub fn purchased_schematics(&self) -> Option<String> {
+    fn purchased_schematics(&self) -> Option<String> {
         self.get_meta("purchased_schematics").ok()
     }
 
@@ -346,9 +361,14 @@ impl PlanFile {
     /// rewrites; a preference toggle is NOT an undoable command, so it writes
     /// the row on its own. `load()` reads it straight back into `state.meta`,
     /// and hydrate projects `plan.meta.preferences` to the renderer.
-    pub fn save_meta(&self, meta: &PlanMeta) -> Result<(), PersistError> {
+    fn save_meta(&self, meta: &PlanMeta) -> Result<(), PersistError> {
         self.set_meta("plan_meta", &serde_json::to_string(meta)?)?;
         Ok(())
+    }
+
+    #[cfg(feature = "fault-injection")]
+    fn faults_mut(&mut self) -> &mut FaultPlan {
+        &mut self.faults
     }
 }
 

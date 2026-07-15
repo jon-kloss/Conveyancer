@@ -2221,7 +2221,7 @@ fn variable_power_recipe_average_drives_group_power() {
 }
 
 // ---- M9: persist failure can never diverge memory from disk ----
-// The fault seam (`s.file.faults`, persist's `fault-injection` feature) fails
+// The fault seam (`s.store.faults_mut()`, persist's `fault-injection` feature) fails
 // the next N commits/checkpoints before their SQLite transaction opens —
 // observationally identical to a rolled-back mid-write failure.
 
@@ -2242,7 +2242,7 @@ fn create_named_factory(s: &mut Session, name: &str) -> Id {
 
 /// Disk and memory agree entity-for-entity right now.
 fn assert_disk_matches_memory(s: &Session) {
-    let (disk, entries, cursor) = s.file.load().unwrap();
+    let (disk, entries, cursor) = s.store.load().unwrap();
     assert_eq!(disk.project(), s.state.project(), "disk == memory");
     assert_eq!(cursor, s.undo.entries().len(), "cursor == applied depth");
     assert!(entries.len() >= cursor);
@@ -2262,7 +2262,7 @@ fn edit_persist_failure_leaves_no_trace() {
 
         // E1 hits a transient persist failure: the error surfaces and the
         // edit leaves no trace anywhere.
-        s.file.faults.fail_commits = 1;
+        s.store.faults_mut().fail_commits = 1;
         let err = s.edit(vec![Command::RenameFactory {
             id: fid.clone(),
             name: "GHOST".into(),
@@ -2307,7 +2307,7 @@ fn edit_persist_failure_preserves_redo_tail() {
 
     // A failed edit must not truncate the redo tail (commit-then-rollback
     // would have destroyed it before the persist error).
-    s.file.faults.fail_commits = 1;
+    s.store.faults_mut().fail_commits = 1;
     assert!(s
         .edit(vec![Command::RenameFactory {
             id: fid.clone(),
@@ -2315,7 +2315,7 @@ fn edit_persist_failure_preserves_redo_tail() {
         }])
         .is_err());
     assert!(s.undo.can_redo(), "redo tail survives in memory");
-    let (_, entries, cursor) = s.file.load().unwrap();
+    let (_, entries, cursor) = s.store.load().unwrap();
     assert_eq!(entries.len(), 2, "redo tail survives on disk");
     assert_eq!(cursor, 1);
     let r = s.redo().unwrap().unwrap();
@@ -2334,7 +2334,7 @@ fn undo_redo_persist_failure_restores_position() {
     .unwrap();
 
     // undo: checkpoint fails → the just-undone entry is re-applied.
-    s.file.faults.fail_checkpoints = 1;
+    s.store.faults_mut().fail_checkpoints = 1;
     assert!(s.undo().is_err(), "failed checkpoint must surface");
     assert_eq!(s.state.factories[&fid].name, "SECOND", "position restored");
     assert!(!s.undo.can_redo(), "cursor restored");
@@ -2347,7 +2347,7 @@ fn undo_redo_persist_failure_restores_position() {
     assert_disk_matches_memory(&s);
 
     // redo mirror: checkpoint fails → the just-redone entry is un-applied.
-    s.file.faults.fail_checkpoints = 1;
+    s.store.faults_mut().fail_checkpoints = 1;
     assert!(s.redo().is_err());
     assert_eq!(s.state.factories[&fid].name, "FIRST", "position restored");
     assert!(s.undo.can_redo());
@@ -2432,7 +2432,7 @@ fn accept_proposal_persist_failure_rolls_back() {
         .clone();
     let factories_before = s.state.factories.len();
 
-    s.file.faults.fail_commits = 1;
+    s.store.faults_mut().fail_commits = 1;
     assert!(s.accept_proposal(&pid).is_err());
     assert_eq!(
         s.state.proposals[&pid].status,
@@ -2462,7 +2462,7 @@ fn solver_write_backs_roll_back_with_failed_edit() {
 
     // The failing edit's tx also carries solver write-backs (counts/clocks,
     // route manifests) — they must ride the same rollback.
-    s.file.faults.fail_commits = 1;
+    s.store.faults_mut().fail_commits = 1;
     assert!(s
         .edit(vec![Command::SetPortRate {
             id: out_port.clone(),

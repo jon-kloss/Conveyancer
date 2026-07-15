@@ -19,7 +19,8 @@ use crate::cutover::{derive_cutovers, Cutover, CutoverPlan, Dip};
 
 use gamedata::docs::GameData;
 use gamedata::worldnodes::WorldSnapshot;
-use persist::plan_file::{PersistError, PlanFile};
+use persist::plan_file::{PersistError, SqlitePlanStore};
+use persist::store::PlanStore;
 use serde::Serialize;
 use solver::model::{
     EdgeSpec, FactorySnapshot, GroupSpec, InputPortSpec, NodeRef, OutputPortSpec, RecipeSpec,
@@ -293,7 +294,14 @@ pub struct EditResponse {
 pub struct Session {
     pub state: PlanState,
     pub undo: UndoLog,
-    pub file: PlanFile,
+    /// Persistence, behind the [`PlanStore`] trait via dynamic dispatch so a
+    /// future web build can swap the SQLite store for an IndexedDB one without
+    /// touching `Session`. Boxed (not a generic `<S>` param) because persistence
+    /// is I/O-bound — the vtable cost is nil, and it keeps every constructor and
+    /// test monomorphic. Desktop boxes a `SqlitePlanStore`. `+ Send` so
+    /// `Mutex<Session>` stays `Send + Sync` for the Tauri managed state (the
+    /// concrete SQLite/memory stores are `Send`, matching the old `PlanFile`).
+    pub store: Box<dyn PlanStore + Send>,
     pub gamedata: GameData,
     pub world: WorldSnapshot,
     /// Consecutive over-budget T1 solves per factory (A4 miss behavior).
@@ -328,17 +336,29 @@ impl Session {
         docs_json: Option<Vec<u8>>,
         game_build: &str,
     ) -> Result<Self, SessionError> {
-        let file = PlanFile::open(plan_path)?;
+        let file = SqlitePlanStore::open(plan_path)?;
         Self::with_file(file, docs_json, game_build)
     }
 
     pub fn in_memory(docs_json: Option<Vec<u8>>) -> Result<Self, SessionError> {
-        let file = PlanFile::in_memory().map_err(SessionError::Persist)?;
+        let file = SqlitePlanStore::in_memory().map_err(SessionError::Persist)?;
         Self::with_file(file, docs_json, "fixture")
     }
 
+    /// Desktop constructor: box the concrete SQLite store behind the trait.
     fn with_file(
-        file: PlanFile,
+        file: SqlitePlanStore,
+        docs_json: Option<Vec<u8>>,
+        game_build: &str,
+    ) -> Result<Self, SessionError> {
+        Self::with_store(Box::new(file), docs_json, game_build)
+    }
+
+    /// Build a session over any [`PlanStore`] — the seam a future web build
+    /// (Phase 3) uses to inject an IndexedDB-backed store. Desktop reaches it
+    /// through [`Session::with_file`]; the hydration below is store-agnostic.
+    pub fn with_store(
+        store: Box<dyn PlanStore + Send>,
         docs_json: Option<Vec<u8>>,
         game_build: &str,
     ) -> Result<Self, SessionError> {
@@ -349,36 +369,36 @@ impl Session {
         let gd = gamedata::docs::parse_docs(&text, game_build)
             .map_err(|e| SessionError::Internal(format!("Docs.json parse failed: {e}")))?;
         let world = gamedata::worldnodes::load();
-        let (state, entries, cursor) = file.load()?;
+        let (state, entries, cursor) = store.load()?;
         let undo = UndoLog::hydrate_with_cursor(entries, cursor);
         let mut advisor = AdvisorState::default();
-        for json in file.load_advisor_cards().unwrap_or_default() {
+        for json in store.load_advisor_cards().unwrap_or_default() {
             if let Ok(card) = serde_json::from_str(&json) {
                 advisor.cards.push(card);
             }
         }
-        advisor.muted = file.load_mutes().unwrap_or_default().into_iter().collect();
-        if let Some(json) = file.advisor_gate() {
+        advisor.muted = store.load_mutes().unwrap_or_default().into_iter().collect();
+        if let Some(json) = store.advisor_gate() {
             // Arming state survives restarts: still-true conditions were
             // already reported and must not fire duplicate cards on launch.
             advisor.restore_gate_snapshot(&json);
         }
         // Unlocked recipe set survives restarts (save-derived fact). Tolerant
         // default: a plan file with no "unlocked" blob hydrates as empty.
-        let unlocked = file
+        let unlocked = store
             .unlocked()
             .and_then(|s| serde_json::from_str::<BTreeSet<String>>(&s).ok())
             .unwrap_or_default();
         // Purchased-schematic ids survive restarts the same way (save-derived
         // fact). Tolerant default: a plan file with no blob hydrates as empty.
-        let purchased_schematics = file
+        let purchased_schematics = store
             .purchased_schematics()
             .and_then(|s| serde_json::from_str::<BTreeSet<String>>(&s).ok())
             .unwrap_or_default();
         Ok(Self {
             state,
             undo,
-            file,
+            store,
             gamedata: gd,
             world,
             slow_solves: BTreeMap::new(),
@@ -409,8 +429,8 @@ impl Session {
             "canUndo": self.undo.can_undo(),
             "canRedo": self.undo.can_redo(),
             "undoLabel": self.undo.undo_label(),
-            "viewState": self.file.view_state().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
-            "lastImport": self.file.last_import().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+            "viewState": self.store.view_state().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+            "lastImport": self.store.last_import().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
             "unlocked": self.unlocked,
             "purchasedSchematics": self.purchased_schematics,
         })
@@ -496,11 +516,11 @@ impl Session {
         let created = tx.created.clone();
         let entry = UndoLog::stage(tx);
         // `+ 1`: the log hasn't advanced yet, so the applied count after this
-        // commit is the current depth plus this entry. PlanFile::commit keeps
+        // commit is the current depth plus this entry. PlanStore::commit keeps
         // `applied - 1` prior journal rows (its redo-tail DELETE) — exactly
         // the entries applied before this one, same as the pre-staging code.
         if let Err(e) = self
-            .file
+            .store
             .commit(&entry, &self.state.meta, self.undo.entries().len() + 1)
         {
             // entry.inverse is already in application order (stage reversed it).
@@ -528,7 +548,7 @@ impl Session {
     /// canonical state + undo journal from the plan file, which is always a
     /// valid restore point (every durable write is one atomic transaction).
     fn rehydrate_from_disk(&mut self, cause: &str) -> Result<(), SessionError> {
-        let (state, entries, cursor) = self.file.load().map_err(|e| {
+        let (state, entries, cursor) = self.store.load().map_err(|e| {
             SessionError::Internal(format!(
                 "rollback after persist failure failed ({cause}) and reload failed: {e}"
             ))
@@ -552,7 +572,7 @@ impl Session {
             }
         };
         if let Err(e) = self
-            .file
+            .store
             .checkpoint(&batch, &self.state.meta, self.applied_count())
         {
             // Disk untouched (the checkpoint transaction rolled back) —
@@ -579,7 +599,7 @@ impl Session {
             }
         };
         if let Err(e) = self
-            .file
+            .store
             .checkpoint(&batch, &self.state.meta, self.applied_count())
         {
             // Mirror of undo(): un-apply the just-redone entry.
@@ -629,7 +649,7 @@ impl Session {
         // (legacy plan files) carry no verdict and pass.
         if p.source == planner_core::proposals::ProposalSource::SaveReimport {
             let current = self
-                .file
+                .store
                 .last_import()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|blob| blob.get("proposal").cloned());
@@ -1316,7 +1336,7 @@ impl Session {
         // the previous import unlocked. Empty → leave `self.unlocked` intact.
         if !resolved.is_empty() {
             self.unlocked = resolved;
-            let _ = self.file.set_unlocked(
+            let _ = self.store.set_unlocked(
                 &serde_json::to_string(&self.unlocked).unwrap_or_else(|_| "[]".into()),
             );
         }
@@ -1326,7 +1346,7 @@ impl Session {
         // set must not wipe a prior import's purchases.
         if !snapshot.unlocked_schematics.is_empty() {
             self.purchased_schematics = snapshot.unlocked_schematics.iter().cloned().collect();
-            let _ = self.file.set_purchased_schematics(
+            let _ = self.store.set_purchased_schematics(
                 &serde_json::to_string(&self.purchased_schematics).unwrap_or_else(|_| "[]".into()),
             );
         }
@@ -1476,7 +1496,7 @@ impl Session {
             "groupsChanged": groups_changed,
             "proposal": proposal,
         });
-        let _ = self.file.set_last_import(&blob.to_string());
+        let _ = self.store.set_last_import(&blob.to_string());
     }
 
     /// Run the advisor gate over fresh derived state and persist new cards.
@@ -1489,13 +1509,13 @@ impl Session {
         let created = self.advisor.gate(events, now, &crate::jobs::now_rfc3339());
         for card in &created {
             let _ = self
-                .file
+                .store
                 .save_advisor_card(&card.id, &serde_json::to_string(card).unwrap_or_default());
         }
         // Gate state changes even when nothing fires (keys arm and prune) —
         // snapshot it best-effort, like the card writes above.
         let _ = self
-            .file
+            .store
             .save_advisor_gate(&self.advisor.gate_snapshot_json());
     }
 
@@ -1529,19 +1549,19 @@ impl Session {
             card.dismissed = true;
             rule = Some(card.rule.clone());
             let _ = self
-                .file
+                .store
                 .save_advisor_card(&card.id, &serde_json::to_string(card).unwrap_or_default());
         }
         if let Some(rule) = rule {
             self.advisor.muted.insert(rule.clone());
-            let _ = self.file.add_mute(&rule, &crate::jobs::now_rfc3339());
+            let _ = self.store.add_mute(&rule, &crate::jobs::now_rfc3339());
         }
         self.advisor_feed()
     }
 
     pub fn advisor_unmute(&mut self, rule: &str) -> AdvisorFeed {
         self.advisor.muted.remove(rule);
-        let _ = self.file.remove_mute(rule);
+        let _ = self.store.remove_mute(rule);
         self.advisor_feed()
     }
 
@@ -1551,7 +1571,7 @@ impl Session {
     }
 
     pub fn set_view_state(&mut self, json: &str) -> Result<(), SessionError> {
-        self.file.set_view_state(json)?;
+        self.store.set_view_state(json)?;
         Ok(())
     }
 
@@ -2330,7 +2350,7 @@ impl Session {
         preferences: NextPreferences,
     ) -> Result<PreferencesView, SessionError> {
         self.state.meta.preferences = preferences;
-        self.file
+        self.store
             .save_meta(&self.state.meta)
             .map_err(SessionError::Persist)?;
         let opportunities = self.next_moves();
