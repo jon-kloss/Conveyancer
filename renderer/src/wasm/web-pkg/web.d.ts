@@ -13,7 +13,13 @@ export class WebSession {
      * THE router. `cmd` selects a `Session` operation mirroring the dev-bridge
      * `(method, url)` route table; `args` carries that route's request body
      * (the exact shapes the `WasmBackend` sends). Results marshal back with the
-     * same `json_compatible` convention the renderer already consumes.
+     * same `json_compatible` convention the renderer already consumes, wrapped
+     * in an envelope `{ mutated, result }`.
+     *
+     * `mutated` is the Rust-driven mutation signal (M1): each arm declares
+     * whether it WROTE the store — mirroring the dev-bridge GET-vs-store-writing
+     * -POST distinction — so the worker knows, authoritatively and without a
+     * hand-kept allowlist that can drift, exactly when to snapshot to IndexedDB.
      */
     dispatch(cmd: string, args: any): any;
     /**

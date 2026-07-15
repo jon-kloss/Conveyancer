@@ -52,6 +52,8 @@ jobs:
         run: cargo build -p persist --no-default-features
       - name: build web for wasm32
         run: cargo build -p web --target wasm32-unknown-unknown
+      - name: web wasm pkg in sync # committed web-pkg must match crates/web (no compiler needed)
+        run: ./scripts/regen-web-wasm.sh check
       - uses: actions/setup-node@v4
         with:
           node-version: 22

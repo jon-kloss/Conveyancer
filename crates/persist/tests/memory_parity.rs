@@ -446,6 +446,7 @@ fn snapshot_export_import_round_trips() {
     // Exercise the KV + list surfaces too, so the round-trip covers everything
     // Session hydrates, not just the entity rows + journal.
     memory.set_view_state(r#"{"openFactory":null}"#).unwrap();
+    memory.set_last_import(r#"{"saveName":"world"}"#).unwrap();
     memory.set_unlocked(r#"["Recipe_Alt_C"]"#).unwrap();
     memory
         .set_purchased_schematics(r#"["Schematic_3-1_C"]"#)
@@ -481,6 +482,11 @@ fn snapshot_export_import_round_trips() {
     assert_eq!(
         restored.view_state().as_deref(),
         Some(r#"{"openFactory":null}"#)
+    );
+    assert_eq!(
+        restored.last_import().as_deref(),
+        Some(r#"{"saveName":"world"}"#),
+        "last_import survives the snapshot round-trip"
     );
     assert_eq!(restored.unlocked().as_deref(), Some(r#"["Recipe_Alt_C"]"#));
     assert_eq!(
