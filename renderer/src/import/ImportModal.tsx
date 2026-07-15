@@ -63,7 +63,7 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
         setPhase({
           step: "done",
           message: `${outcome.factories} factories · ${outcome.machines} machines imported as ◆ BUILT${
-            outcome.quarantined > 0 ? ` · ${outcome.quarantined} modded objects quarantined` : ""
+            outcome.quarantined > 0 ? ` · ${outcome.quarantined} unrecognized objects quarantined` : ""
           }`,
         });
       } else if (outcome.outcome === "drift") {
