@@ -4,9 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["sqlite"]
+# The gamedata.sqlite cache backend (rusqlite → native C, no wasm). Default-on
+# so desktop is byte-identical; `--no-default-features` drops rusqlite and the
+# cache read/write, keeping the pure `docs`/`worldnodes`/power helpers the wasm
+# build needs.
+sqlite = ["dep:rusqlite"]
+
 [dependencies]
 planner-core = { path = "../planner-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, optional = true }

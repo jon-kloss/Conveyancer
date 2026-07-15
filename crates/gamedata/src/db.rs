@@ -1,10 +1,14 @@
 //! gamedata.sqlite — normalized game data keyed by game build (SDD §7).
 //! Lives in app-data; re-parsed when the install's build changes.
 
+#[cfg(feature = "sqlite")]
 use rusqlite::Connection;
 
-use crate::docs::{Belt, Buildable, GameData, Item, Machine, MachineKind, Recipe};
+#[cfg(feature = "sqlite")]
+use crate::docs::{Belt, Buildable, Item, Machine};
+use crate::docs::{GameData, MachineKind, Recipe};
 
+#[cfg(feature = "sqlite")]
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("sqlite: {0}")]
@@ -13,6 +17,7 @@ pub enum DbError {
     Json(#[from] serde_json::Error),
 }
 
+#[cfg(feature = "sqlite")]
 /// Cache schema version, stored in meta('schema_version') and required by
 /// `build_matches` alongside the game build. Bump whenever the persisted shape
 /// changes meaning. Two hazards make this key load-bearing even while the
@@ -33,6 +38,7 @@ pub enum DbError {
 /// Accelerator 52×22 garbage vs 37×27) and must re-parse.
 const SCHEMA_VERSION: &str = "4";
 
+#[cfg(feature = "sqlite")]
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS items (class TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -42,6 +48,7 @@ CREATE TABLE IF NOT EXISTS belts (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS buildables (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 ";
 
+#[cfg(feature = "sqlite")]
 pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
     conn.execute_batch(SCHEMA)?;
     conn.execute_batch("BEGIN")?;
@@ -93,6 +100,7 @@ pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 pub fn read(conn: &Connection) -> Result<GameData, DbError> {
     let build_version: String = conn
         .query_row("SELECT value FROM meta WHERE key = 'game_build'", [], |r| {
@@ -133,6 +141,7 @@ pub fn read(conn: &Connection) -> Result<GameData, DbError> {
 
 /// True only when the stored game build matches the install's AND the stored
 /// cache schema version matches `SCHEMA_VERSION` (re-parse trigger otherwise).
+#[cfg(feature = "sqlite")]
 /// A missing `schema_version` key counts as stale — see `SCHEMA_VERSION` for
 /// why a build match alone is not enough.
 pub fn build_matches(conn: &Connection, build: &str) -> bool {
@@ -176,7 +185,7 @@ pub fn manufacturer_for(gd: &GameData, recipe: &Recipe) -> Option<String> {
         .cloned()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use crate::docs::parse_docs;
