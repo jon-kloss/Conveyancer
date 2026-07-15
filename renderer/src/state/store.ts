@@ -6,6 +6,8 @@ import { applyPatches } from "./patch";
 import type {
   AdoptOutcome,
   AdvisorFeed,
+  AiConfigPublic,
+  AiConfigUpdate,
   AltOpportunity,
   AuditTab,
   Command,
@@ -18,6 +20,7 @@ import type {
   LastImport,
   Opportunity,
   Plan,
+  RankResponse,
   ViewState,
   World,
 } from "./types";
@@ -133,6 +136,9 @@ export interface AppStore {
       — lets the request survive the MapView remount when a SHOW lands while
       the app is in graph view. */
   flyTo: { x: number; y: number } | null;
+  /** PR 10: public model-config view (hasKey, never the key) — fetched lazily
+      when the dashboard opens; null until then / on refusal. */
+  aiConfig: AiConfigPublic | null;
 
   hydrate(): Promise<void>;
   /** Resolves with the created ids, or null when the backend refused the
@@ -175,6 +181,15 @@ export interface AppStore {
   optimizeAdopt(recipe: string): Promise<AdoptOutcome | null>;
   /** PR 9: fetch the ranked next-move list (read-only; [] on refusal). */
   nextMoves(): Promise<Opportunity[]>;
+  /** PR 10: rank-and-narrate NEXT MOVES over the same candidates. Always
+      answers a list; a failed model call surfaces via the status-bar chip and
+      falls back to the heuristic order (never blocks the dashboard). */
+  rankMoves(): Promise<RankResponse>;
+  /** PR 10: refresh the public model-config view. */
+  fetchAiConfig(): Promise<void>;
+  /** PR 10: save the model config (in-memory backend-side; key write-only).
+      Returns true on success; refusals land in cmdError. */
+  saveAiConfig(update: AiConfigUpdate): Promise<boolean>;
   /** PR 9: ask for the audit drawer on a specific tab (openAudit action). */
   openAuditTab(tab: AuditTab): void;
   clearAuditRequest(): void;
@@ -211,6 +226,7 @@ export const useStore = create<AppStore>((set, get) => ({
   dashboardOpen: false,
   auditRequest: null,
   flyTo: null,
+  aiConfig: null,
 
   async hydrate() {
     try {
@@ -414,6 +430,40 @@ export const useStore = create<AppStore>((set, get) => ({
     } catch (e) {
       get().reportCmdError(errText(e));
       return [];
+    }
+  },
+
+  // PR 10: same read-only species as nextMoves. A backend refusal degrades to
+  // an empty heuristic list; a model-call failure arrives as `error` on an
+  // otherwise-usable heuristic response — surface it on the status-bar chip
+  // and keep rendering (fail-quiet + surfaced, never wedged).
+  async rankMoves() {
+    let resp: RankResponse;
+    try {
+      resp = await backend.nextRank();
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return { engine: "heuristic", opportunities: [] };
+    }
+    if (resp.error) get().reportCmdError(resp.error);
+    return resp;
+  },
+
+  async fetchAiConfig() {
+    try {
+      set({ aiConfig: await backend.aiConfig() });
+    } catch {
+      // fail-quiet: the chip just reads AI: OFF until the backend answers
+    }
+  },
+
+  async saveAiConfig(update) {
+    try {
+      set({ aiConfig: await backend.setAiConfig(update) });
+      return true;
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return false;
     }
   },
 

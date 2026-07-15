@@ -210,6 +210,28 @@ fn next_moves(state: State<AppState>) -> Vec<app::opportunities::Opportunity> {
     state.0.lock().unwrap().next_moves()
 }
 
+/// PR 10: public view of the in-memory model config — hasKey, never the key.
+#[tauri::command]
+fn ai_config_get(state: State<AppState>) -> app::ai::AiConfigPublic {
+    app::ai::config_public(&state.0.lock().unwrap())
+}
+
+/// PR 10: set the in-memory model config (nothing persisted in v1).
+#[tauri::command]
+fn ai_config_set(
+    state: State<AppState>,
+    update: app::ai::AiConfigUpdate,
+) -> app::ai::AiConfigPublic {
+    app::ai::set_config(&mut state.0.lock().unwrap(), update)
+}
+
+/// PR 10: rank-and-narrate NEXT MOVES over the same candidates as next_moves.
+/// Always answers — unconfigured/failed calls fall back to the heuristic list.
+#[tauri::command]
+fn next_rank(state: State<AppState>) -> app::ai::RankResponse {
+    app::ai::rank_next_moves(&mut state.0.lock().unwrap())
+}
+
 /// Task #49: read-only trains-needed answer for a PROSPECTIVE route (no route
 /// is created). Reuses the canonical transport math from the two factory pins.
 #[tauri::command]
@@ -269,6 +291,9 @@ fn main() {
             optimize_empire,
             optimize_adopt,
             next_moves,
+            next_rank,
+            ai_config_get,
+            ai_config_set,
             route_calc
         ])
         .run(tauri::generate_context!())

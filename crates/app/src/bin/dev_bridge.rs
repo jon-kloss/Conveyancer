@@ -203,6 +203,20 @@ fn main() -> anyhow::Result<()> {
                 (Method::Get, "/api/next") => {
                     ok(&serde_json::json!({ "opportunities": s.next_moves() }))
                 }
+                // ---- PR 10 bring-your-own-model ranking ----
+                // Config lives in memory on the Session; the GET view never
+                // carries the key (hasKey boolean only — key hygiene).
+                (Method::Get, "/api/ai/config") => ok(&app::ai::config_public(&s)),
+                (Method::Post, "/api/ai/config") => {
+                    match serde_json::from_str::<app::ai::AiConfigUpdate>(&body) {
+                        Ok(update) => ok(&app::ai::set_config(&mut s, update)),
+                        Err(e) => err(400, e),
+                    }
+                }
+                // Rank-and-narrate over the SAME candidates as /api/next.
+                // Always answers: unconfigured or failed model calls return
+                // the heuristic list (plus a surfaced error string).
+                (Method::Post, "/api/next/rank") => ok(&app::ai::rank_next_moves(&mut s)),
                 // ---- W2b-D empire alternate-recipe optimizer ----
                 // Read-only ranked opportunities (empty in the fixture — no
                 // unlocked alternates, honest degradation).

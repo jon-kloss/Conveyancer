@@ -14,7 +14,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtRate } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
-import type { BuildStep, Cutover, CutoverPlan, CutoverStep, Opportunity, OpportunityKind } from "../state/types";
+import AiSettings from "./AiSettings";
+import type {
+  BuildStep,
+  Cutover,
+  CutoverPlan,
+  CutoverStep,
+  Opportunity,
+  OpportunityKind,
+  RankResponse,
+} from "../state/types";
 import "./dashboard.css";
 
 const GLYPH: Record<string, string> = { pending: "◇", partial: "◈", done: "◆" };
@@ -49,7 +58,7 @@ export default function Dashboard() {
   const setWizard = useStore((s) => s.setWizard);
   const markBuildDone = useStore((s) => s.markBuildDone);
   const cutoverPlan = useStore((s) => s.cutoverPlan);
-  const nextMoves = useStore((s) => s.nextMoves);
+  const rankMoves = useStore((s) => s.rankMoves);
   const openAuditTab = useStore((s) => s.openAuditTab);
   const requestFly = useStore((s) => s.requestFly);
   const world = useStore((s) => s.world);
@@ -87,15 +96,22 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutoverSig, cutoverPlan]);
 
-  // NEXT MOVES (PR 9): fetched LAZILY when the dashboard opens — this
+  // NEXT MOVES (PR 9/10): fetched LAZILY when the dashboard opens — this
   // component only mounts while dashboardOpen, so mount-fetch IS open-fetch,
   // and unmount discards the list (no stale cards from a previous plan).
   // null = still loading → the section stays hidden (no spinner flash).
-  const [moves, setMoves] = useState<Opportunity[] | null>(null);
+  // PR 10: the fetch goes through /api/next/rank, which is card-identical to
+  // /api/next when no model is configured and adds ONLY reorder + attributed
+  // prose (headline/notes) when one is; a failed model call falls back to the
+  // heuristic list with the error surfaced on the status-bar chip (in
+  // rankMoves) — the dashboard itself never blocks on the model.
+  const [rank, setRank] = useState<RankResponse | null>(null);
+  // bumped after an AI-settings save so the list re-ranks immediately
+  const [rankEpoch, setRankEpoch] = useState(0);
   useEffect(() => {
     let live = true;
-    void nextMoves().then((m) => {
-      if (live) setMoves(m);
+    void rankMoves().then((r) => {
+      if (live) setRank(r);
     });
     return () => {
       live = false;
@@ -103,7 +119,8 @@ export default function Dashboard() {
     // planHash: refetch when an edit lands while the dashboard is open — a
     // card whose subject vanished refreshes away instead of dead-clicking;
     // the in-flight click window stays fail-quiet.
-  }, [nextMoves, planHash]);
+  }, [rankMoves, planHash, rankEpoch]);
+  const moves = rank?.opportunities ?? null;
 
   const doneCount = useMemo(() => queue.filter((s) => s.done).length, [queue]);
   const partial = useMemo(() => queue.filter((s) => s.state === "partial"), [queue]);
@@ -408,7 +425,18 @@ export default function Dashboard() {
               nothing here (honest quiet), and while loading (moves null). */}
           {moves && moves.length > 0 && (
             <section className="dash-section" data-testid="next-moves">
-              <h3 className="t-label">NEXT MOVES ({moves.length})</h3>
+              <div className="dash-move-head">
+                <h3 className="t-label">NEXT MOVES ({moves.length})</h3>
+                <AiSettings onSaved={() => setRankEpoch((n) => n + 1)} />
+              </div>
+              {/* Model headline: attributed prose, never confusable with the
+                  solver's evidence lines (AI chip + dim italic). */}
+              {rank?.engine === "model" && rank.headline && (
+                <div className="dash-ai-line" data-testid="ai-headline">
+                  <span className="dash-badge ai mono">AI · {rank.model}</span>
+                  <span className="dash-ai-text">{rank.headline}</span>
+                </div>
+              )}
               {moves.slice(0, 3).map((o) => (
                 <div className="dash-move" key={o.id} data-testid="next-move">
                   <span className="dash-badge dash-move-kind">{MOVE_LABEL[o.kind]}</span>
@@ -420,6 +448,14 @@ export default function Dashboard() {
                     <span className="dash-step-detail mono" data-testid="next-move-evidence">
                       {o.evidence}
                     </span>
+                    {/* Model note: commentary ONLY — the evidence line above
+                        stays the authority, byte-identical to heuristic mode. */}
+                    {rank?.engine === "model" && o.note && (
+                      <span className="dash-ai-note" data-testid="next-move-note">
+                        <span className="dash-badge ai mono">AI</span>
+                        <span className="dash-ai-text">{o.note}</span>
+                      </span>
+                    )}
                   </span>
                   <button className="chip warn dash-move-act" data-testid="next-move-action" onClick={() => actMove(o)}>
                     {moveVerb(o)}

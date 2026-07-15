@@ -134,7 +134,7 @@ fn normalize_rate(token: &str) -> String {
 /// `proposal_intent` blocks — the materialization path below stays identical.
 pub fn chat(s: &mut Session, _scope: &ContextScope, message: &str) -> ChatReply {
     let msg = message.to_lowercase();
-    let engine = if s.ai_key.is_some() {
+    let engine = if s.ai.api_key.is_some() {
         "ready"
     } else {
         "offline"

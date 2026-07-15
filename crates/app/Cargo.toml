@@ -40,6 +40,11 @@ thiserror.workspace = true
 tauri = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tiny_http = "0.12"
+# PR 10 model-ranking client. Smallest footprint that still does HTTPS:
+# default-features off, "tls" = rustls + webpki-roots (NEVER openssl — the
+# build must stay hermetic on every platform); no json/gzip/charset features
+# (serde_json already in-tree; providers speak plain JSON).
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }

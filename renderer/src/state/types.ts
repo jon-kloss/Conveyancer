@@ -541,6 +541,41 @@ export interface Opportunity {
   /** item class for the ItemIcon chip, when one is on stage */
   item?: string;
   action: OpportunityAction;
+  /** PR 10: model commentary attached by /api/next/rank — the ONLY
+   *  model-writable field. Absent on the heuristic path. Rendered in the
+   *  AI-attributed style, never confusable with solver evidence. */
+  note?: string;
+}
+
+// ---- bring-your-own-model ranking (PR 10): rank + narrate, never calculate ----
+
+/** GET/POST /api/ai/config view — the key NEVER round-trips (hasKey only). */
+export interface AiConfigPublic {
+  configured: boolean;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+}
+
+/** POST /api/ai/config body. apiKey omitted = keep the stored key ("unchanged"
+ *  placeholder semantics); empty string = clear it. */
+export interface AiConfigUpdate {
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  timeoutSecs?: number;
+}
+
+/** POST /api/next/rank: the same Opportunity cards as /api/next, optionally
+ *  model-reordered with an attributed headline + per-card notes. engine
+ *  "heuristic" is card-identical to /api/next; `error` surfaces a failed
+ *  model call (fail-quiet — the list still answers). */
+export interface RankResponse {
+  engine: "model" | "heuristic";
+  model?: string;
+  headline?: string;
+  error?: string;
+  opportunities: Opportunity[];
 }
 
 export interface Derived {
