@@ -130,11 +130,14 @@ fn normalize_rate(token: &str) -> String {
     }
 }
 
-/// The offline chat engine. With a key, a model would produce the prose and
-/// `proposal_intent` blocks — the materialization path below stays identical.
+/// The offline chat engine. With a configured model endpoint, a model would
+/// produce the prose and `proposal_intent` blocks — the materialization path
+/// below stays identical.
 pub fn chat(s: &mut Session, _scope: &ContextScope, message: &str) -> ChatReply {
     let msg = message.to_lowercase();
-    let engine = if s.ai.api_key.is_some() {
+    // "ready" gates on configured() (base + model), NOT on the key: keyless
+    // endpoints (Ollama / LM Studio) are first-class, same rule as ranking.
+    let engine = if s.ai.configured() {
         "ready"
     } else {
         "offline"

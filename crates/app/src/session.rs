@@ -1462,7 +1462,10 @@ impl Session {
     /// that reopens the proposal revives the card for free. Non-Review cards
     /// pass through untouched; mutes/pause/budget are the gate's as-is.
     pub fn advisor_feed(&self) -> AdvisorFeed {
-        let mut feed = self.advisor.feed(self.ai.api_key.is_some());
+        // ai_ready gates on configured() (base + model), not on the key —
+        // keyless endpoints (Ollama / LM Studio) are first-class, and the
+        // OFFLINE chip must agree with the ranking layer's own gate.
+        let mut feed = self.advisor.feed(self.ai.configured());
         feed.cards.retain(|c| match &c.cta {
             Some(crate::advisor::CardCta::Review { proposal }) => self
                 .state

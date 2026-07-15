@@ -58,6 +58,31 @@ fn main() -> anyhow::Result<()> {
         let mut body = String::new();
         let _ = request.as_reader().read_to_string(&mut body);
 
+        // PR 10: /api/next/rank is the ONLY endpoint allowed off the serial
+        // loop — the provider round-trip can take whole seconds and must
+        // never block hydrate/edit behind it. Prepare (candidates + config
+        // snapshot) runs under the same single-lock discipline as everything
+        // else; only the blocking HTTP call moves to a throwaway thread,
+        // which responds by itself (tiny_http's documented pattern —
+        // `Request` is Send and `respond` consumes it).
+        if method == Method::Post && url == "/api/next/rank" {
+            let prep = {
+                let mut s = session.lock().unwrap();
+                app::ai::prepare_rank(&mut s)
+            };
+            match prep {
+                app::ai::RankPrep::Done(resp) => {
+                    let _ = request.respond(ok(&resp));
+                }
+                app::ai::RankPrep::Call(job) => {
+                    std::thread::spawn(move || {
+                        let _ = request.respond(ok(&app::ai::execute_rank(job)));
+                    });
+                }
+            }
+            continue;
+        }
+
         let response = if method == Method::Options {
             json_response(204, String::new())
         } else {
@@ -213,10 +238,6 @@ fn main() -> anyhow::Result<()> {
                         Err(e) => err(400, e),
                     }
                 }
-                // Rank-and-narrate over the SAME candidates as /api/next.
-                // Always answers: unconfigured or failed model calls return
-                // the heuristic list (plus a surfaced error string).
-                (Method::Post, "/api/next/rank") => ok(&app::ai::rank_next_moves(&mut s)),
                 // ---- W2b-D empire alternate-recipe optimizer ----
                 // Read-only ranked opportunities (empty in the fixture — no
                 // unlocked alternates, honest degradation).

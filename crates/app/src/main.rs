@@ -227,9 +227,21 @@ fn ai_config_set(
 
 /// PR 10: rank-and-narrate NEXT MOVES over the same candidates as next_moves.
 /// Always answers — unconfigured/failed calls fall back to the heuristic list.
-#[tauri::command]
+///
+/// `async` is LOAD-BEARING: a plain `#[tauri::command]` runs on the MAIN
+/// thread, so the blocking provider round-trip would freeze the UI event
+/// loop itself. With it, the command runs off-main; the session lock is held
+/// only for the prepare statement below, so edits/hydrate/solves never queue
+/// behind a slow or hung model endpoint.
+#[tauri::command(async)]
 fn next_rank(state: State<AppState>) -> app::ai::RankResponse {
-    app::ai::rank_next_moves(&mut state.0.lock().unwrap())
+    // Lock scope = this ONE statement (the guard is a temporary): prepare
+    // snapshots candidates + config, execute runs with the lock released.
+    let prep = app::ai::prepare_rank(&mut state.0.lock().unwrap());
+    match prep {
+        app::ai::RankPrep::Done(resp) => resp,
+        app::ai::RankPrep::Call(job) => app::ai::execute_rank(job),
+    }
 }
 
 /// Task #49: read-only trains-needed answer for a PROSPECTIVE route (no route

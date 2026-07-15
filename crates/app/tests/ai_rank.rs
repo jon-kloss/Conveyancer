@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use app::ai::{
-    apply_model_ranking, config_public, rank_next_moves, set_config, AiConfigUpdate, ModelReply,
+    apply_model_ranking, config_public, rank_next_moves, set_config, AiConfig, AiConfigUpdate,
+    ModelReply, DEFAULT_TIMEOUT_SECS,
 };
 use app::opportunities::{Opportunity, OpportunityAction, OpportunityKind};
 use app::Session;
@@ -90,8 +91,67 @@ fn firewall_clamps_headline_and_notes() {
     };
     r.notes.insert("a".into(), "n".repeat(5000));
     let (headline, ranked) = apply_model_ranking(cands, &r);
-    assert_eq!(headline.unwrap().chars().count(), 240);
-    assert_eq!(ranked[0].note.as_ref().unwrap().chars().count(), 240);
+    // One unbroken token → the hard-cut branch: 239 kept chars + '…' = 240
+    // total, honestly marked as truncated.
+    let headline = headline.unwrap();
+    assert_eq!(headline.chars().count(), 240);
+    assert!(headline.ends_with('…'), "truncation must be marked");
+    let note = ranked[0].note.clone().unwrap();
+    assert_eq!(note.chars().count(), 240);
+    assert!(note.ends_with('…'), "truncation must be marked");
+}
+
+#[test]
+fn clamp_never_manufactures_a_number() {
+    // The naive take(240) once rendered "… margin of 1,500" as "… of 1,5" —
+    // a number the model never said, in AI-attributed text. The clamp must
+    // cut back to the last whitespace instead.
+    let cands = vec![card("a")];
+    let mut r = reply(&["a"]);
+    let text = format!("{} 1,500 spare megawatts", "z".repeat(233));
+    r.headline = Some(text.clone());
+    r.notes.insert("a".into(), text);
+    let (headline, ranked) = apply_model_ranking(cands, &r);
+    let headline = headline.unwrap();
+    assert_eq!(headline, format!("{}…", "z".repeat(233)));
+    assert!(
+        !headline.chars().any(|c| c.is_ascii_digit()),
+        "no digit may survive a mid-number cut: {headline}"
+    );
+    assert_eq!(ranked[0].note.as_deref(), Some(headline.as_str()));
+}
+
+#[test]
+fn clamp_multibyte_cut_is_boundary_safe_and_number_honest() {
+    // Multibyte filler shifts every char boundary off its byte index; the
+    // 239-char head then ends mid "1,500". Expect a cut at the whitespace:
+    // exactly filler + '…', never a "1,5" fragment.
+    let cands = vec![card("a")];
+    let filler = "é".repeat(235);
+    let text = format!("{filler} 1,500 spare megawatts");
+    let mut r = reply(&["a"]);
+    r.headline = Some(text.clone());
+    r.notes.insert("a".into(), text);
+    let (headline, ranked) = apply_model_ranking(cands, &r);
+    let headline = headline.unwrap();
+    assert_eq!(headline, format!("{filler}…"));
+    assert!(!headline.contains("1,5"), "manufactured number: {headline}");
+    assert_eq!(
+        ranked[0].note.as_deref(),
+        Some(headline.as_str()),
+        "note and headline take the identical clamp"
+    );
+}
+
+#[test]
+fn firewall_drops_blank_headline_and_notes() {
+    let cands = vec![card("a")];
+    let mut r = reply(&["a"]);
+    r.headline = Some("   ".into());
+    r.notes.insert("a".into(), "\n\t ".into());
+    let (headline, ranked) = apply_model_ranking(cands, &r);
+    assert_eq!(headline, None, "whitespace-only headline must vanish");
+    assert_eq!(ranked[0].note, None, "whitespace-only note must vanish");
 }
 
 #[test]
@@ -115,8 +175,35 @@ fn cfg(base_url: &str, model: &str, key: Option<&str>, timeout: Option<u64>) -> 
 }
 
 #[test]
+fn from_lookup_reads_trimmed_values_and_optional_key() {
+    let c = AiConfig::from_lookup(|k| match k {
+        "FICSIT_AI_BASE_URL" => Some("  http://127.0.0.1:9/v1  ".into()),
+        "FICSIT_AI_MODEL" => Some("m1".into()),
+        "FICSIT_AI_KEY" => Some("sk-x".into()),
+        _ => None,
+    });
+    assert!(c.configured());
+    assert_eq!(c.base_url, "http://127.0.0.1:9/v1", "values are trimmed");
+    assert_eq!(c.model, "m1");
+    assert_eq!(c.api_key.as_deref(), Some("sk-x"));
+    assert_eq!(c.timeout_secs, DEFAULT_TIMEOUT_SECS);
+}
+
+#[test]
+fn from_lookup_treats_missing_and_blank_as_unset() {
+    let c = AiConfig::from_lookup(|k| {
+        // A blank key is as good as no key — whitespace never configures.
+        (k == "FICSIT_AI_KEY").then(|| "   ".to_string())
+    });
+    assert!(!c.configured());
+    assert!(c.base_url.is_empty() && c.model.is_empty());
+    assert_eq!(c.api_key, None, "blank env key must not count as a key");
+}
+
+#[test]
 fn config_get_never_echoes_the_key() {
     let mut s = Session::in_memory(None).unwrap();
+    s.ai = AiConfig::from_lookup(|_| None); // de-flake: ignore host FICSIT_AI_*
     let public = set_config(
         &mut s,
         cfg("http://127.0.0.1:1/v1", "m", Some("sk-super-secret"), None),
@@ -134,6 +221,39 @@ fn config_get_never_echoes_the_key() {
     assert!(public.has_key);
     let public = set_config(&mut s, cfg("http://127.0.0.1:1/v1", "m2", Some(""), None));
     assert!(!public.has_key);
+}
+
+#[test]
+fn clearing_base_and_model_deconfigures_but_keeps_the_key() {
+    // The w4-finally cleanup gesture: blanking base+model (apiKey absent)
+    // must deconfigure WITHOUT discarding the stored key — absent means
+    // "unchanged", even through a clear.
+    let mut s = Session::in_memory(None).unwrap();
+    s.ai = AiConfig::from_lookup(|_| None); // de-flake: ignore host FICSIT_AI_*
+    let public = set_config(
+        &mut s,
+        cfg("http://127.0.0.1:1/v1", "m", Some("sk-keep"), None),
+    );
+    assert!(public.configured && public.has_key);
+    let public = set_config(&mut s, cfg("", "", None, None));
+    assert!(!public.configured, "blank base/model must deconfigure");
+    assert!(public.has_key, "the key must survive a base/model clear");
+    assert!(public.base_url.is_empty() && public.model.is_empty());
+}
+
+#[test]
+fn timeout_is_clamped_to_one_through_120_seconds() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.ai = AiConfig::from_lookup(|_| None);
+    set_config(&mut s, cfg("http://127.0.0.1:1/v1", "m", None, Some(0)));
+    assert_eq!(s.ai.timeout_secs, 1, "floor keeps the fast-timeout seam");
+    set_config(
+        &mut s,
+        cfg("http://127.0.0.1:1/v1", "m", None, Some(999_999_999)),
+    );
+    assert_eq!(s.ai.timeout_secs, 120, "ceiling caps a wedging timeout");
+    set_config(&mut s, cfg("http://127.0.0.1:1/v1", "m", None, Some(45)));
+    assert_eq!(s.ai.timeout_secs, 45, "in-range values pass through");
 }
 
 // ---------- stub provider plumbing (localhost only) ----------
@@ -194,6 +314,9 @@ fn completion(content: &str) -> String {
 /// two deficit cards to reorder. Same command surface as the e2e seeds.
 fn seeded_session() -> Session {
     let mut s = Session::in_memory(None).unwrap();
+    // De-flake: engine/error assertions below must not depend on whatever
+    // FICSIT_AI_* the host environment happens to export.
+    s.ai = AiConfig::from_lookup(|_| None);
     let mut chain = |name: &str, item: &str, recipe: &str, x: f64| -> () {
         let fid = s
             .edit(vec![Command::CreateFactory {
@@ -443,14 +566,92 @@ fn malformed_reply_falls_back_to_heuristic_with_error() {
 #[test]
 fn http_500_falls_back_to_heuristic_with_error() {
     let mut s = seeded_session();
-    let (base, _) = stub_provider(Box::new(|_| (500, "{\"error\":\"boom\"}".into())));
+    let (base, captured) = stub_provider(Box::new(|_| (500, "{\"error\":\"boom\"}".into())));
     set_config(&mut s, cfg(&base, "stub-1", None, None));
     let resp = rank_next_moves(&mut s);
     assert_eq!(resp.engine, "heuristic");
-    assert_eq!(
-        resp.error.as_deref(),
-        Some("model endpoint returned HTTP 500")
+    let error = resp.error.unwrap();
+    // The historical prefix is preserved; the body snippet now rides along.
+    assert!(
+        error.starts_with("model endpoint returned HTTP 500"),
+        "{error}"
     );
+    assert!(error.contains("boom"), "5xx body snippet surfaced: {error}");
+    assert_eq!(captured.lock().unwrap().len(), 1, "5xx is never retried");
+}
+
+#[test]
+fn http_400_retries_once_without_optional_params() {
+    // A strict endpoint (reasoning tier) rejects `temperature` with 400; the
+    // one-shot lean retry — temperature, response_format and max_tokens all
+    // dropped — must succeed transparently.
+    let mut s = seeded_session();
+    let ids = heuristic_ids(&mut s);
+    let first = ids.last().unwrap().clone();
+    let content = format!("{{\"order\": [\"{first}\"]}}");
+    let (base, captured) = stub_provider(Box::new(move |request: &str| {
+        if request.contains("\"temperature\"") {
+            (
+                400,
+                "{\"error\":{\"message\":\"temperature is not supported\"}}".into(),
+            )
+        } else {
+            (200, completion(&content))
+        }
+    }));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(
+        resp.engine, "model",
+        "lean retry must win: {:?}",
+        resp.error
+    );
+    assert_eq!(resp.error, None);
+    assert_eq!(resp.opportunities[0].opportunity.id, first);
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 2, "exactly one retry");
+    for param in ["\"temperature\"", "\"response_format\"", "\"max_tokens\""] {
+        assert!(
+            requests[0].contains(param),
+            "full request must carry {param}"
+        );
+        assert!(!requests[1].contains(param), "lean retry must drop {param}");
+    }
+}
+
+#[test]
+fn persistent_http_400_surfaces_a_sanitized_snippet() {
+    let mut s = seeded_session();
+    let ids = heuristic_ids(&mut s);
+    let (base, captured) = stub_provider(Box::new(|_| {
+        // Control char in the body: the snippet must flatten it.
+        (400, "{\"error\":\n  \"no params accepted\"}".into())
+    }));
+    set_config(&mut s, cfg(&base, "stub-1", Some("sk-super-secret"), None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "heuristic");
+    let error = resp.error.unwrap();
+    assert!(
+        error.starts_with("model endpoint returned HTTP 400:"),
+        "{error}"
+    );
+    assert!(
+        error.contains("no params accepted"),
+        "snippet lost: {error}"
+    );
+    assert!(
+        error.contains("(retried without optional params)"),
+        "the both-failed message must note the retry: {error}"
+    );
+    assert!(!error.contains('\n'), "control chars flattened: {error}");
+    assert!(!error.contains("sk-super-secret"), "key never in errors");
+    assert_eq!(captured.lock().unwrap().len(), 2, "one retry, then give up");
+    let got: Vec<String> = resp
+        .opportunities
+        .iter()
+        .map(|o| o.opportunity.id.clone())
+        .collect();
+    assert_eq!(got, ids, "fallback list is the untouched heuristic order");
 }
 
 #[test]
@@ -504,4 +705,122 @@ fn fenced_reply_is_unfenced_before_parsing() {
     let resp = rank_next_moves(&mut s);
     assert_eq!(resp.engine, "model");
     assert_eq!(resp.opportunities[0].opportunity.id, first);
+}
+
+#[test]
+fn prose_wrapped_json_is_salvaged_and_reorder_respected() {
+    // "Sure! … {valid JSON} … Let me know!" — the chatty-small-model shape.
+    let mut s = seeded_session();
+    let ids = heuristic_ids(&mut s);
+    let first = ids.last().unwrap().clone();
+    let content = format!(
+        "Sure! Here is my ranking: {{\"order\": [\"{first}\"]}} Let me know if you need more."
+    );
+    let (base, _) = stub_provider(Box::new(move |_| (200, completion(&content))));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "model", "salvage must win: {:?}", resp.error);
+    assert_eq!(resp.error, None);
+    assert_eq!(resp.opportunities[0].opportunity.id, first);
+}
+
+#[test]
+fn trailing_garbage_after_the_json_is_ignored() {
+    // The stream deserializer parses ONE complete value and stops — a
+    // first-'{'/last-'}' window would choke on the trailing "bye :}".
+    let mut s = seeded_session();
+    let ids = heuristic_ids(&mut s);
+    let first = ids.last().unwrap().clone();
+    let content = format!("{{\"order\": [\"{first}\"]}} bye :}}");
+    let (base, _) = stub_provider(Box::new(move |_| (200, completion(&content))));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "model", "{:?}", resp.error);
+    assert_eq!(resp.opportunities[0].opportunity.id, first);
+}
+
+#[test]
+fn empty_object_in_prose_is_a_schema_failure() {
+    // "{}" parses, but carries zero model content — shipping it as
+    // engine:"model" would be a silent no-op wearing the AI badge.
+    let mut s = seeded_session();
+    let ids = heuristic_ids(&mut s);
+    let (base, _) = stub_provider(Box::new(|_| {
+        (
+            200,
+            completion("I could not rank these, so here is {} for you."),
+        )
+    }));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "heuristic");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("model reply did not match the rank schema")
+    );
+    let got: Vec<String> = resp
+        .opportunities
+        .iter()
+        .map(|o| o.opportunity.id.clone())
+        .collect();
+    assert_eq!(got, ids);
+}
+
+#[test]
+fn structurally_unrelated_json_is_a_schema_failure() {
+    // Valid JSON, none of the rank fields → every field defaults to empty →
+    // schema failure, not a fake model ranking.
+    let mut s = seeded_session();
+    let (base, _) = stub_provider(Box::new(|_| {
+        (
+            200,
+            completion("{\"weather\": \"sunny\", \"advice\": [\"build more\"]}"),
+        )
+    }));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "heuristic");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("model reply did not match the rank schema")
+    );
+}
+
+#[test]
+fn zero_candidates_skip_the_provider_call() {
+    // Configured but nothing to rank: honest silence must not spend a call.
+    let mut s = Session::in_memory(None).unwrap();
+    s.ai = AiConfig::from_lookup(|_| None);
+    let (base, captured) = stub_provider(Box::new(|_| (200, completion("{\"order\":[]}"))));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    assert!(
+        s.next_moves().is_empty(),
+        "empty plan must have no candidates"
+    );
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "heuristic");
+    assert_eq!(resp.error, None);
+    assert!(resp.opportunities.is_empty());
+    assert!(
+        captured.lock().unwrap().is_empty(),
+        "no provider call for zero candidates"
+    );
+}
+
+#[test]
+fn keyless_call_sends_no_authorization_header() {
+    // Ollama / LM Studio run keyless: the header must be absent, not blank.
+    let mut s = seeded_session();
+    let ids = heuristic_ids(&mut s);
+    let first = ids.last().unwrap().clone();
+    let content = format!("{{\"order\": [\"{first}\"]}}");
+    let (base, captured) = stub_provider(Box::new(move |_| (200, completion(&content))));
+    set_config(&mut s, cfg(&base, "stub-1", None, None));
+    let resp = rank_next_moves(&mut s);
+    assert_eq!(resp.engine, "model");
+    let requests = captured.lock().unwrap();
+    assert!(
+        !requests[0].to_ascii_lowercase().contains("authorization:"),
+        "keyless config must not send an Authorization header"
+    );
 }

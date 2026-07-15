@@ -420,6 +420,9 @@ fn restart_does_not_refire_still_true_conditions() {
 #[test]
 fn chat_intent_drafts_a_reviewable_proposal() {
     let mut s = Session::in_memory(None).unwrap();
+    // De-flake: the "offline" assertion below must not depend on whatever
+    // FICSIT_AI_* the host environment happens to export.
+    s.ai = app::ai::AiConfig::from_lookup(|_| None);
     let reply = app::chat::chat(
         &mut s,
         &app::chat::ContextScope::Empire,

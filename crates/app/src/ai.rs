@@ -16,6 +16,13 @@
 //! timeout) returns the untouched heuristic list with a short `error` string
 //! for the status-bar chip. The endpoint always answers.
 //!
+//! CONCURRENCY: ranking is a two-phase split. [`prepare_rank`] runs UNDER the
+//! session lock (one acquisition: derive candidates, snapshot config +
+//! context into a [`RankJob`]); [`execute_rank`] is pure over that owned job
+//! (`Send` by construction), so the blocking provider round-trip runs OFF the
+//! lock and a slow or hung endpoint never wedges hydrate/edit/solve.
+//! [`rank_next_moves`] is the in-line façade over both halves.
+//!
 //! KEY HYGIENE: [`AiConfig`] deliberately derives neither `Serialize` nor
 //! `Debug`. The key leaves the process only as the Authorization header of
 //! the provider call — never echoed by GET /api/ai/config, never in hydrate,
@@ -35,7 +42,8 @@ use crate::session::Session;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 20;
 
 /// Length clamp for model prose (headline and per-card notes) — commentary,
-/// not essays; anything longer is cut at a char boundary.
+/// not essays. Overlong text is cut to at most this many chars INCLUDING the
+/// trailing ellipsis, at a whitespace boundary (see [`clamp`]).
 const PROSE_CLAMP: usize = 240;
 
 /// The system prompt, checked in as reviewable source. The contract it states
@@ -70,19 +78,27 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
-    pub fn from_env() -> Self {
-        let env = |k: &str| {
-            std::env::var(k)
-                .ok()
+    /// Build a config from any `key → value` source using the env-var key
+    /// names. Split from [`Self::from_env`] so the parsing rules — trim,
+    /// blank = unset — are unit-testable without touching (or racing on)
+    /// real process env. Tests also use it to pin a session to a KNOWN-empty
+    /// config regardless of whatever `FICSIT_AI_*` the host exports.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let get = |k: &str| {
+            lookup(k)
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
         };
         Self {
-            base_url: env("FICSIT_AI_BASE_URL").unwrap_or_default(),
-            model: env("FICSIT_AI_MODEL").unwrap_or_default(),
-            api_key: env("FICSIT_AI_KEY"),
+            base_url: get("FICSIT_AI_BASE_URL").unwrap_or_default(),
+            model: get("FICSIT_AI_MODEL").unwrap_or_default(),
+            api_key: get("FICSIT_AI_KEY"),
             timeout_secs: DEFAULT_TIMEOUT_SECS,
         }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_lookup(|k| std::env::var(k).ok())
     }
 
     /// Usable for a model call: base URL + model both present. A key is NOT
@@ -105,8 +121,13 @@ pub struct AiConfigPublic {
 
 /// POST /api/ai/config body. `api_key` absent/null = keep the current key
 /// (the UI's password field placeholder reads "unchanged"); empty string =
-/// clear it; anything else = replace it. `timeout_secs` absent = keep.
-#[derive(Debug, Clone, Deserialize)]
+/// clear it; anything else = replace it. `timeout_secs` absent = keep;
+/// present = clamped to 1..=120 (floor keeps the fast-timeout test seam,
+/// ceiling keeps a fat-fingered value from wedging a rank worker for hours).
+///
+/// Deliberately NOT `Debug`: this struct carries the raw key in transit, and
+/// key hygiene here is compile-enforced, not convention-enforced.
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfigUpdate {
     pub base_url: String,
@@ -138,14 +159,18 @@ pub fn set_config(s: &mut Session, update: AiConfigUpdate) -> AiConfigPublic {
         Some(k) => s.ai.api_key = Some(k.trim().to_string()),
     }
     if let Some(t) = update.timeout_secs {
-        s.ai.timeout_secs = t.max(1);
+        s.ai.timeout_secs = t.clamp(1, 120);
     }
     config_public(s)
 }
 
-/// The model's expected reply shape. Every field is optional-tolerant: a
-/// reply that parses but misses fields degrades field-by-field (no order →
-/// heuristic order; no notes → no notes), never wedges.
+/// The model's expected reply shape. MISSING fields degrade individually (no
+/// order → heuristic order; no notes → no notes), but a field of the WRONG
+/// TYPE fails the whole parse — and that is the safe direction: the reply is
+/// rejected wholesale and the untouched heuristic list ships with a surfaced
+/// error. A reply that parses but carries NONE of the fields is treated as a
+/// schema failure by [`execute_rank`] (a `{}` buried in prose must not wear
+/// the `engine:"model"` badge).
 #[derive(Debug, Default, Deserialize)]
 pub struct ModelReply {
     #[serde(default)]
@@ -199,9 +224,26 @@ fn heuristic(candidates: Vec<Opportunity>, error: Option<String>) -> RankRespons
     }
 }
 
-/// Char-boundary-safe prose clamp (never splits a UTF-8 scalar).
+/// Honest prose clamp: at most [`PROSE_CLAMP`] chars INCLUDING the ellipsis.
+/// Overlong text keeps its first `PROSE_CLAMP - 1` chars, cut back to the
+/// last whitespace so a truncation can never end mid-token — a naive cut
+/// like "…margin of 1,500" → "…of 1,5" MANUFACTURES a number the model never
+/// said, in text rendered under the AI badge. A single unbroken token has no
+/// whitespace to cut at and falls back to the hard cut, still
+/// ellipsis-marked. Char-based throughout (never splits a UTF-8 scalar).
 fn clamp(text: &str) -> String {
-    text.trim().chars().take(PROSE_CLAMP).collect()
+    let t = text.trim();
+    if t.chars().count() <= PROSE_CLAMP {
+        return t.to_string();
+    }
+    let head: String = t.chars().take(PROSE_CLAMP - 1).collect();
+    let kept = match head.rfind(char::is_whitespace) {
+        Some(i) => &head[..i],
+        None => head.as_str(),
+    };
+    let mut out = kept.trim_end().to_string();
+    out.push('…');
+    out
 }
 
 /// THE VALIDATION FIREWALL — pure, unit-tested directly. Maps the model reply
@@ -221,6 +263,13 @@ pub fn apply_model_ranking(
     reply: &ModelReply,
 ) -> (Option<String>, Vec<RankedOpportunity>) {
     let known: BTreeSet<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+    // Unreachable today (the engine derives ids uniquely), but a duplicate
+    // candidate id would silently collapse a card below — catch it in tests.
+    debug_assert_eq!(
+        known.len(),
+        candidates.len(),
+        "engine-side candidate ids must be unique"
+    );
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut order: Vec<&str> = Vec::new();
     for id in &reply.order {
@@ -267,6 +316,38 @@ fn strip_fences(content: &str) -> &str {
     rest.trim().strip_suffix("```").unwrap_or(rest).trim()
 }
 
+/// Salvage the ONE complete JSON object from model prose: strip a courtesy
+/// fence, seek the first '{', then stream-deserialize exactly one value —
+/// the stream iterator parses a single complete object and IGNORES anything
+/// after it, so "Sure! {…} Let me know!" succeeds where a first-`{`/last-`}`
+/// window would not. Prose braces BEFORE the real JSON still fail the parse
+/// → heuristic fallback (never worse than the old strict parse).
+fn extract_reply(content: &str) -> Option<ModelReply> {
+    let t = strip_fences(content);
+    let start = t.find('{')?;
+    serde_json::Deserializer::from_str(&t[start..])
+        .into_iter::<ModelReply>()
+        .next()?
+        .ok()
+}
+
+/// Provider-call failure: a SHORT user-facing message (status-bar chip) plus
+/// the HTTP status when there was one, so [`execute_rank`] can decide
+/// whether a lean retry makes sense. The key never appears in any message.
+struct ProviderError {
+    status: Option<u16>,
+    message: String,
+}
+
+impl ProviderError {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            status: None,
+            message: message.into(),
+        }
+    }
+}
+
 /// One blocking OpenAI-compatible chat-completions call. Errors map to SHORT
 /// user-facing strings (status-bar chip); the key travels only in the
 /// Authorization header and never appears in any error text.
@@ -275,7 +356,7 @@ fn call_provider(
     api_key: Option<&str>,
     timeout_secs: u64,
     body: &serde_json::Value,
-) -> Result<ModelReply, String> {
+) -> Result<ModelReply, ProviderError> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(timeout_secs))
         .build();
@@ -285,43 +366,87 @@ fn call_provider(
         req = req.set("Authorization", &format!("Bearer {key}"));
     }
     let resp = req.send_string(&body.to_string()).map_err(|e| match e {
-        ureq::Error::Status(code, _) => format!("model endpoint returned HTTP {code}"),
+        // HTTP-error bodies usually say WHY ("temperature is not supported",
+        // "model not found") — surface a sanitized snippet: control chars
+        // flattened to spaces, the key defensively stripped BEFORE the cut
+        // (a truncation must never leave a partial key), first 160 chars.
+        ureq::Error::Status(code, resp) => {
+            let raw = resp.into_string().unwrap_or_default();
+            let mut clean: String = raw
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            if let Some(key) = api_key {
+                clean = clean.replace(key, "<redacted>");
+            }
+            let snippet: String = clean.trim().chars().take(160).collect();
+            let message = if snippet.is_empty() {
+                format!("model endpoint returned HTTP {code}")
+            } else {
+                format!("model endpoint returned HTTP {code}: {snippet}")
+            };
+            ProviderError {
+                status: Some(code),
+                message,
+            }
+        }
         // Transport errors (refused, DNS, timeout) print URL + cause — never
         // headers, so never the key.
         ureq::Error::Transport(t) => {
             let msg: String = t.to_string().chars().take(160).collect();
-            format!("model call failed: {msg}")
+            ProviderError::plain(format!("model call failed: {msg}"))
         }
     })?;
     let text = resp
         .into_string()
-        .map_err(|_| "model reply unreadable".to_string())?;
-    let envelope: serde_json::Value =
-        serde_json::from_str(&text).map_err(|_| "model reply was not JSON".to_string())?;
+        .map_err(|_| ProviderError::plain("model reply unreadable"))?;
+    let envelope: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| ProviderError::plain("model reply was not JSON"))?;
     let content = envelope["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| "model reply missing message content".to_string())?;
-    serde_json::from_str::<ModelReply>(strip_fences(content))
-        .map_err(|_| "model reply did not match the rank schema".to_string())
+        .ok_or_else(|| ProviderError::plain("model reply missing message content"))?;
+    extract_reply(content)
+        .ok_or_else(|| ProviderError::plain("model reply did not match the rank schema"))
 }
 
-/// POST /api/next/rank. Candidates come from the SAME derivation as GET
-/// /api/next ([`Session::next_moves`] — never a second source of truth); the
-/// model call is attempted only when configured, and every failure path
-/// answers with the heuristic list plus a surfaced `error`.
-pub fn rank_next_moves(s: &mut Session) -> RankResponse {
+/// Everything the OFF-LOCK provider call needs, snapshotted under ONE lock
+/// acquisition by [`prepare_rank`]. Owns plain data only, so it is `Send` by
+/// construction and the blocking HTTP round-trip can run on any thread while
+/// the session lock stays free for edits/hydrate.
+///
+/// `user` is the fully-serialized USER MESSAGE (empire state + candidate
+/// list, one JSON string): [`execute_rank`]'s lean retry rebuilds a request
+/// BODY from it without ever re-touching the session.
+pub struct RankJob {
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+    timeout_secs: u64,
+    candidates: Vec<Opportunity>,
+    user: String,
+}
+
+/// Outcome of the under-lock half of a rank: either the answer is already
+/// known (unconfigured / nothing to rank) or a [`RankJob`] remains to be
+/// executed OFF the session lock.
+pub enum RankPrep {
+    Done(RankResponse),
+    Call(RankJob),
+}
+
+/// PHASE 1 (under the session lock — the caller's lock scope should end the
+/// moment this returns). Candidates come from the SAME derivation as GET
+/// /api/next ([`Session::next_moves`] — never a second source of truth);
+/// config + context are snapshotted so nothing later needs `&Session`.
+pub fn prepare_rank(s: &mut Session) -> RankPrep {
     let candidates = s.next_moves();
     if !s.ai.configured() {
-        return heuristic(candidates, None);
+        return RankPrep::Done(heuristic(candidates, None));
     }
     if candidates.is_empty() {
         // Nothing to rank — honest silence needs no model call.
-        return heuristic(candidates, None);
+        return RankPrep::Done(heuristic(candidates, None));
     }
-    let base_url = s.ai.base_url.trim_end_matches('/').to_string();
-    let model = s.ai.model.clone();
-    let api_key = s.ai.api_key.clone();
-    let timeout_secs = s.ai.timeout_secs;
     // Context = the SAME empire snapshot the chat surface shows the user
     // (chat::compact_state) — dense, aggregated, nothing the UI can't show.
     let ctx = crate::chat::compact_state(s, &crate::chat::ContextScope::Empire);
@@ -337,27 +462,110 @@ pub fn rank_next_moves(s: &mut Session) -> RankResponse {
         })
         .collect();
     let user = serde_json::json!({ "state": ctx.payload, "candidates": cand_view }).to_string();
-    let body = serde_json::json!({
-        "model": model,
-        "temperature": 0.2,
-        // Honored by providers that support it, harmlessly ignored elsewhere.
-        "response_format": { "type": "json_object" },
+    RankPrep::Call(RankJob {
+        base_url: s.ai.base_url.trim_end_matches('/').to_string(),
+        model: s.ai.model.clone(),
+        api_key: s.ai.api_key.clone(),
+        timeout_secs: s.ai.timeout_secs,
+        candidates,
+        user,
+    })
+}
+
+/// Build the chat-completions body from the job. `lean` omits every OPTIONAL
+/// param — `temperature`, `response_format`, `max_tokens` — for the one-shot
+/// 400/422 retry (strict endpoints reject knobs they don't support).
+/// `max_tokens` scales with the candidate count: a flat cap would truncate
+/// the reply JSON mid-string at megabase scale and MANUFACTURE the very
+/// parse failure it exists to prevent.
+fn request_body(job: &RankJob, lean: bool) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": job.model,
         "messages": [
             { "role": "system", "content": RANK_SYSTEM_PROMPT },
-            { "role": "user", "content": user },
+            { "role": "user", "content": job.user },
         ],
     });
-    match call_provider(&base_url, api_key.as_deref(), timeout_secs, &body) {
-        Ok(reply) => {
-            let (headline, opportunities) = apply_model_ranking(candidates, &reply);
-            RankResponse {
-                engine: "model",
-                model: Some(model),
-                headline,
-                error: None,
-                opportunities,
+    if !lean {
+        body["temperature"] = serde_json::json!(0.2);
+        // Honored by providers that support it, harmlessly ignored elsewhere.
+        body["response_format"] = serde_json::json!({ "type": "json_object" });
+        body["max_tokens"] = serde_json::json!(256 + 48 * job.candidates.len());
+    }
+    body
+}
+
+/// Ok-arm finish. A FULLY-EMPTY parse (no order, no notes, headline absent
+/// or blank) is treated as a schema failure: `{}` buried in prose or a
+/// structurally unrelated JSON object would otherwise ship as
+/// `engine:"model"` with zero model content — a silent no-op wearing the AI
+/// badge. Partial replies still degrade per field (see [`ModelReply`]), and
+/// the pure firewall keeps its own empty-tolerance as defense in depth.
+fn ranked_response(job: RankJob, reply: &ModelReply) -> RankResponse {
+    let headline_blank = reply.headline.as_deref().unwrap_or("").trim().is_empty();
+    if reply.order.is_empty() && reply.notes.is_empty() && headline_blank {
+        return heuristic(
+            job.candidates,
+            Some("model reply did not match the rank schema".to_string()),
+        );
+    }
+    let (headline, opportunities) = apply_model_ranking(job.candidates, reply);
+    RankResponse {
+        engine: "model",
+        model: Some(job.model),
+        headline,
+        error: None,
+        opportunities,
+    }
+}
+
+/// PHASE 2 (OFF the session lock — pure over the job, safe on any thread).
+/// One provider call; on HTTP 400/422 exactly one retry with the optional
+/// params dropped — those two statuses are how strict endpoints reject a
+/// knob they don't support (reasoning tiers reject `temperature`, some
+/// servers reject `response_format`/`max_tokens`). NEVER retried: 401/403
+/// (auth — the same credentials fail the same way), 404 (wrong base or
+/// model — the same request meets the same miss) and 429 (rate limit — an
+/// immediate retry only digs the hole deeper). Every failure path answers
+/// with the heuristic list plus a surfaced `error`.
+pub fn execute_rank(job: RankJob) -> RankResponse {
+    let full = request_body(&job, false);
+    match call_provider(
+        &job.base_url,
+        job.api_key.as_deref(),
+        job.timeout_secs,
+        &full,
+    ) {
+        Ok(reply) => ranked_response(job, &reply),
+        Err(first) if matches!(first.status, Some(400 | 422)) => {
+            let lean = request_body(&job, true);
+            match call_provider(
+                &job.base_url,
+                job.api_key.as_deref(),
+                job.timeout_secs,
+                &lean,
+            ) {
+                Ok(reply) => ranked_response(job, &reply),
+                Err(second) => heuristic(
+                    job.candidates,
+                    Some(format!(
+                        "{} (retried without optional params)",
+                        second.message
+                    )),
+                ),
             }
         }
-        Err(error) => heuristic(candidates, Some(error)),
+        Err(first) => heuristic(job.candidates, Some(first.message)),
+    }
+}
+
+/// POST /api/next/rank, in-line: prepare + execute back to back. Correct for
+/// callers that already own the session exclusively (tests, serial tools);
+/// the Tauri shell and the dev bridge call the two halves separately so the
+/// lock is not held across the provider round-trip.
+pub fn rank_next_moves(s: &mut Session) -> RankResponse {
+    match prepare_rank(s) {
+        RankPrep::Done(resp) => resp,
+        RankPrep::Call(job) => execute_rank(job),
     }
 }
