@@ -1,0 +1,16 @@
+{
+  "name": "web",
+  "type": "module",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "web_bg.wasm",
+    "web.js",
+    "web.d.ts"
+  ],
+  "main": "web.js",
+  "types": "web.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

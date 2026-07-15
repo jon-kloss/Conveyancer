@@ -83,4 +83,18 @@ pub trait PlanStore {
     /// `&mut FaultPlan` out.
     #[cfg(feature = "fault-injection")]
     fn faults_mut(&mut self) -> &mut crate::plan_file::FaultPlan;
+
+    /// Serialize the WHOLE store to an opaque, self-describing blob for the web
+    /// snapshot layer (Phase 3). The web build keeps `Session` on the sync
+    /// `MemoryPlanStore` and persists by snapshotting THIS blob to IndexedDB
+    /// after every mutation (IndexedDB is async — it can't back the sync
+    /// `PlanStore` trait). Reached through the `Box<dyn PlanStore>` `Session`
+    /// holds, so it is a trait method rather than a concrete accessor.
+    ///
+    /// The default returns `None`: only `MemoryPlanStore` (the web/test store)
+    /// implements it. The desktop SQLite store never needs it — its durable
+    /// medium IS its file — so it inherits the `None` default and is untouched.
+    fn export_snapshot(&self) -> Option<Vec<u8>> {
+        None
+    }
 }

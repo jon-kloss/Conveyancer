@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use planner_core::patch::{PatchBatch, PatchOp};
 use planner_core::state::{PlanMeta, PlanState};
 use planner_core::undo::UndoEntry;
+use serde::{Deserialize, Serialize};
 
 use crate::plan_file::PersistError;
 use crate::store::PlanStore;
@@ -23,6 +24,35 @@ use crate::store::PlanStore;
 /// An entity row: its `collection` plus the stored JSON value (SQLite keys the
 /// `entities` table by `id` alone and stores `collection` alongside — mirrored).
 type EntityRow = (String, serde_json::Value);
+
+/// A complete, self-describing snapshot of a [`MemoryPlanStore`] — every field
+/// the store holds, so a round-trip through [`MemoryPlanStore::from_snapshot`]
+/// reconstructs a byte-identical store. This is the durable unit the WEB build
+/// writes to IndexedDB after every mutation (see [`PlanStore::export_snapshot`]):
+/// because the undo `cursor` lives inside `meta` under `undo_cursor` and the
+/// plan meta lives under `plan_meta`, capturing these five maps captures
+/// EVERYTHING `Session` hydrates (canonical state, the undo journal + cursor,
+/// view state, unlocked/purchased sets, advisor cards, gate, and mutes) — no
+/// separate cursor/state fields are needed. `version` guards a future format
+/// change (reject an unknown one rather than silently mis-deserialize a plan).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySnapshot {
+    /// Snapshot format version. Bumped only on an incompatible layout change.
+    pub version: u32,
+    /// id -> (collection, json value) — the entity rows.
+    pub entities: BTreeMap<String, EntityRow>,
+    /// The undo journal in application order.
+    pub journal: Vec<UndoEntry>,
+    /// The meta KV store (`plan_meta`, `undo_cursor`, `view_state`, …).
+    pub meta: BTreeMap<String, String>,
+    /// Advisor cards, id -> json.
+    pub cards: BTreeMap<String, String>,
+    /// Muted rules, rule -> muted_at.
+    pub mutes: BTreeMap<String, String>,
+}
+
+/// Current [`MemorySnapshot`] format version.
+const SNAPSHOT_VERSION: u32 = 1;
 
 #[derive(Default)]
 pub struct MemoryPlanStore {
@@ -44,6 +74,48 @@ pub struct MemoryPlanStore {
 impl MemoryPlanStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Capture the whole store as a [`MemorySnapshot`] (the web durability
+    /// unit). A deep clone of the five maps — cheap relative to the IndexedDB
+    /// write it feeds, and it keeps the store live for the next mutation.
+    pub fn snapshot(&self) -> MemorySnapshot {
+        MemorySnapshot {
+            version: SNAPSHOT_VERSION,
+            entities: self.entities.borrow().clone(),
+            journal: self.journal.borrow().clone(),
+            meta: self.meta.borrow().clone(),
+            cards: self.cards.borrow().clone(),
+            mutes: self.mutes.borrow().clone(),
+        }
+    }
+
+    /// Reconstruct a store from a [`MemorySnapshot`] — the inverse of
+    /// [`Self::snapshot`]. A version mismatch is rejected (rather than
+    /// silently mis-loading) so a forward-incompatible blob surfaces cleanly.
+    pub fn from_snapshot(snapshot: MemorySnapshot) -> Result<Self, PersistError> {
+        if snapshot.version != SNAPSHOT_VERSION {
+            return Err(PersistError::Corrupt(format!(
+                "unsupported plan snapshot version {} (expected {SNAPSHOT_VERSION})",
+                snapshot.version
+            )));
+        }
+        Ok(Self {
+            entities: RefCell::new(snapshot.entities),
+            journal: RefCell::new(snapshot.journal),
+            meta: RefCell::new(snapshot.meta),
+            cards: RefCell::new(snapshot.cards),
+            mutes: RefCell::new(snapshot.mutes),
+            #[cfg(feature = "fault-injection")]
+            faults: crate::plan_file::FaultPlan::default(),
+        })
+    }
+
+    /// Reconstruct from the raw JSON bytes [`PlanStore::export_snapshot`]
+    /// produced — the shape the web worker reads back out of IndexedDB.
+    pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Self, PersistError> {
+        let snapshot: MemorySnapshot = serde_json::from_slice(bytes)?;
+        Self::from_snapshot(snapshot)
     }
 
     fn get_meta(&self, key: &str) -> Option<String> {
@@ -229,5 +301,13 @@ impl PlanStore for MemoryPlanStore {
     #[cfg(feature = "fault-injection")]
     fn faults_mut(&mut self) -> &mut crate::plan_file::FaultPlan {
         &mut self.faults
+    }
+
+    /// Web durability hook: serialize the full store to JSON bytes. JSON (not
+    /// bincode) keeps the blob debuggable and adds no dependency — the store is
+    /// already all serde values. The IndexedDB write it feeds dwarfs the encode
+    /// cost, so a deep-clone snapshot is fine.
+    fn export_snapshot(&self) -> Option<Vec<u8>> {
+        serde_json::to_vec(&self.snapshot()).ok()
     }
 }

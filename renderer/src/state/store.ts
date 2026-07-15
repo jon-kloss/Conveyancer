@@ -752,13 +752,20 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 }));
 
-// e2e observability (dev server only): the w4 spec pins the M5 merge path —
-// a planHash change while the dashboard is open must NOT re-call the model —
-// which requires a REAL in-page dispatch (external /api/edit calls from the
-// test fixture never reach this store; the dev bridge has no SSE push). The
-// hook exposes nothing the dev tools couldn't already reach.
-if (import.meta.env.DEV) {
+// e2e observability: the w4 spec pins the M5 merge path — a planHash change
+// while the dashboard is open must NOT re-call the model — which requires a
+// REAL in-page dispatch (external /api/edit calls from the test fixture never
+// reach this store; the dev bridge has no SSE push). The hook exposes nothing
+// the dev tools couldn't already reach. Exposed on the dev server AND in the
+// web (`--mode web`) build — the web build is a production bundle
+// (`import.meta.env.DEV` is false there), so the browser smoke that drives the
+// BUILT web app needs `__WASM_BACKEND__` to reach the same seam.
+if (import.meta.env.DEV || __WASM_BACKEND__) {
   (window as Window & { __ficsitStore?: typeof useStore }).__ficsitStore = useStore;
+  // Also expose the raw backend so the web browser-smoke can drive transports
+  // the store has no direct action for (e.g. chatSend, which drafts a proposal
+  // and whose snapshot-on-reload persistence is the M1 acceptance).
+  (window as Window & { __ficsitBackend?: typeof backend }).__ficsitBackend = backend;
 }
 
 /** Solve-time chip content for a factory (A4: always present, always honest). */

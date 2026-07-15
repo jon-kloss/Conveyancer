@@ -4630,6 +4630,7 @@ dependencies = [
  "app",
  "console_error_panic_hook",
  "getrandom 0.3.4",
+ "js-sys",
  "persist",
  "planner-core",
  "serde",
