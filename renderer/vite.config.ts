@@ -3,9 +3,10 @@ import react from "@vitejs/plugin-react";
 
 // Dev: the renderer runs against either the Tauri shell (devUrl) or the
 // headless dev-bridge (proxy below). Prod (desktop): built into the Tauri
-// bundle. WEB (`--mode web`): a fully client-side SPA + wasm — VITE_BACKEND=wasm
-// (from .env.web) selects the WasmBackend, output goes to dist-web, and assets
-// load relative (base "./") so the static bundle serves from any path.
+// bundle. WEB (`--mode web`): a fully client-side SPA + wasm — the
+// `__WASM_BACKEND__` define (below) selects the WasmBackend, output goes to
+// dist-web, and assets load relative (base "./") so the static bundle serves
+// from any path.
 export default defineConfig(({ mode }) => {
   const web = mode === "web";
   return {
@@ -14,9 +15,9 @@ export default defineConfig(({ mode }) => {
     // A COMPILE-TIME boolean (not a runtime env access) so Rollup can statically
     // eliminate the WasmBackend branch in backend.ts: only the web build sets it
     // true, so a desktop/dev build dead-code-drops the dynamic `import` and never
-    // emits the worker or the .wasm chunk. `import.meta.env.VITE_BACKEND` is left
-    // as a runtime property access by Vite (not const-folded), which is why a
-    // dedicated define is required to keep the desktop bundle byte-for-byte old.
+    // emits the worker or the .wasm chunk. A dedicated define (rather than a
+    // runtime `import.meta.env.*` access, which Vite leaves un-const-folded) is
+    // what lets the desktop bundle stay byte-for-byte old.
     define: { __WASM_BACKEND__: JSON.stringify(web) },
     // Relative asset URLs for the web bundle so it serves from any static host
     // (Railway/Phase 4). Desktop/dev keep the default absolute base.

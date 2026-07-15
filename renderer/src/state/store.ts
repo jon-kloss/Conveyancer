@@ -762,6 +762,10 @@ export const useStore = create<AppStore>((set, get) => ({
 // BUILT web app needs `__WASM_BACKEND__` to reach the same seam.
 if (import.meta.env.DEV || __WASM_BACKEND__) {
   (window as Window & { __ficsitStore?: typeof useStore }).__ficsitStore = useStore;
+  // Also expose the raw backend so the web browser-smoke can drive transports
+  // the store has no direct action for (e.g. chatSend, which drafts a proposal
+  // and whose snapshot-on-reload persistence is the M1 acceptance).
+  (window as Window & { __ficsitBackend?: typeof backend }).__ficsitBackend = backend;
 }
 
 /** Solve-time chip content for a factory (A4: always present, always honest). */

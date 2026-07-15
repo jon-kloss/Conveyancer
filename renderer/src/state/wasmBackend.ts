@@ -6,8 +6,8 @@
 // table — so this transport is a 1:1 restatement of BridgeBackend over
 // worker-RPC instead of HTTP.
 //
-// This module is imported ONLY when `import.meta.env.VITE_BACKEND === "wasm"`
-// (a statically-replaced flag), via a dynamic import in backend.ts, so a
+// This module is imported ONLY when the `__WASM_BACKEND__` compile-time define
+// is true (the `--mode web` build), via a dynamic import in backend.ts, so a
 // desktop/dev build eliminates it and never bundles the worker or the wasm.
 
 import type {
@@ -51,6 +51,10 @@ export class WasmBackend implements Backend {
   private worker: Worker;
   private seq = 0;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  /** L4: set once the worker has fatally failed. A dead worker can no longer
+   *  answer, so NEW calls reject immediately instead of `postMessage`-ing into
+   *  the void and hanging on a promise that never settles. */
+  private deadError: Error | null = null;
 
   constructor() {
     this.worker = new Worker(new URL("./wasmWorker.ts", import.meta.url), { type: "module" });
@@ -63,15 +67,18 @@ export class WasmBackend implements Backend {
       else p.reject(new Error(error ?? "wasm session error"));
     };
     // A worker-level failure (bad wasm load, uncaught throw) must reject every
-    // in-flight call rather than hang the UI on a promise that never settles.
+    // in-flight call rather than hang the UI on a promise that never settles —
+    // and mark the worker dead so subsequent calls fail fast (L4).
     this.worker.onerror = (e) => {
-      const err = new Error(e.message || "wasm session worker crashed");
-      for (const [, p] of this.pending) p.reject(err);
+      this.deadError = new Error(e.message || "wasm session worker crashed");
+      for (const [, p] of this.pending) p.reject(this.deadError);
       this.pending.clear();
     };
   }
 
   private call<T>(cmd: string, args?: unknown): Promise<T> {
+    // L4: never postMessage to a worker known dead — it would hang forever.
+    if (this.deadError) return Promise.reject(this.deadError);
     const id = ++this.seq;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });

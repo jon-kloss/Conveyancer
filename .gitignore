@@ -9,4 +9,3 @@ renderer/tsconfig.tsbuildinfo
 
 # Web (--mode web) build output
 renderer/dist-web
-renderer/playwright-report/

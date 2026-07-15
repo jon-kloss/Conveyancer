@@ -16,16 +16,25 @@
 
 import { test, expect, type Page } from "@playwright/test";
 
-/** The in-page store handle store.ts exposes in the web build (__WASM_BACKEND__
- *  guard). Only the two members the smoke needs are typed. */
+/** The in-page store + backend handles store.ts exposes in the web build
+ *  (__WASM_BACKEND__ guard). Only the members the smoke needs are typed. */
 interface StoreWin {
   __ficsitStore: {
     getState(): {
       ready: boolean;
       error: string | null;
-      plan: { factories: Record<string, { name: string }> };
+      plan: {
+        factories: Record<string, { name: string }>;
+        proposals: Record<string, unknown>;
+      };
       dispatch(cmds: unknown[], opts?: { select?: boolean }): Promise<string[] | null>;
     };
+  };
+  __ficsitBackend: {
+    chatSend(
+      scope: { scope: "empire" },
+      message: string,
+    ): Promise<{ proposal: string | null }>;
   };
 }
 
@@ -52,6 +61,20 @@ function factoryCount(page: Page): Promise<number> {
       Object.keys((window as unknown as StoreWin).__ficsitStore.getState().plan.factories).length,
   );
 }
+
+function proposalCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      Object.keys((window as unknown as StoreWin).__ficsitStore.getState().plan.proposals).length,
+  );
+}
+
+// The IndexedDB the worker owns — same names as wasmWorker.ts. The smoke reaches
+// into it directly to seed a corrupt blob (M2) and to read the -corrupt backup.
+const DB_NAME = "ficsit-planner";
+const STORE = "plans";
+const KEY = "current";
+const CORRUPT_KEY = "current-corrupt";
 
 test("boots the wasm session, edits, and persists across reload", async ({ page }) => {
   // BOOT — fresh context ⇒ empty IndexedDB ⇒ the bundled fixture plan (no
@@ -97,4 +120,96 @@ test("boots the wasm session, edits, and persists across reload", async ({ page 
     ).map((f) => f.name),
   );
   expect(names).toContain("SMOKE FACTORY");
+});
+
+// M1 — the Rust-driven mutation signal. chat_send drafts a proposal via
+// `s.edit(CreateProposal)` — a real store write. The old hand-kept MUTATING
+// allowlist omitted chat_send, so the draft vanished on reload; the envelope
+// `{ mutated: true }` now makes the worker snapshot it. This proves a
+// chat-drafted proposal SURVIVES a reload.
+test("M1: a chat-drafted proposal survives a reload", async ({ page }) => {
+  await page.goto("/");
+  await waitReady(page);
+  expect(await proposalCount(page), "fixture plan boots with no proposals").toBe(0);
+
+  // Drive chatSend through the real transport (store → WasmBackend → worker →
+  // wasm chat::chat → s.edit(CreateProposal) → snapshot to IndexedDB). A
+  // standard-recipe target is always feasible on the fixture, so it drafts.
+  const drafted = await page.evaluate(async () => {
+    const reply = await (window as unknown as StoreWin).__ficsitBackend.chatSend(
+      { scope: "empire" },
+      "produce Iron Rod at 30/min",
+    );
+    return reply.proposal;
+  });
+  expect(drafted, "chat drafted a proposal (returns its id)").toBeTruthy();
+
+  // RELOAD — a new page load reconstructs the session from the IndexedDB
+  // snapshot blob the chat_send mutation wrote.
+  await page.reload();
+  await waitReady(page);
+
+  // RELOAD + PERSIST — the worker reconstructs from the IndexedDB snapshot. If
+  // chat_send had NOT been flagged mutating (the M1 bug), the proposal would be
+  // gone here. It must survive.
+  expect(await proposalCount(page), "the chat-drafted proposal persisted across reload").toBe(1);
+});
+
+// M2 — a corrupt / version-mismatched IndexedDB blob must NEVER brick the app.
+// Seed garbage under the plan key, reload, and assert the app still BOOTS fresh
+// (ensureReady catches the WebSession construction throw, backs the bad blob up
+// under a -corrupt key, and constructs a fresh session) instead of caching the
+// rejection into a permanent BACKEND UNREACHABLE.
+test("M2: a corrupt saved blob boots fresh, not bricked, and is backed up", async ({ page }) => {
+  // Boot once so the worker creates the IndexedDB + object store.
+  await page.goto("/");
+  await waitReady(page);
+
+  // Seed unparseable bytes under the current-plan key.
+  await page.evaluate(
+    ({ dbName, store, key }) =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(store);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(store, "readwrite");
+          tx.objectStore(store).put(new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), key);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+    { dbName: DB_NAME, store: STORE, key: KEY },
+  );
+
+  // Reload — the worker meets the corrupt blob on boot. The app must still come
+  // up (waitReady asserts error === null) with a FRESH, empty plan.
+  await page.reload();
+  await waitReady(page);
+  expect(await factoryCount(page), "corrupt blob → app boots a fresh empty plan").toBe(0);
+
+  // And the bad blob was preserved under the -corrupt backup key, not dropped.
+  const backedUp = await page.evaluate(
+    ({ dbName, store, corruptKey }) =>
+      new Promise<boolean>((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(store);
+        req.onsuccess = () => {
+          const db = req.result;
+          const g = db.transaction(store, "readonly").objectStore(store).get(corruptKey);
+          g.onsuccess = () => {
+            db.close();
+            resolve(!!g.result);
+          };
+          g.onerror = () => reject(g.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+    { dbName: DB_NAME, store: STORE, corruptKey: CORRUPT_KEY },
+  );
+  expect(backedUp, "the unreadable blob was backed up under the -corrupt key").toBe(true);
 });
