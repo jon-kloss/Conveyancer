@@ -24,7 +24,13 @@ pub enum DbError {
 ///    silently drop unlocked-alternate resolution.
 ///
 /// Absence of the key = stale, which covers every pre-existing cache.
-const SCHEMA_VERSION: &str = "2";
+/// v3: `Machine.footprint_m` (serde-default None) joined the persisted shape —
+/// pre-v3 blobs would silently read as "no clearance data".
+/// v4: footprint parsing now applies each box's `RelativeTransform` and
+/// unions CT_Hard boxes only — v3 blobs hold wrong values for every
+/// transform-bearing class (Manufacturer 18×13 vs true 18×20, Particle
+/// Accelerator 52×22 garbage vs 37×27) and must re-parse.
+const SCHEMA_VERSION: &str = "4";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -207,9 +213,12 @@ mod tests {
             "recipe average beats the machine estimate"
         );
         // Schema-version key: a matching build with a stale (or missing)
-        // schema_version must read as a cache miss.
+        // schema_version must read as a cache miss. The literal is '3' — the
+        // immediate predecessor — so a "4"→"3" SCHEMA_VERSION revert (which
+        // would resurrect caches holding pre-transform footprints) cannot
+        // satisfy this assert.
         conn.execute(
-            "UPDATE meta SET value = '1' WHERE key = 'schema_version'",
+            "UPDATE meta SET value = '3' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();

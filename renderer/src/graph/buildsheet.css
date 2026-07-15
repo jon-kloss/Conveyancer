@@ -128,6 +128,11 @@
   min-width: 56px;
   text-align: right;
 }
+.bs-fp {
+  font-size: 11px;
+  color: var(--ink-500);
+  white-space: nowrap;
+}
 
 /* Print: flatten to an ink-on-paper checklist. Only the sheet shows; the
  * scrim/modal chrome and app shell drop away. */
@@ -172,6 +177,7 @@
   .bs-rate,
   .bs-src,
   .bs-len,
+  .bs-fp,
   .bs-section h3,
   .t-title {
     color: black !important;

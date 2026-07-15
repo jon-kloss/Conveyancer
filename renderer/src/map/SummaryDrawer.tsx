@@ -32,11 +32,20 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
   // Distinct product lines this factory ships — drives the multi-output guidance.
   const outputLines = new Set(outputs.map((p) => p.item)).size;
   const projected = factory.status === "planned" ? "projected" : "";
+  // Header tile: the dominant OUTPUT item — what this factory ships (highest
+  // derived rate wins). A factory with no outputs yet keeps the placeholder.
+  const dominant = outputs.length
+    ? [...outputs].sort((a, b) => (df?.ports[b.id] ?? b.rate) - (df?.ports[a.id] ?? a.rate))[0]
+    : null;
 
   return (
     <aside className="drawer summary-drawer" data-testid="summary-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        {dominant ? (
+          <ItemIcon item={dominant.item} displayName={gamedata.items[dominant.item]?.displayName} size={40} />
+        ) : (
+          <div className="icon-ph s40" />
+        )}
         <div className="drawer-title-block">
           {editingName ? (
             <input
@@ -182,6 +191,12 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
               <span className="drawer-row-name">{gamedata.items[p.item]?.displayName ?? p.item}</span>
               {ceiling != null && (
                 <span className="minibar" aria-hidden title={`${fmtRate(used)} of ${fmtRate(ceiling)}/min node ceiling`}>
+                  {/* Node-extraction ceiling keeps CONGESTION thresholds
+                      (0.7 warn / 0.95 crit) deliberately: a resource node is
+                      a hard cap you consume toward — same family as power
+                      (powerLevel), not a belt that can be optimally full.
+                      The efficiency grammar (flowBand) covers belts/routes
+                      only; see DECISIONS efficiency-grammar-completion. */}
                   <span
                     className={frac >= 0.95 ? "crit" : frac >= 0.7 ? "warn" : ""}
                     style={{ width: `${frac * 100}%` }}

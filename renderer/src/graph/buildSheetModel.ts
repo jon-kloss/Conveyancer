@@ -16,6 +16,10 @@ export interface SheetMachine {
   machine: string;
   clock: string;
   recipe: string;
+  /** Per-machine footprint "8 × 10 m clearance" (Docs clearance data — the
+   *  top-down build + approach pad, not wall-to-wall dims) — players size
+   *  foundation pads with this. Null when the catalog carries none. */
+  footprint: string | null;
 }
 export interface SheetPort {
   item: string;
@@ -84,11 +88,13 @@ export function composeBuildSheet(
     .filter(Boolean)
     .map((g) => {
       const recipe = gamedata.recipes[g.recipe];
+      const fp = gamedata.machines[g.machine]?.footprintM;
       return {
         count: effCount(g),
         machine: gamedata.machines[g.machine]?.displayName ?? g.machine,
         clock: fmtClock(effClock(g)),
         recipe: recipe?.displayName ?? g.recipe,
+        footprint: fp ? `${fp[0]} × ${fp[1]} m clearance` : null,
       };
     });
 
@@ -168,7 +174,10 @@ export function sheetToText(s: BuildSheetData): string {
 
   L.push("MACHINES");
   if (s.machines.length === 0) L.push("- (none)");
-  for (const m of s.machines) L.push(`- ${m.count}× ${m.machine} @ ${m.clock} — ${m.recipe}`);
+  for (const m of s.machines)
+    L.push(
+      `- ${m.count}× ${m.machine} @ ${m.clock} — ${m.recipe}${m.footprint ? ` · ${m.footprint} each` : ""}`,
+    );
   L.push("");
 
   L.push("INPUTS");

@@ -5,6 +5,7 @@
 
 import L from "leaflet";
 import type { World, WorldNode } from "../state/types";
+import { flowBand } from "../lib/format";
 import { toLatLng } from "./maputil";
 
 export interface NodeRenderState {
@@ -26,6 +27,9 @@ export interface RouteRender {
   saturation: number;
   flow: number;
   capacity: number;
+  /** honest red: downstream registers a deficit through this route while it
+   *  runs at full capacity (MapView derives it from Derived.deficits) */
+  bottleneck: boolean;
   /** transport kind — drives the on-line glyph notation (ties, squares, dots) */
   kind: "belt" | "rail" | "truck" | "drone";
   /** label chip suffix: MK.n for belts, RAIL/TRUCK/DRONE for transports */
@@ -93,6 +97,22 @@ const TERRAIN_BOUNDS = { minX: -3246.98832031, maxX: 4253.01832031, minY: -3750,
 const TERRAIN_FILTER = "saturate(0.5) brightness(0.55) contrast(1.05)";
 const TERRAIN_URL = "/map/world.webp";
 
+// MOTION = FLOW (gate: flow > 0); speed = utilization (route animation).
+// The moving dash phase lives on its
+// own lightweight canvas above the data canvas — the full redraw (terrain
+// blit + 459 nodes + grid + chips) is far too hot to run per frame on an
+// 80-factory world, but re-stroking only the flowing polylines is ~1 ms.
+// The RAF loop is throttled to ≤24 fps and runs ONLY while at least one
+// flowing route is visible, the tab is visible, and reduced-motion is off.
+const ANIM_FPS = 24;
+/** one dash period of the moving highlight, px */
+const ANIM_PERIOD = 18;
+/** phase speed, px/s: slow trickle at 0 utilization → fast when saturated.
+ *  Speed encodes utilization WITHIN a surface; the absolute px/s curve here
+ *  is tuned for map world-scale legibility (the graph's flowSpeed in
+ *  lib/format.ts is card-scale tuned) — deliberately not shared. */
+const animSpeed = (saturation: number) => 14 + 46 * Math.max(0, Math.min(1, saturation));
+
 export class MapCanvasLayer extends L.Layer {
   private canvas: HTMLCanvasElement | null = null;
   /** Label-chip rects placed this redraw — later overlapping chips are culled
@@ -107,6 +127,11 @@ export class MapCanvasLayer extends L.Layer {
    *  reuses them instead of re-projecting all 459 nodes per mousemove.
    *  Rebuilt each redraw (which already fires on move/zoom/viewreset/resize). */
   private nodeScreen: { node: WorldNode; x: number; y: number }[] = [];
+  /** flow-animation overlay (see ANIM_FPS note above) */
+  private animCanvas: HTMLCanvasElement | null = null;
+  private animRaf: number | null = null;
+  private animLastT = 0;
+  private reduceMotion: MediaQueryList | null = null;
 
   constructor(data: CanvasLayerData) {
     super();
@@ -116,6 +141,7 @@ export class MapCanvasLayer extends L.Layer {
   setData(data: CanvasLayerData) {
     this.data = data;
     this.redraw();
+    this.syncAnimLoop();
   }
 
   onAdd(map: L.Map): this {
@@ -128,18 +154,114 @@ export class MapCanvasLayer extends L.Layer {
     canvas.style.zIndex = "200";
     map.getContainer().appendChild(canvas);
     this.canvas = canvas;
+    const anim = document.createElement("canvas");
+    anim.className = "map-anim-layer";
+    anim.style.position = "absolute";
+    anim.style.inset = "0";
+    anim.style.pointerEvents = "none";
+    anim.style.zIndex = "201";
+    map.getContainer().appendChild(anim);
+    this.animCanvas = anim;
+    this.reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    this.reduceMotion.addEventListener("change", this.syncAnimLoop);
+    document.addEventListener("visibilitychange", this.syncAnimLoop);
     void this.loadTerrain();
     map.on("move zoom viewreset resize", this.redraw, this);
     this.redraw();
+    this.syncAnimLoop();
     return this;
   }
 
   onRemove(map: L.Map): this {
     map.off("move zoom viewreset resize", this.redraw, this);
+    if (this.animRaf != null) cancelAnimationFrame(this.animRaf);
+    this.animRaf = null;
+    this.reduceMotion?.removeEventListener("change", this.syncAnimLoop);
+    document.removeEventListener("visibilitychange", this.syncAnimLoop);
+    this.reduceMotion = null;
+    this.animCanvas?.remove();
+    this.animCanvas = null;
     this.canvas?.remove();
     this.canvas = null;
     this.mapRef = null;
     return this;
+  }
+
+  /** Routes that animate: derived flow > 0 while the flow layer is shown.
+   *  Idle and planned-but-unfed routes stay static (MOTION = FLOW; speed =
+   *  utilization). */
+  private flowingRoutes(): RouteRender[] {
+    // review mode dims the world under the proposal ghosts — bright moving
+    // dashes above the dim scrim would fight the review focus, so pause
+    if (!this.data.showRoutes || this.data.review) return [];
+    return this.data.routes.filter((r) => r.flow > 0);
+  }
+
+  /** Start/stop the RAF loop so the animation never burns background CPU:
+   *  it runs only with ≥1 flowing route, a visible document, and no
+   *  reduced-motion preference. */
+  private syncAnimLoop = () => {
+    const want =
+      this.animCanvas != null &&
+      this.flowingRoutes().length > 0 &&
+      document.visibilityState === "visible" &&
+      !this.reduceMotion?.matches;
+    if (want && this.animRaf == null) {
+      this.animRaf = requestAnimationFrame(this.animFrame);
+    } else if (!want && this.animRaf != null) {
+      cancelAnimationFrame(this.animRaf);
+      this.animRaf = null;
+      const ctx = this.animCanvas?.getContext("2d");
+      if (ctx && this.animCanvas) ctx.clearRect(0, 0, this.animCanvas.width, this.animCanvas.height);
+    }
+  };
+
+  private animFrame = (t: number) => {
+    this.animRaf = requestAnimationFrame(this.animFrame);
+    if (t - this.animLastT < 1000 / ANIM_FPS) return;
+    this.animLastT = t;
+    this.drawAnim(t);
+  };
+
+  /** Stroke ONLY the flowing routes' moving-dash highlight. Neutral ink over
+   *  the base line: the status color underneath stays untouched (color is
+   *  status-only; motion is the orthogonal throughput channel). Phase is
+   *  time-based (px/s), so a dropped frame never changes perceived speed;
+   *  path order is from → to, and a negative dash offset moves the dashes
+   *  in that direction. */
+  private drawAnim(t: number) {
+    const map = this.mapRef;
+    const canvas = this.animCanvas;
+    if (!map || !canvas) return;
+    const size = map.getSize();
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== size.x * dpr || canvas.height !== size.y * dpr) {
+      canvas.width = size.x * dpr;
+      canvas.height = size.y * dpr;
+      canvas.style.width = `${size.x}px`;
+      canvas.style.height = `${size.y}px`;
+    }
+    const ctx = canvas.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.x, size.y);
+    ctx.strokeStyle = css("--ink-100");
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    const secs = t / 1000;
+    for (const r of this.flowingRoutes()) {
+      const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
+      if (pts.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+      ctx.setLineDash([5, ANIM_PERIOD - 5]);
+      ctx.lineDashOffset = -((secs * animSpeed(r.saturation)) % ANIM_PERIOD);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+    ctx.globalAlpha = 1;
   }
 
   /** Hit-test nodes in container-pixel space: NEAREST node within 12px, with
@@ -215,6 +337,9 @@ export class MapCanvasLayer extends L.Layer {
     this.drawReplacesLinks(ctx, map);
     this.drawGhost(ctx, map);
     if (this.data.review) this.drawReview(ctx, map, size);
+    // keep the animated dashes in lockstep with the base lines during
+    // pan/zoom — an extra overlay stroke here is cheap, the lag isn't
+    if (this.animRaf != null) this.drawAnim(performance.now());
   };
 
   /** Review mode: dim the world to 42%, then draw the proposal's ghosts at
@@ -287,8 +412,8 @@ export class MapCanvasLayer extends L.Layer {
     }
   }
 
-  /** Flow/route encoding per mock 1e. Planned routes are always
-   *  blueprint-dashed; saturation rides the label chip (color + italic). */
+  /** Flow/route encoding (efficiency grammar). Planned routes are always
+   *  blueprint-dashed; utilization rides the label chip (color + italic). */
   /** Walk a polyline and invoke fn at every `spacing` px (phase-offset by
    *  spacing/2 so glyphs stay clear of the endpoints) with the local angle. */
   private alongLine(
@@ -319,7 +444,10 @@ export class MapCanvasLayer extends L.Layer {
     for (const r of this.data.routes) {
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
       if (pts.length < 2) continue;
-      const level = r.saturation >= 0.95 ? "crit" : r.saturation >= 0.7 ? "warn" : "ok";
+      // efficiency grammar: green = good (incl. FULL meeting demand), amber
+      // dashed = under-used (≤50%), heavy red = bottleneck (deficit through a
+      // full route) — same authority as the graph edges (lib/format).
+      const band = flowBand(r.saturation, r.flow, r.bottleneck);
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
       for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
@@ -330,10 +458,12 @@ export class MapCanvasLayer extends L.Layer {
       } else {
         ctx.strokeStyle = r.selected
           ? css("--signal-500")
-          : css(level === "crit" ? "--flow-crit" : level === "warn" ? "--flow-warn" : "--flow-ok");
-        ctx.lineWidth = level === "crit" ? 6 : level === "warn" ? 4 : 2;
-        // drones read as dotted air routes; saturation grammar overrides
-        ctx.setLineDash(level === "ok" ? (r.kind === "drone" ? [2, 5] : []) : level === "warn" ? [10, 5] : [6, 4]);
+          : css(band === "bottleneck" ? "--flow-crit" : band === "under" ? "--flow-warn" : "--flow-ok");
+        ctx.lineWidth = band === "bottleneck" ? 6 : 2;
+        // drones read as dotted air routes; the band grammar overrides
+        ctx.setLineDash(
+          band === "good" ? (r.kind === "drone" ? [2, 5] : []) : band === "under" ? [10, 5] : [6, 4],
+        );
       }
       ctx.stroke();
       ctx.setLineDash([]);
@@ -389,7 +519,7 @@ export class MapCanvasLayer extends L.Layer {
     for (const r of byPriority) {
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
       if (pts.length < 2) continue;
-      const level = r.saturation >= 0.95 ? "crit" : r.saturation >= 0.7 ? "warn" : "ok";
+      const band = flowBand(r.saturation, r.flow, r.bottleneck);
       const mid = pts[Math.floor((pts.length - 1) / 2)];
       const mid2 = pts[Math.min(pts.length - 1, Math.floor((pts.length - 1) / 2) + 1)];
       const cx = (mid.x + mid2.x) / 2;
@@ -401,9 +531,10 @@ export class MapCanvasLayer extends L.Layer {
       )}%  ${r.tag}`;
       ctx.font = `italic 500 9px ${css("--font-mono")}`;
       const w = ctx.measureText(text).width + 10;
-      const bg = level === "crit" ? css("--flow-crit") : css("--steel-800");
+      const bg = band === "bottleneck" ? css("--flow-crit") : css("--steel-800");
       const border = r.selected ? css("--signal-500") : css("--steel-600");
-      const ink = level === "crit" ? css("--on-signal") : level === "warn" ? css("--flow-warn") : css("--bp-400");
+      const ink =
+        band === "bottleneck" ? css("--on-signal") : band === "under" ? css("--flow-warn") : css("--bp-400");
       if (this.placeChip(cx - w / 2, cy - 8, w, 16)) {
         ctx.fillStyle = bg;
         ctx.strokeStyle = border;

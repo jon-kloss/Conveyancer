@@ -5,7 +5,12 @@
 
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 
+import { resetView } from "./helpers";
+
 test.describe.configure({ mode: "serial" });
+
+// Deterministic map boot — never inherit a dead predecessor's viewState.
+test.beforeEach(async ({ request }) => resetView(request));
 
 const API = "http://localhost:8791/api";
 
@@ -177,6 +182,12 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await expect(page.getByTestId("route-drawer")).toContainText("BELT ROUTE");
   await expect(page.getByTestId("route-drawer")).toContainText("Iron Ingot");
 
+  // the drawer header carries the routed item's REAL icon (not a placeholder):
+  // an actually-loaded <img> inside the ItemIcon chip
+  const headerIcon = page.getByTestId("route-drawer").locator(".drawer-header .item-chip img");
+  await expect(headerIcon).toBeVisible();
+  expect(await headerIcon.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+
   // tier changes re-derive capacity (MK.1 = 60/min)
   await page.getByTestId("route-tier-select").selectOption("1");
   await expect(page.getByTestId("route-drawer")).toContainText("60/min CAP");
@@ -222,7 +233,23 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
   await expect(page.getByTestId("audit-drawer")).toBeVisible();
   await page.locator(".audit-tab", { hasText: "DEFICITS" }).click();
   await expect(page.getByTestId("audit-drawer")).toContainText("ROD CITY starved of Iron Ingot");
+  // the dip cascades one hop: fewer rods leave ROD CITY, so SCREW WORKS
+  // starves too — two honest deficits, still zero route bottlenecks
+  await expect(page.getByTestId("audit-drawer")).toContainText("SCREW WORKS starved of Iron Rod");
+
+  // EFFICIENCY GRAMMAR honesty: ROD CITY starves because upstream dipped to
+  // 10/min — the ingot route itself is SLACK, so it must NOT read bottleneck
+  // red (the belt isn't the constraint); it reads UNDER-USED amber. No row
+  // in this dipped empire has honest bottleneck evidence.
+  await page.locator(".audit-tab", { hasText: "SATURATION" }).click();
+  await expect(page.locator(".audit-load.under").first()).toBeVisible();
+  await expect(page.locator(".audit-load.bottleneck")).toHaveCount(0);
   await page.keyboard.press("Tab");
+
+  // The closed-drawer handle badge is the ALARM channel: exactly the deficit
+  // count — the amber under-used rows just asserted above must NOT inflate it
+  // (zero bottlenecks here, so badge = the 2 cascaded deficits, nothing more).
+  await expect(page.getByTestId("audit-handle").locator(".audit-badge")).toHaveText("2");
 
   // ---- POWER overlay chip toggles with key 2 ----
   const powerChip = page.locator(".overlay-chip", { hasText: "POWER" });

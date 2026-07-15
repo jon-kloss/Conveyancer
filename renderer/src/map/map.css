@@ -307,10 +307,12 @@
   height: 0;
   border-top: 2px solid var(--flow-ok);
 }
-.legend-load.warn {
-  border-top: 3px dashed var(--flow-warn);
+/* efficiency bands: amber dashed = under-used (≤50%), heavy red dashed =
+   bottleneck (caps demanded throughput); solid green = good, incl. FULL */
+.legend-load.under {
+  border-top: 2px dashed var(--flow-warn);
 }
-.legend-load.crit {
+.legend-load.bottleneck {
   border-top: 4px dashed var(--flow-crit);
 }
 
@@ -456,6 +458,20 @@
 }
 .minibar > span.crit {
   background: var(--flow-crit);
+}
+/* efficiency bands (belt/route load bars): under-used amber, bottleneck red;
+   warn/crit above stay for power-margin and node-ceiling minibars */
+.minibar > span.under {
+  background: var(--flow-warn);
+}
+.minibar > span.bottleneck {
+  background: var(--flow-crit);
+}
+.drawer-row .t-data-12.under {
+  color: var(--flow-warn);
+}
+.drawer-row .t-data-12.bottleneck {
+  color: var(--flow-crit);
 }
 .drawer-footer {
   margin-top: auto;

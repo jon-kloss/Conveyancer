@@ -4,7 +4,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
-import { fmtPercent, fmtPower, fmtRate, flowLevel, circuitHeadroom, powerLevel } from "../lib/format";
+import {
+  fmtPercent,
+  fmtPower,
+  fmtRate,
+  flowBand,
+  bottleneckEdges,
+  routeBottleneck,
+  circuitHeadroom,
+  powerLevel,
+  type FlowBand,
+} from "../lib/format";
 import { beltCapacity } from "../state/types";
 import type { AltOpportunity } from "../state/types";
 import "./audit.css";
@@ -22,6 +32,8 @@ interface SatRow {
   saturation: number;
   flow: number;
   capacity: number;
+  /** efficiency band (under/good/bottleneck) — shared authority in lib/format */
+  band: FlowBand;
   trace: () => void;
   upgrade: (() => void) | null;
 }
@@ -185,6 +197,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         saturation: d.saturation,
         flow: d.flow,
         capacity: d.capacity,
+        band: flowBand(d.saturation, d.flow, routeBottleneck(r.id, d.saturation, derived.deficits)),
         trace: () => {
           setView({ mode: "map" });
           setSelection({ kind: "route", id: r.id });
@@ -197,10 +210,17 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
             : null,
       });
     }
+    // Solver-named capacity bindings per factory (the honest bottleneck red).
+    const bottlenecksByFactory = new Map<string, Set<string>>();
     for (const e of Object.values(plan.edges)) {
       const df = derived.factories[e.factory];
       const d = df?.edges[e.id];
       if (!d) continue;
+      let bset = bottlenecksByFactory.get(e.factory);
+      if (!bset) {
+        bset = bottleneckEdges(df);
+        bottlenecksByFactory.set(e.factory, bset);
+      }
       const toGroup = e.to.kind === "group" ? plan.groups[e.to.id] : undefined;
       const toName = toGroup
         ? gamedata.machines[toGroup.machine]?.displayName?.toUpperCase()
@@ -216,6 +236,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         saturation: d.saturation,
         flow: d.flow,
         capacity: beltCapacity(e.tier),
+        band: flowBand(d.saturation, d.flow, bset.has(e.id)),
         trace: () => {
           setView({ mode: "factory", factoryId: e.factory });
           setSelection({ kind: "edge", id: e.id });
@@ -224,10 +245,18 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
           e.tier < 6 ? () => void dispatch([{ type: "set_edge_tier", id: e.id, tier: e.tier + 1 }]) : null,
       });
     }
-    return rows.sort((a, b) => b.saturation - a.saturation);
+    // Efficiency ranking: bottlenecks first (the real problems), then the
+    // under-used (waste / starved upstream), then good; utilization desc within.
+    const rank: Record<FlowBand, number> = { bottleneck: 2, under: 1, good: 0 };
+    return rows.sort((a, b) => rank[b.band] - rank[a.band] || b.saturation - a.saturation);
   }, [plan, derived, dispatch, setSelection, setView, gamedata.items]);
 
-  const hotCount = satRows.filter((r) => r.saturation >= 0.7).length;
+  // Badge = the ALARM channel: bottlenecks only, matching the status bar's
+  // bottleneck-only ⚠. Under-used rows are waste — listed (and ranked) in the
+  // tab, never alarmed; counting them branded healthy bases with triple-digit
+  // badges. The ≤50% boundary itself is user-pinned (see DECISIONS
+  // efficiency-grammar-completion + its OPEN Mk1-amber question).
+  const alarmCount = satRows.filter((r) => r.band === "bottleneck").length;
   const deficitCount = derived.deficits.length + Object.values(derived.nodes).filter((n) => n.conflict).length;
   const powerRows = useMemo(
     () =>
@@ -255,7 +284,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
     return (
       <button className="audit-handle mono" onClick={onToggle} data-testid="audit-handle">
         ▲ AUDIT (TAB)
-        {hotCount + deficitCount > 0 && <span className="audit-badge">{hotCount + deficitCount}</span>}
+        {alarmCount + deficitCount > 0 && <span className="audit-badge">{alarmCount + deficitCount}</span>}
       </button>
     );
   }
@@ -265,7 +294,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
       <header className="audit-head">
         {(
           [
-            ["saturation", `SATURATION`, hotCount],
+            ["saturation", `SATURATION`, alarmCount],
             ["deficits", `DEFICITS`, deficitCount],
             ["power", `POWER`, powerBadge],
             ["drift", `PLAN DRIFT`, 0],
@@ -292,33 +321,49 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         {tab === "saturation" && (
           <>
             {satRows.length === 0 && <div className="drawer-empty">No routes yet.</div>}
-            {satRows.map((r) => {
-              const level = flowLevel(r.saturation);
-              return (
-                <div className={`audit-row ${level === "crit" ? "crit" : ""}`} key={r.key}>
-                  <span className="audit-name">{r.label}</span>
-                  <span className="mono audit-tier">{r.tierText}</span>
-                  <span className={`mono audit-load ${level}`}>{fmtPercent(r.saturation)}</span>
-                  <span className="audit-bar">
-                    <span className={level} style={{ width: `${Math.min(100, r.saturation * 100)}%` }} />
-                  </span>
-                  <span className="mono audit-proj projected">
-                    {fmtRate(r.flow)}/{fmtRate(r.capacity)}
-                  </span>
-                  <span className="mono audit-trend">—</span>
-                  <span className="audit-actions">
-                    <button className="chip" onClick={r.trace}>
-                      TRACE
+            {satRows.map((r) => (
+              // Efficiency grammar: red = BOTTLENECK (solver-named cap), amber
+              // = under-used (≤50% while flowing), green = good — a FULL belt
+              // meeting demand is optimal, so 100% alone stays green.
+              <div className={`audit-row ${r.band === "bottleneck" ? "crit" : ""}`} key={r.key}>
+                <span className="audit-name">{r.label}</span>
+                <span className="mono audit-tier">{r.tierText}</span>
+                <span
+                  className={`mono audit-load ${r.band}`}
+                  title={
+                    r.band === "bottleneck"
+                      ? "Bottleneck — this link runs full while downstream demand goes unmet"
+                      : r.band === "under"
+                        ? "Under-used — flowing at ≤50% of rated capacity (over-built or starved upstream)"
+                        : r.flow === 0
+                          ? "Idle — no derived flow through this link"
+                          : r.saturation >= 0.999
+                            ? "Good — a full belt that meets demand is optimal"
+                            : "Good — >50% utilized"
+                  }
+                >
+                  {fmtPercent(r.saturation)}
+                  {r.band === "under" ? " UNDER" : r.band === "bottleneck" ? " ⚠" : ""}
+                </span>
+                <span className="audit-bar">
+                  <span className={r.band} style={{ width: `${Math.min(100, r.saturation * 100)}%` }} />
+                </span>
+                <span className="mono audit-proj projected">
+                  {fmtRate(r.flow)}/{fmtRate(r.capacity)}
+                </span>
+                <span className="mono audit-trend">—</span>
+                <span className="audit-actions">
+                  <button className="chip" onClick={r.trace}>
+                    TRACE
+                  </button>
+                  {r.upgrade && r.band === "bottleneck" && (
+                    <button className="chip warn" onClick={r.upgrade}>
+                      UPGRADE TIER
                     </button>
-                    {r.upgrade && r.saturation >= 0.7 && (
-                      <button className="chip warn" onClick={r.upgrade}>
-                        UPGRADE TIER
-                      </button>
-                    )}
-                  </span>
-                </div>
-              );
-            })}
+                  )}
+                </span>
+              </div>
+            ))}
           </>
         )}
 

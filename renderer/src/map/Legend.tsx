@@ -55,10 +55,14 @@ export default function Legend() {
           <div className="legend-row">
             <span className="legend-tether replaces" /> Replaces tether (◆ → ◇)
           </div>
-          <div className="legend-row">
-            <span className="legend-load" /> &lt;70
-            <span className="legend-load warn" /> 70–95
-            <span className="legend-load crit" /> ≥95
+          {/* efficiency grammar: full is optimal — red only when the link
+              provably caps demanded throughput, never from % alone */}
+          <div className="legend-row" title="Utilization: ≤50% = under-used (over-built or starved upstream); >50% incl. a FULL belt meeting demand = good">
+            <span className="legend-load under" /> ≤50 under-used
+            <span className="legend-load" /> &gt;50 good
+          </div>
+          <div className="legend-row" title="Bottleneck: the route runs at full capacity while downstream demand goes unmet — this link caps throughput">
+            <span className="legend-load bottleneck" /> bottleneck — caps demand
           </div>
           <div className="legend-row mono">
             <span>❯ flow</span> <span>╫ rail</span> <span>▪ truck</span> <span>┄ drone</span>

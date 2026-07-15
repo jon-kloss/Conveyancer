@@ -3,7 +3,7 @@
 // The full rail/truck/drone math block arrives in Phase 4.
 
 import { useStore } from "../state/store";
-import { fmtClockS, fmtKm, fmtPercent, fmtPower, fmtRate } from "../lib/format";
+import { fmtClockS, fmtKm, fmtPercent, fmtPower, fmtRate, flowBand, routeBottleneck } from "../lib/format";
 import { DEFAULT_DRONE_SPEC, DEFAULT_RAIL_SPEC, DEFAULT_TRUCK_SPEC } from "../state/types";
 import type { RailSpec, Route, RouteKind } from "../state/types";
 import TrainAnswerBlock from "./TrainAnswerBlock";
@@ -29,12 +29,24 @@ export default function RouteDrawer({ route }: { route: Route }) {
   const dstFactory = dstPort ? plan.factories[dstPort.factory] : null;
   const tier = route.kind.kind === "belt" ? route.kind.tier : 0;
   const sat = dr?.saturation ?? 0;
-  const level = sat >= 0.95 ? "crit" : sat >= 0.7 ? "warn" : "";
+  // Efficiency band (shared authority in lib/format): amber = under-used,
+  // red = bottleneck (deficit through a full route); a full belt meeting
+  // demand stays quiet — optimal.
+  const band = flowBand(sat, dr?.flow ?? 0, routeBottleneck(route.id, sat, derived.deficits));
+  const level = band === "good" ? "" : band;
+
+  // Header tile: the routed item (single-item manifests in v1). An empty
+  // manifest keeps the placeholder — there is nothing honest to show.
+  const routedItem = route.manifest[0]?.[0] ?? null;
 
   return (
     <aside className="drawer summary-drawer" data-testid="route-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        {routedItem ? (
+          <ItemIcon item={routedItem} displayName={gamedata.items[routedItem]?.displayName} size={40} />
+        ) : (
+          <div className="icon-ph s40" />
+        )}
         <div className="drawer-title-block">
           <div className="t-title">BELT ROUTE</div>
           <div className="mono drawer-sub">
@@ -290,8 +302,15 @@ function TransportDrawer({ route }: { route: Route }) {
   const title = kind === "rail" ? "RAIL ROUTE" : kind === "truck" ? "TRUCK ROUTE" : "DRONE ROUTE";
   const demand = dr?.flow ?? 0;
   const throughput = t?.throughputPerMin ?? 0;
-  const ratio = demand / Math.max(1e-9, throughput);
-  const level = ratio >= 0.95 ? "crit" : ratio >= 0.7 ? "warn" : "ok";
+  const short = throughput > 0 && demand > throughput + 1e-6;
+  // Shared efficiency grammar (lib/format) — the same banding as the map
+  // polyline behind this drawer: a 96%-loaded rail meeting demand reads ✓
+  // here exactly as it reads green on the map. "crit" is reserved for honest
+  // shortfall evidence: throughput short of demand, or a downstream deficit
+  // routed through a full link.
+  const bn = short || routeBottleneck(route.id, dr?.saturation ?? 0, derived.deficits);
+  const band = flowBand(dr?.saturation ?? 0, demand, bn);
+  const level = band === "bottleneck" ? "crit" : band === "under" ? "warn" : "ok";
 
   const respec = (patch: Record<string, unknown>) => {
     if (route.kind.kind === "rail") {
@@ -312,12 +331,17 @@ function TransportDrawer({ route }: { route: Route }) {
   const rail: RailSpec | null = route.kind.kind === "rail" ? route.kind.spec : null;
   const truck = route.kind.kind === "truck" ? route.kind.spec : null;
   const drone = route.kind.kind === "drone" ? route.kind.spec : null;
-  const short = throughput > 0 && demand > throughput + 1e-6;
+  // Header tile: the routed item (rail manifests are single-item in v1).
+  const routedItem = route.manifest[0]?.[0] ?? null;
 
   return (
     <aside className="drawer summary-drawer" data-testid="route-drawer">
       <header className="drawer-header">
-        <div className="icon-ph s40" />
+        {routedItem ? (
+          <ItemIcon item={routedItem} displayName={gamedata.items[routedItem]?.displayName} size={40} />
+        ) : (
+          <div className="icon-ph s40" />
+        )}
         <div className="drawer-title-block">
           <div className="t-title">{title}</div>
           <div className="mono drawer-sub">
@@ -449,7 +473,7 @@ function TransportDrawer({ route }: { route: Route }) {
               <span>DEMAND</span>
               <span className="math-note" />
               <span className="projected">
-                {fmtRate(demand)}/min {level === "crit" ? "⚠ CRIT" : level === "warn" ? "⚠" : "✓"}
+                {fmtRate(demand)}/min {level === "crit" ? "⚠ SHORT" : level === "warn" ? "UNDER" : "✓"}
               </span>
             </div>
             {t.batteriesPerMin != null && (

@@ -150,6 +150,18 @@
 .audit-load.crit {
   color: var(--flow-crit);
 }
+/* efficiency bands (SATURATION tab): good = optimal green (incl. a full belt
+   meeting demand), under = under-used amber, bottleneck = solver-named red.
+   ok/warn/crit above stay for the POWER tab's margin semantics. */
+.audit-load.good {
+  color: var(--flow-ok);
+}
+.audit-load.under {
+  color: var(--flow-warn);
+}
+.audit-load.bottleneck {
+  color: var(--flow-crit);
+}
 .audit-bar {
   height: 5px;
   width: 70px;
@@ -166,6 +178,12 @@
   background: var(--flow-warn);
 }
 .audit-bar > span.crit {
+  background: var(--flow-crit);
+}
+.audit-bar > span.under {
+  background: var(--flow-warn);
+}
+.audit-bar > span.bottleneck {
   background: var(--flow-crit);
 }
 .audit-proj {

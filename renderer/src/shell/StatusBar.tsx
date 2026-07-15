@@ -1,9 +1,10 @@
-// Status bar (24px): power draw, ◈ under-construction count, ⚠ CRIT belts
-// (clickable), right-side totals. Counts collapse to a ⋯ chip in overlay mode.
+// Status bar (24px): power draw, ◈ under-construction count, ⚠ BOTTLENECK
+// belts (clickable), right-side totals. Counts collapse to a ⋯ chip in
+// overlay mode.
 
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
-import { fmtPower, flowLevel, circuitHeadroom, powerLevel, type FlowLevel } from "../lib/format";
+import { fmtPower, bottleneckEdges, circuitHeadroom, powerLevel, type PowerLevel } from "../lib/format";
 
 export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   const plan = useStore((s) => s.plan);
@@ -35,12 +36,12 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
     [plan],
   );
 
+  // Efficiency grammar: the alarm counts BOTTLENECK belts (solver-named
+  // capacity bindings) — a merely full belt meeting demand is optimal.
   const critEdges = useMemo(() => {
     const out: { factory: string; edge: string }[] = [];
     for (const [fid, df] of Object.entries(derived.factories)) {
-      for (const [eid, e] of Object.entries(df.edges)) {
-        if (flowLevel(e.saturation) === "crit") out.push({ factory: fid, edge: eid });
-      }
+      for (const eid of bottleneckEdges(df)) out.push({ factory: fid, edge: eid });
     }
     return out;
   }, [derived]);
@@ -48,12 +49,12 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   // PWR chip color: the WORST per-circuit level (orange is a verb — it follows
   // the derived condition). No grids yet ⇒ color the raw draw against total
   // generation, so an ungridded empire's overdraw still tints.
-  const powerLevelWorst: FlowLevel = useMemo(() => {
+  const powerLevelWorst: PowerLevel = useMemo(() => {
     const rank = { ok: 0, warn: 1, crit: 2 } as const;
     if (derived.circuits.length === 0) {
       return powerLevel(circuitHeadroom(derived.totalGenerationMw, derived.totalPowerMw));
     }
-    let worst: FlowLevel = "ok";
+    let worst: PowerLevel = "ok";
     for (const c of derived.circuits) {
       const lvl = powerLevel(circuitHeadroom(c.generationMw, c.demandMw));
       if (rank[lvl] > rank[worst]) worst = lvl;
@@ -76,9 +77,10 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
       </span>
       <button
         className={`sb-item mono ${critEdges.length ? "sb-crit" : ""}`}
+        data-testid="sb-bottleneck"
         onClick={jumpToCrit}
         disabled={!critEdges.length}
-        title="Saturated belts (≥95%)"
+        title="Bottleneck belts — capacity caps demanded throughput"
       >
         ⚠ {critEdges.length}
       </button>

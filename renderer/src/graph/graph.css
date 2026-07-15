@@ -145,11 +145,23 @@
   max-width: 176px;
 }
 .fp-box {
-  /* top-down machine footprint — a solid block reads as a machine, not an
-     empty checkbox (the faint hatch vanished at these small sizes). */
-  border: 1px solid var(--steel-500);
+  /* top-down build pad: a crisp OUTLINE (a solid fill read as a broken-image
+     placeholder). The first pad carries the machine render clipped to the
+     pad's proportions — "the machine on its foundation"; siblings stay bare. */
+  border: 1px solid var(--steel-400);
   border-radius: 1px;
-  background: var(--steel-600);
+  background: var(--steel-900);
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.fp-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: auto;
+  opacity: 0.95;
 }
 .fp-more {
   font-size: 9px;
@@ -388,6 +400,33 @@
   font-weight: 700;
 }
 
+/* ---- animated flow (MOTION = THROUGHPUT) ----
+   A neutral-ink dash overlay travels along flowing belts; the base edge keeps
+   its status color and weight untouched — motion is an orthogonal channel.
+   Speed comes from utilization via --flow-speed (set inline per edge);
+   the keyframe travels exactly one dash period (5 + 13 = 18px), so the loop
+   is seamless. Negative dashoffset moves dashes source→target. */
+.edge-flowing {
+  fill: none;
+  stroke: var(--ink-100);
+  stroke-opacity: 0.45;
+  stroke-width: 2;
+  stroke-dasharray: 5 13;
+  stroke-linecap: round;
+  pointer-events: none;
+  animation: edge-flow var(--flow-speed, 2s) linear infinite;
+}
+@keyframes edge-flow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .edge-flowing {
+    animation: none;
+  }
+}
+
 /* ---- belt labels ---- */
 .belt-label {
   position: absolute;
@@ -406,7 +445,9 @@
   padding: 0 4px;
   font-size: 9px;
 }
-.belt-label.crit {
+/* efficiency grammar: the alarm chip is the BOTTLENECK (solver-named), not a
+   merely full belt; .under is a hook class (the stroke carries the amber) */
+.belt-label.bottleneck {
   background: var(--flow-crit);
   border-color: var(--flow-crit);
   color: var(--on-signal);
@@ -420,7 +461,7 @@
   color: var(--ink-500);
   font-size: 9px;
 }
-.belt-label.crit .belt-tier {
+.belt-label.bottleneck .belt-tier {
   color: var(--on-signal);
 }
 

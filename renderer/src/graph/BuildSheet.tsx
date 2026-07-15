@@ -76,6 +76,7 @@ export default function BuildSheet({ factoryId, onClose }: { factoryId: Id; onCl
                 <span className="bs-name">{m.machine}</span>
                 <span className="mono bs-clock">@ {m.clock}</span>
                 <span className="bs-recipe">— {m.recipe}</span>
+                {m.footprint && <span className="mono bs-fp">· {m.footprint} each</span>}
               </div>
             ))}
           </section>

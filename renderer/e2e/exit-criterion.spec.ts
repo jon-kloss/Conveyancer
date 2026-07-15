@@ -74,6 +74,20 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   // CI burned the whole budget before the first belt and cascaded the serial
   // suite. Same honest-budget treatment phase4 gives its save parses.
   test.setTimeout(180_000);
+  // SERIAL COUPLING — exit-criterion ↔ a-resume-dashboard is the ONLY pair the
+  // suite still permits. This spec ASSERTS the resume-dashboard lifecycle (the
+  // reload below auto-presents, then Escape consumes), so unlike every other
+  // seeded spec it CANNOT pre-spend the flag via resetView({resumeSeen:true}).
+  // Instead, mirror a-resume's own cleanup defensively: rewind any journal a
+  // dying predecessor left behind, then blank the viewState. A no-op on the
+  // happy path (a-resume already did exactly this), but it means a-resume
+  // dying mid-run no longer poisons this spec's fresh-Onboarding precondition.
+  for (let i = 0; i < 50; i++) {
+    const h = await (await page.request.get("/api/hydrate")).json();
+    if (!h.canUndo) break;
+    await page.request.post("/api/undo");
+  }
+  await page.request.post("/api/view", { data: JSON.stringify({}) });
   await page.goto("/");
   await expect(page.getByTestId("map-root")).toBeVisible();
 
@@ -160,6 +174,12 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   await connect(page, "group-Recipe_ModularFrame_C", "port-out-Desc_ModularFrame_C");
   await expect(page.locator(".belt-label")).toHaveCount(9);
 
+  // MOTION = FLOW (gate: flow > 0): the chain is fully wired but the target
+  // rate is still 0, so the solver derives zero flow on every belt — none may
+  // carry the animated overlay yet. (Kills the always-on mutant; the count-9
+  // assert after the solve below covers the flowing side.)
+  await expect(page.locator("path.edge-flowing")).toHaveCount(0);
+
   // ---- upgrade the ore feed belt (Mk.1 at 60/min would bind before the node) ----
   await page.getByTestId("group-Recipe_IngotIron_C").click();
   await expect(page.getByTestId("inspector")).toBeVisible();
@@ -211,6 +231,19 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
 
   // belt saturation coloring: labels show n/cap · %
   await expect(page.locator(".belt-label").first()).toContainText("%");
+
+  // EFFICIENCY GRAMMAR: at ~1.3/min the whole chain runs at ≤50% of rated
+  // capacity — flowing-but-under-utilized belts honestly read UNDER-USED
+  // (amber), and none reads bottleneck red (nothing caps demand here).
+  await expect(page.locator(".belt-label.under").first()).toBeVisible();
+  await expect(page.locator(".belt-label.bottleneck")).toHaveCount(0);
+
+  // MOTION = THROUGHPUT: with the chain solved every belt carries flow, so
+  // every edge gains the animated moving-dash overlay path — including the
+  // UNDER-band belts just asserted (motion is orthogonal to the band). (No
+  // deterministic idle edge exists at this point — the whole chain feeds the
+  // target.)
+  await expect(page.locator("path.edge-flowing")).toHaveCount(9);
 
   // belts are orthogonal runs (edgeLayout), not beziers: no cubic segments
   const edgePath = await page.locator(".react-flow__edge path").first().getAttribute("d");
@@ -272,9 +305,22 @@ test("plan the Modular Frame factory end-to-end, offline", async ({ page }) => {
   const clamped = parseFloat(await page.getByTestId("target-value").innerText());
   expect(Math.abs(clamped - 60 / 18)).toBeLessThan(0.05);
 
+  // EFFICIENCY GRAMMAR: red requires evidence, and here it exists — the solve
+  // is clamped AT the ceiling whose binding names the screw belt, and that
+  // belt runs full. Exactly one belt reads BOTTLENECK (⚠ chip); a merely full
+  // belt elsewhere would stay green.
+  await expect(page.locator(".belt-label.bottleneck")).toHaveCount(1);
+  await expect(page.locator(".belt-label.bottleneck")).toContainText("⚠");
+  // ...and the StatusBar ⚠ chip counts the same evidence (bottlenecks only —
+  // the UNDER-band belts asserted earlier never feed the alarm channel).
+  await expect(page.getByTestId("sb-bottleneck")).toHaveText("⚠ 1");
+
   // ---- undo includes the solve (counts revert with the rate) ----
   await page.keyboard.press("ControlOrMeta+z");
   await page.waitForTimeout(300);
+  // ...and the bottleneck evidence reverts with it — no red without a cap.
+  await expect(page.locator(".belt-label.bottleneck")).toHaveCount(0);
+  await expect(page.getByTestId("sb-bottleneck")).toHaveText("⚠ 0");
   const afterUndo = parseFloat(await page.getByTestId("target-value").innerText());
   expect(Math.abs(afterUndo - rate)).toBeLessThan(0.05);
 

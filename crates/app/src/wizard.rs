@@ -1597,6 +1597,7 @@ mod tests {
                     class_name: class.into(),
                     display_name: class.into(),
                     power_mw: mw,
+                    footprint_m: None,
                     kind: gamedata::docs::MachineKind::Manufacturer,
                 },
             );
