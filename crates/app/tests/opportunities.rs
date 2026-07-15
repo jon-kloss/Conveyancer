@@ -79,6 +79,7 @@ fn next(s: &mut Session) -> Vec<Opportunity> {
         &derived,
         &s.world,
         &s.unlocked,
+        &s.purchased_schematics,
         &prefs,
     )
 }
@@ -1704,14 +1705,14 @@ fn opportunity_serde_shape_is_pinned() {
     );
 }
 
-/// S12: one composite plan that fires ALL SEVEN firable families at once
-/// (milestone_gap is honest-silent by design): an overdrawn grid, a thin
-/// grid, a slack-route ore deficit, a full route capping a DIFFERENT item,
-/// an injected cheaper alternate, a demanded under-clocked claim, and a
-/// factory parked on a pure cluster. The overdraw leads and the class order
-/// never regresses along the list.
+/// S12: one composite plan that fires ALL EIGHT families at once: an overdrawn
+/// grid, a thin grid, a slack-route ore deficit, a full route capping a
+/// DIFFERENT item, an injected unpurchased milestone, an injected cheaper
+/// alternate, a demanded under-clocked claim, and a factory parked on a pure
+/// cluster. The overdraw leads and the class order never regresses along the
+/// list (milestone_gap ranks at class 4, between power_margin and alt_adopt).
 #[test]
-fn composite_plan_fires_all_seven_families_in_class_order() {
+fn composite_plan_fires_all_eight_families_in_class_order() {
     let mut s = Session::in_memory(None).unwrap();
     // Class 1 (+6, +7): ore chain starved by PRODUCTION near the pure
     // cluster — mine dips to 30 of the 120 the smelter's target needs over a
@@ -1764,6 +1765,16 @@ fn composite_plan_fires_all_seven_families_in_class_order() {
         },
     );
     s.unlocked.insert("Recipe_Alt_IngotIron_C".into());
+    // Class 4: an unpurchased milestone whose cost (iron plate) the empire makes
+    // none of → a full-quantity gap fires the milestone card.
+    s.gamedata.milestones.insert(
+        "Schematic_3-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Coal Power".into(),
+            tier: 3,
+            cost: vec![("Desc_IronPlate_C".into(), 60.0)],
+        },
+    );
 
     let opps = next(&mut s);
     use OpportunityKind::*;
@@ -1772,6 +1783,7 @@ fn composite_plan_fires_all_seven_families_in_class_order() {
         DeficitRepair,
         RouteBottleneckFix,
         PowerMargin,
+        MilestoneGap,
         AltAdopt,
         UnderExtracted,
         UntappedNode,
@@ -1781,11 +1793,6 @@ fn composite_plan_fires_all_seven_families_in_class_order() {
             "{kind:?} must fire in the composite plan"
         );
     }
-    assert_eq!(
-        count_kind(&opps, MilestoneGap),
-        0,
-        "milestone_gap stays honest-silent"
-    );
     // The broken grid leads everything.
     assert_eq!(opps[0].kind, PowerDeficit);
     // Windows-monotone class order across the whole list.
@@ -2048,4 +2055,198 @@ fn ignore_power_hides_margin_but_demotes_deficit_with_note() {
         di < pi,
         "ignore_power sinks the overdraw BELOW the actionable repair: deficit@{di} power@{pi}"
     );
+}
+
+// ---------- PR 4 milestone_gap: the next HUB milestone as a rate ----------
+
+/// milestone_gap fires on the lowest unpurchased milestone, sizing the gap as
+/// cost − 60·production against the empire's current OUTPUT rate, and pins the
+/// card's title, evidence, and wizard rate (the remainder in ~1 h, ceiled).
+#[test]
+fn milestone_gap_fires_and_pins_the_card() {
+    let mut s = Session::in_memory(None).unwrap();
+    // Empire makes 30 iron ingots/min → 1800 in an hour.
+    ingot_factory(&mut s, "SMELT", 0.0, 0.0, 1, 30.0);
+    s.gamedata.milestones.insert(
+        "Schematic_3-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Coal Power".into(),
+            tier: 3,
+            cost: vec![("Desc_IronIngot_C".into(), 5000.0)],
+        },
+    );
+
+    let opps = next(&mut s);
+    let o = find_kind(&opps, OpportunityKind::MilestoneGap).expect("unpurchased milestone fires");
+    assert_eq!(o.id, "milestone_gap:Schematic_3-1_C");
+    assert_eq!(o.title, "Advance to Coal Power (Tier 3)");
+    // 5000 needed − 30/min·60 = 3200 short of a 1-hour build.
+    assert_eq!(
+        o.evidence,
+        "needs 5000 Iron Ingot; empire makes 30/min — 3200 short of a 1-hour build"
+    );
+    assert_eq!(o.item.as_deref(), Some("Desc_IronIngot_C"));
+    // Produce the remainder in ~1 h, ceiled: ceil(3200/60) = 54/min.
+    assert_eq!(
+        o.action,
+        OpportunityAction::WizardGoal {
+            item: "Desc_IronIngot_C".into(),
+            rate: 54.0,
+        }
+    );
+}
+
+/// SILENT when the only milestone is already purchased — nothing left to plan.
+#[test]
+fn milestone_gap_silent_when_purchased() {
+    let mut s = Session::in_memory(None).unwrap();
+    ingot_factory(&mut s, "SMELT", 0.0, 0.0, 1, 30.0);
+    s.gamedata.milestones.insert(
+        "Schematic_3-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Coal Power".into(),
+            tier: 3,
+            cost: vec![("Desc_IronIngot_C".into(), 5000.0)],
+        },
+    );
+    s.purchased_schematics.insert("Schematic_3-1_C".into());
+    assert_eq!(
+        count_kind(&next(&mut s), OpportunityKind::MilestoneGap),
+        0,
+        "a purchased milestone never nags"
+    );
+}
+
+/// SILENT when the empire already out-produces every cost within an hour — the
+/// gap is ≤ 0, so there is nothing to plan (honest silence, never a 0-card).
+#[test]
+fn milestone_gap_silent_when_empire_out_produces_cost() {
+    let mut s = Session::in_memory(None).unwrap();
+    // 100 ingots/min → 6000 in an hour, more than the whole cost.
+    ingot_factory(&mut s, "SMELT", 0.0, 0.0, 4, 100.0);
+    s.gamedata.milestones.insert(
+        "Schematic_3-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Coal Power".into(),
+            tier: 3,
+            cost: vec![("Desc_IronIngot_C".into(), 5000.0)],
+        },
+    );
+    assert_eq!(
+        count_kind(&next(&mut s), OpportunityKind::MilestoneGap),
+        0,
+        "already buildable within an hour → silent"
+    );
+}
+
+/// Across a MULTI-ITEM cost the largest-gap item wins — even when its absolute
+/// quantity is the smaller of the two (it's the SHORTFALL that ranks, not the
+/// cost). The empire makes ingots but no plate, so plate is the wall.
+#[test]
+fn milestone_gap_picks_the_largest_gap_item() {
+    let mut s = Session::in_memory(None).unwrap();
+    // 30 ingots/min → 1800/h; zero iron plate produced anywhere.
+    ingot_factory(&mut s, "SMELT", 0.0, 0.0, 1, 30.0);
+    s.gamedata.milestones.insert(
+        "Schematic_3-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Coal Power".into(),
+            tier: 3,
+            // ingot gap = 1850 − 1800 = 50; plate gap = 500 − 0 = 500 (wins).
+            cost: vec![
+                ("Desc_IronIngot_C".into(), 1850.0),
+                ("Desc_IronPlate_C".into(), 500.0),
+            ],
+        },
+    );
+
+    let opps = next(&mut s);
+    let o = find_kind(&opps, OpportunityKind::MilestoneGap).expect("fires");
+    assert_eq!(o.item.as_deref(), Some("Desc_IronPlate_C"));
+    assert_eq!(
+        o.evidence,
+        "needs 500 Iron Plate; empire makes 0/min — 500 short of a 1-hour build"
+    );
+    assert_eq!(
+        o.action,
+        OpportunityAction::WizardGoal {
+            item: "Desc_IronPlate_C".into(),
+            rate: 9.0, // ceil(500/60)
+        }
+    );
+}
+
+/// Lowest-tier unpurchased milestone is the one picked, ordered by (tier,
+/// class) — a higher tier waits even when a lower one is already purchased.
+#[test]
+fn milestone_gap_picks_lowest_unpurchased_tier() {
+    let mut s = Session::in_memory(None).unwrap();
+    ingot_factory(&mut s, "SMELT", 0.0, 0.0, 1, 30.0);
+    let cost = vec![("Desc_IronIngot_C".into(), 5000.0)];
+    s.gamedata.milestones.insert(
+        "Schematic_2-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Tier 2 Thing".into(),
+            tier: 2,
+            cost: cost.clone(),
+        },
+    );
+    s.gamedata.milestones.insert(
+        "Schematic_5-1_C".into(),
+        gamedata::docs::Milestone {
+            display_name: "Tier 5 Thing".into(),
+            tier: 5,
+            cost,
+        },
+    );
+    // Tier 2 outstanding → it is the pick.
+    let opps = next(&mut s);
+    let o = find_kind(&opps, OpportunityKind::MilestoneGap).expect("fires");
+    assert_eq!(o.title, "Advance to Tier 2 Thing (Tier 2)");
+    // Purchase tier 2 → the next one up (tier 5) becomes the single pick.
+    s.purchased_schematics.insert("Schematic_2-1_C".into());
+    let opps = next(&mut s);
+    let o = find_kind(&opps, OpportunityKind::MilestoneGap).expect("next tier fires");
+    assert_eq!(o.title, "Advance to Tier 5 Thing (Tier 5)");
+    // Exactly one milestone card, never one per outstanding tier.
+    assert_eq!(count_kind(&opps, OpportunityKind::MilestoneGap), 1);
+}
+
+/// The purchased-schematic set is save-derived and PERSISTS: an import captures
+/// the RAW ids, hydrate surfaces them, and they survive a reopen through the
+/// persist layer (mirrors the `unlocked` round-trip).
+#[test]
+fn purchased_schematics_survive_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.ficsit");
+    {
+        let mut s = app::Session::open(&path, None, "fixture").unwrap();
+        let snap = app::import::ImportSnapshot {
+            save_name: "MILE-01".into(),
+            machines: vec![app::import::ImportMachine {
+                class: "Build_SmelterMk1_C".into(),
+                recipe: Some("Recipe_IngotIron_C".into()),
+                clock: 1.0,
+                ..Default::default()
+            }],
+            unlocked_schematics: vec!["Schematic_3-1_C".into(), "Schematic_2-4_C".into()],
+            ..Default::default()
+        };
+        s.import_save(snap).unwrap();
+        assert!(s.purchased_schematics.contains("Schematic_3-1_C"));
+        assert!(s.purchased_schematics.contains("Schematic_2-4_C"));
+        // surfaced through hydrate for parity with `unlocked`
+        let h = s.hydrate();
+        let arr = h["purchasedSchematics"]
+            .as_array()
+            .expect("hydrate carries purchasedSchematics");
+        assert_eq!(arr.len(), 2);
+    }
+    // reopen: the META blob round-trips through the persist layer.
+    let s2 = app::Session::open(&path, None, "fixture").unwrap();
+    assert!(
+        s2.purchased_schematics.contains("Schematic_3-1_C"),
+        "purchased set survives reopen"
+    );
+    assert_eq!(s2.purchased_schematics.len(), 2);
 }
