@@ -213,6 +213,14 @@
 .dash-ai-chip {
   cursor: pointer;
 }
+/* Outside-click catcher for the popover: transparent, one z under the pop —
+   house scrim grammar instead of a document-level listener. */
+.dash-ai-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: transparent;
+}
 .dash-ai-pop {
   position: absolute;
   right: 0;
@@ -247,6 +255,16 @@
   color: var(--ink-faint);
   font-size: 10.5px;
   font-style: italic;
+}
+/* Save-time URL rejection — inline, crit token, cleared on edit. */
+.dash-ai-url-error {
+  color: var(--flow-crit);
+  font-size: 10px;
+}
+/* Cleartext caution: http:// to a non-local host ships the key unencrypted. */
+.dash-ai-cleartext {
+  color: var(--flow-warn);
+  font-size: 10px;
 }
 .dash-ai-actions {
   display: flex;

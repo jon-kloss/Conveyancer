@@ -4,6 +4,12 @@
 // so verbatim). KEY HYGIENE: the password field's transient draft is the only
 // key the renderer ever holds — the store keeps hasKey (a boolean), the GET
 // view never echoes the key, and saving with an empty draft means "unchanged".
+//
+// Review M7/L5: the popover's open flag lives in the STORE (aiSettingsOpen)
+// so App's capture-phase Escape handler can defer to it — popover closes
+// first, the dashboard under it survives the keystroke. Outside clicks land
+// on a transparent scrim (house grammar — same idiom as the dashboard's own
+// scrim, no document-level listener to leak).
 
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../state/store";
@@ -16,20 +22,67 @@ const PRESETS = [
   { label: "Custom", baseUrl: "" },
 ] as const;
 
+/** Save-time base-URL check. `new URL("localhost:11434/v1")` PARSES — with
+ *  protocol "localhost:" — so the likeliest paste mistake needs the explicit
+ *  http/https protocol check, not just a parse. Empty base is exempt: it is
+ *  the documented clear gesture. Returns the inline error, or null when ok. */
+const urlProblem = (base: string): string | null => {
+  if (!base) return null;
+  try {
+    const u = new URL(base);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return `URL must start with http:// or https:// — got "${u.protocol}"`;
+    }
+    return null;
+  } catch {
+    return "not a valid URL — e.g. https://api.openai.com/v1";
+  }
+};
+
+/** True when the base would send the API key in cleartext to a non-local
+ *  host — http:// is fine for localhost (Ollama/LM Studio), a warning
+ *  everywhere else. */
+const cleartextRisk = (base: string): boolean => {
+  if (!base.startsWith("http://")) return false;
+  try {
+    const host = new URL(base).hostname;
+    return host !== "localhost" && host !== "127.0.0.1";
+  } catch {
+    return false; // unparseable — the save-time check owns that complaint
+  }
+};
+
 export default function AiSettings({ onSaved }: { onSaved: () => void }) {
   const aiConfig = useStore((s) => s.aiConfig);
   const fetchAiConfig = useStore((s) => s.fetchAiConfig);
   const saveAiConfig = useStore((s) => s.saveAiConfig);
-  const [open, setOpen] = useState(false);
+  // M7: store-held so App's Escape handler can close the popover first.
+  const open = useStore((s) => s.aiSettingsOpen);
+  const setOpen = useStore((s) => s.setAiSettingsOpen);
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
-  /** transient — cleared on save/close, never stored anywhere else */
+  /** transient — cleared on every close path, never stored anywhere else */
   const [keyDraft, setKeyDraft] = useState("");
+  /** sticky Custom: once picked, the select never snaps back to a preset the
+      typed URL happens to match (and picking it never clears the URL). */
+  const [customPicked, setCustomPicked] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
   const seeded = useRef(false);
 
   useEffect(() => {
     void fetchAiConfig();
   }, [fetchAiConfig]);
+
+  // The deference flag must not leak: the dashboard unmounts this component
+  // wholesale (overlay close, plan switch), and a stale true would make App's
+  // next Escape a silent no-op layer.
+  useEffect(() => () => useStore.getState().setAiSettingsOpen(false), []);
+
+  // Key hygiene: whichever way the popover closes (CLOSE, save, Escape,
+  // scrim click), the transient key draft dies with it.
+  useEffect(() => {
+    if (!open) setKeyDraft("");
+  }, [open]);
 
   // Seed the form from the fetched config ONCE (not on every refetch, which
   // would clobber in-progress typing).
@@ -41,11 +94,17 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
     }
   }, [aiConfig]);
 
-  const preset = PRESETS.find((p) => p.baseUrl === baseUrl)?.label ?? "Custom";
+  const preset = customPicked ? "Custom" : (PRESETS.find((p) => p.baseUrl === baseUrl)?.label ?? "Custom");
 
   const save = async () => {
+    const base = baseUrl.trim();
+    const problem = urlProblem(base);
+    if (problem) {
+      setUrlError(problem);
+      return; // popover stays open, nothing saved
+    }
     const ok = await saveAiConfig({
-      baseUrl: baseUrl.trim(),
+      baseUrl: base,
       model: model.trim(),
       // omit apiKey entirely when untouched → backend keeps the stored key
       ...(keyDraft.trim() ? { apiKey: keyDraft.trim() } : {}),
@@ -65,12 +124,29 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
         className="chip dash-ai-chip"
         data-testid="ai-chip"
         title="Bring-your-own-model settings — the model ranks and narrates; it never calculates"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
       >
         ⚙ {chipLabel}
       </button>
       {open && (
-        <div className="dash-ai-pop" data-testid="ai-settings" onClick={(e) => e.stopPropagation()}>
+        // Transparent scrim one z under the pop: outside clicks close it
+        // without a document listener and without activating what's beneath.
+        <div className="dash-ai-scrim" data-testid="ai-scrim" onClick={() => setOpen(false)} />
+      )}
+      {open && (
+        <div
+          className="dash-ai-pop"
+          data-testid="ai-settings"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            // Focus inside a field: App's window handler yields at
+            // isEditableTarget, so the popover owns that Escape itself.
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setOpen(false);
+            }
+          }}
+        >
           <div className="dash-ai-row">
             <label className="t-label" htmlFor="ai-preset">
               PROVIDER
@@ -81,7 +157,14 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
               value={preset}
               onChange={(e) => {
                 const p = PRESETS.find((x) => x.label === e.target.value);
-                if (p && p.label !== "Custom") setBaseUrl(p.baseUrl);
+                if (!p) return;
+                if (p.label === "Custom") {
+                  setCustomPicked(true); // keep whatever URL is typed
+                } else {
+                  setCustomPicked(false);
+                  setBaseUrl(p.baseUrl);
+                  setUrlError(null);
+                }
               }}
             >
               {PRESETS.map((p) => (
@@ -99,9 +182,22 @@ export default function AiSettings({ onSaved }: { onSaved: () => void }) {
               className="mono"
               placeholder="https://api.openai.com/v1"
               value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
+              onChange={(e) => {
+                setBaseUrl(e.target.value);
+                setUrlError(null); // stale complaint never outlives an edit
+              }}
             />
           </div>
+          {urlError && (
+            <div className="dash-ai-url-error mono" data-testid="ai-url-error">
+              {urlError}
+            </div>
+          )}
+          {cleartextRisk(baseUrl.trim()) && (
+            <div className="dash-ai-cleartext mono" data-testid="ai-cleartext-hint">
+              http:// beyond localhost sends the API key in cleartext
+            </div>
+          )}
           <div className="dash-ai-row">
             <label className="t-label" htmlFor="ai-model">
               MODEL

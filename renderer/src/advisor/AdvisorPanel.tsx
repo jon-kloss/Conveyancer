@@ -56,7 +56,7 @@ export default function AdvisorPanel() {
           {advisor.paused ? "◦ PAUSED" : "AMBIENT · ON"}
         </button>
         {advisor.aiStatus === "offline" && (
-          <span className="chip advisor-offline" title="No model key — local heuristics keep the feed alive">
+          <span className="chip advisor-offline" title="No model endpoint configured — local heuristics keep the feed alive.">
             AI OFFLINE
           </span>
         )}

@@ -111,6 +111,17 @@ export default function App() {
         // combobox list) — this capture-phase handler must not steal the key
         // from any of them to close the dashboard/advisor underneath.
         if (st.wizard.open || st.reviewing || isEditableTarget(e)) return;
+        // The AI-settings popover layers OVER the dashboard, and this capture
+        // handler fires before any popover-local listener could — so the
+        // popover defers through the store (aiSettingsOpen, the same pattern
+        // as wizard/reviewing above) and Escape closes the TOP layer only:
+        // popover first, dashboard on the next press.
+        if (st.aiSettingsOpen) {
+          st.setAiSettingsOpen(false);
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
         // Consume Escape when it dismisses the dashboard: capture-phase + stop
         // so MapView's window Escape handler doesn't ALSO clear the map
         // selection for the same keystroke. Other keys still reach MapView.

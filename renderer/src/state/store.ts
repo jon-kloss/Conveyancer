@@ -124,6 +124,14 @@ export interface AppStore {
   unlocked: Set<string>;
   /** resume dashboard overlay — auto-presents once per plan (viewState.resumeSeen) */
   dashboardOpen: boolean;
+  /** PR 10 (review M7): App's Escape-deference flag for the AI-settings
+      popover — the same pattern as `wizard.open`/`reviewing`. The popover
+      layers OVER the dashboard, but App's capture-phase window handler fires
+      before any later-registered listener, so the popover registers its
+      open-ness here and App closes IT first (one Escape, one layer). Cleared
+      by AiSettings on unmount so the flag never leaks across dashboard
+      closes. */
+  aiSettingsOpen: boolean;
   /** pending "open the audit drawer on this tab" request (PR 9 openAudit
       action). The drawer's open flag lives in App.tsx local state, so this is
       the one store-visible signal: App opens the drawer when it appears, the
@@ -162,6 +170,7 @@ export interface AppStore {
   setAdvisor(feed: AdvisorFeed): void;
   setAdvisorOpen(open: boolean): void;
   setDashboardOpen(open: boolean): void;
+  setAiSettingsOpen(open: boolean): void;
   /** mark a build-queue step done/undone (manual override), or clear it back
       to derived with `null` — one undoable step (SetBuildDone). */
   markBuildDone(id: Id, done: boolean | null): Promise<void>;
@@ -224,6 +233,7 @@ export const useStore = create<AppStore>((set, get) => ({
   lastImport: null,
   unlocked: new Set(),
   dashboardOpen: false,
+  aiSettingsOpen: false,
   auditRequest: null,
   flyTo: null,
   aiConfig: null,
@@ -376,6 +386,10 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setDashboardOpen(open) {
     set({ dashboardOpen: open });
+  },
+
+  setAiSettingsOpen(open) {
+    set({ aiSettingsOpen: open });
   },
 
   async markBuildDone(id, done) {
@@ -535,6 +549,15 @@ export const useStore = create<AppStore>((set, get) => ({
     }));
   },
 }));
+
+// e2e observability (dev server only): the w4 spec pins the M5 merge path —
+// a planHash change while the dashboard is open must NOT re-call the model —
+// which requires a REAL in-page dispatch (external /api/edit calls from the
+// test fixture never reach this store; the dev bridge has no SSE push). The
+// hook exposes nothing the dev tools couldn't already reach.
+if (import.meta.env.DEV) {
+  (window as Window & { __ficsitStore?: typeof useStore }).__ficsitStore = useStore;
+}
 
 /** Solve-time chip content for a factory (A4: always present, always honest). */
 export function solveChip(df: DerivedFactory | undefined): { text: string; over: boolean } {

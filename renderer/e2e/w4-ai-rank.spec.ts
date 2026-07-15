@@ -1,12 +1,16 @@
 // PR 10 bring-your-own-model ranking: the spec runs its OWN OpenAI-compatible
 // stub provider inside the node test context (http.createServer — no real
-// network, CI-offline safe) that reverses whatever candidate ids arrive and
-// attaches a note to its top pick. Config happens through the SETTINGS
-// POPOVER UI (the real user path), the ranked render is asserted against this
-// run's own /api/next/rank payload, and killing the stub proves the honest
-// fallback: heuristic order, no AI prose, error surfaced non-fatally. Named
-// w4- so it runs after w3 (its seeds must not perturb earlier phase specs);
-// self-contained seeding keeps standalone runs valid.
+// network, CI-offline safe) that reorders the candidate ids it receives and
+// notes its top two picks. Config happens through the SETTINGS POPOVER UI
+// (the real user path), the ranked render is asserted against this run's own
+// /api/next/rank payload, and killing the stub proves the honest fallback:
+// heuristic order, no AI prose, error surfaced non-fatally. Review additions:
+// the M5 merge pins (an edit while open re-bills NOTHING and model prose
+// never outlives the evidence it quoted), the M7 Escape layering, the L5
+// save-time URL rejection, and the H1 hydrate-latency probe against a
+// deliberately slow provider. Named w4- so it runs after w3 (its seeds must
+// not perturb earlier phase specs); self-contained seeding keeps standalone
+// runs valid.
 
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import http from "node:http";
@@ -18,11 +22,28 @@ test.describe.configure({ mode: "serial" });
 test.beforeEach(async ({ request }) => resetView(request));
 
 const API = "http://localhost:8791/api";
-// Free port far from the suite's own 8791/5173 and the demo 8795/5199.
+// Free ports far from the suite's own 8791/5173 and the demo 8795/5199.
 const STUB_PORT = 8917;
+const SLOW_PORT = 8919;
 const STUB_HEADLINE = "Stub headline: unblock the starved chain first.";
 const STUB_NOTE = "Stub note: this one pays off immediately.";
+const STUB_NOTE_2 = "Stub note two: margin is thinner than it looks.";
 const KEY = "sk-w4-test-secret";
+
+// The card the M5 pin edits (its evidence quotes supplied/min) — hoisted to
+// the model's top so the note-drop and headline-drop are DOM-observable in
+// the top-3 render.
+const DEFICIT_ID = "deficit_repair:Desc_IronRod_C";
+
+/** The stub's deterministic order, replicated by the assertions below: the
+ *  iron-rod deficit first (the card whose evidence the M5 edit changes),
+ *  every power_margin card next (evidence untouched by that edit), the rest
+ *  reversed. */
+const stubOrder = (ids: string[]): string[] => [
+  ...ids.filter((i) => i === DEFICIT_ID),
+  ...ids.filter((i) => i.startsWith("power_margin:")),
+  ...ids.filter((i) => i !== DEFICIT_ID && !i.startsWith("power_margin:")).reverse(),
+];
 
 interface Move {
   id: string;
@@ -38,10 +59,16 @@ interface Rank {
   opportunities: Move[];
 }
 
-/** In-spec provider stub: parses the chat-completions request, reverses the
- *  candidate ids found in the user message, notes its top pick. */
+/** Call counter for the M5 pin: an /api/edit while the dashboard is open
+ *  must not add a single provider call. */
+let stubCalls = 0;
+
+/** In-spec provider stub: parses the chat-completions request, applies
+ *  stubOrder to the candidate ids found in the user message, and notes its
+ *  top two picks. */
 function startStub(): Promise<http.Server> {
   const server = http.createServer((req, res) => {
+    stubCalls += 1;
     let body = "";
     req.on("data", (c: Buffer) => (body += c.toString()));
     req.on("end", () => {
@@ -49,18 +76,35 @@ function startStub(): Promise<http.Server> {
       try {
         const envelope = JSON.parse(body) as { messages: { content: string }[] };
         const user = JSON.parse(envelope.messages[1].content) as { candidates: { id: string }[] };
-        order = user.candidates.map((c) => c.id).reverse();
+        order = stubOrder(user.candidates.map((c) => c.id));
       } catch {
         /* empty order → the firewall appends everything in heuristic order */
       }
       const notes: Record<string, string> = {};
       if (order[0]) notes[order[0]] = STUB_NOTE;
+      if (order[1]) notes[order[1]] = STUB_NOTE_2;
       const content = JSON.stringify({ order, headline: STUB_HEADLINE, notes });
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ choices: [{ message: { content } }] }));
     });
   });
   return new Promise((resolve) => server.listen(STUB_PORT, "127.0.0.1", () => resolve(server)));
+}
+
+/** H1 probe stub: a provider that takes 3 s to answer. The rank call must
+ *  run OFF the session lock, so a concurrent hydrate answers immediately. */
+function startSlowStub(): Promise<http.Server> {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      setTimeout(() => {
+        const content = JSON.stringify({ order: [], headline: "slow", notes: {} });
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      }, 3000);
+    });
+  });
+  return new Promise((resolve) => server.listen(SLOW_PORT, "127.0.0.1", () => resolve(server)));
 }
 
 async function edit(request: APIRequestContext, cmds: unknown[]): Promise<{ created: string[] }> {
@@ -161,6 +205,8 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     const plainIds = ((await (await request.get(`${API}/next`)).json()) as { opportunities: Move[] })
       .opportunities.map((o) => o.id);
     expect(heuristic.opportunities.map((o) => o.id)).toEqual(plainIds);
+    expect(plainIds).toContain(DEFICIT_ID);
+    expect(plainIds.some((i) => i.startsWith("power_margin:"))).toBe(true);
 
     // ---- configure THROUGH THE POPOVER UI ----
     await page.goto("/");
@@ -180,7 +226,7 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     await expect(page.getByTestId("ai-settings")).not.toBeVisible();
     await expect(page.getByTestId("ai-chip")).toContainText("AI: stub-1");
 
-    // ---- the ranked payload: stub reversal + prose, firewall-shaped ----
+    // ---- the ranked payload: stub order + prose, firewall-shaped ----
     const ranked = (await (
       await request.post(`${API}/next/rank`, { data: "{}" })
     ).json()) as Rank;
@@ -188,9 +234,10 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     expect(ranked.model).toBe("stub-1");
     expect(ranked.headline).toBe(STUB_HEADLINE);
     expect(ranked.error).toBeUndefined();
-    expect(ranked.opportunities.map((o) => o.id)).toEqual([...plainIds].reverse());
+    expect(ranked.opportunities.map((o) => o.id)).toEqual(stubOrder(plainIds));
+    expect(ranked.opportunities[0].id).toBe(DEFICIT_ID);
     expect(ranked.opportunities[0].note).toBe(STUB_NOTE);
-    expect(ranked.opportunities[1].note).toBeUndefined();
+    expect(ranked.opportunities[1].note).toBe(STUB_NOTE_2);
 
     // ---- the dashboard renders the model order + attributed prose ----
     // (the save bumped rankEpoch, so the open dashboard already refetched)
@@ -203,6 +250,8 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     const note = page.getByTestId("next-move-note").first();
     await expect(note).toBeVisible();
     await expect(note).toContainText(STUB_NOTE);
+    // S2: the note's attribution badge is the AI chip, verbatim
+    await expect(note.locator(".dash-badge.ai")).toHaveText("AI");
     // solver evidence stays byte-identical to the heuristic payload
     const topHeuristicTwin = heuristic.opportunities.find((o) => o.id === ranked.opportunities[0].id)!;
     await expect(cards.first().getByTestId("next-move-evidence")).toHaveText(topHeuristicTwin.evidence);
@@ -213,6 +262,80 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     expect(cfgText).not.toContain(KEY);
     expect(await (await request.get(`${API}/hydrate`)).text()).not.toContain(KEY);
 
+    // ---- M5: an edit while the dashboard is open re-bills NOTHING — the
+    // fresh heuristic list merges under the model's standing order, and
+    // prose never outlives the evidence it quoted: the edited card's note
+    // (and the headline, keyed to that same top card) drop; the untouched
+    // card's note survives. ----
+    const shown = Math.min(3, ranked.opportunities.length);
+    const titlesBefore: string[] = [];
+    for (let i = 0; i < shown; i++) {
+      titlesBefore.push((await cards.nth(i).locator(".dash-step-label").textContent())!);
+    }
+    await expect(cards.nth(1).getByTestId("next-move-note")).toContainText(STUB_NOTE_2);
+    const callsBefore = stubCalls;
+    const evidenceBefore = ranked.opportunities[0].evidence;
+    // A REAL in-page dispatch (the test fixture's own /api/edit never reaches
+    // the page store — no SSE in the dev bridge): ease the dip 15 → 30, which
+    // rewrites the iron-rod deficit's evidence but keeps the card alive.
+    await page.evaluate(
+      async (args) => {
+        type StoreWin = {
+          __ficsitStore: { getState(): { dispatch(cmds: unknown[]): Promise<unknown> } };
+        };
+        await (window as unknown as StoreWin).__ficsitStore
+          .getState()
+          .dispatch([{ type: "set_port_rate", id: args.id, rate: args.rate }]);
+      },
+      { id: forgeOut, rate: 30 },
+    );
+    // the merged render carries the FRESH evidence…
+    await expect(cards.first().getByTestId("next-move-evidence")).not.toHaveText(evidenceBefore);
+    // …the changed card's note is gone (evidence gate)…
+    await expect(cards.first().getByTestId("next-move-note")).toHaveCount(0);
+    // …the headline died with the top card's evidence…
+    await expect(page.getByTestId("ai-headline")).not.toBeVisible();
+    // …the untouched card's note is still there (still model-attributed)…
+    await expect(cards.nth(1).getByTestId("next-move-note")).toContainText(STUB_NOTE_2);
+    // …the model ORDER is preserved (heuristic order would not lead with the
+    // deficit card the stub hoisted)…
+    await expect(cards.first().locator(".dash-step-label")).toContainText("short");
+    await expect(cards.first().locator(".dash-step-label")).toContainText("/min empire-wide");
+    for (let i = 1; i < shown; i++) {
+      await expect(cards.nth(i).locator(".dash-step-label")).toHaveText(titlesBefore[i]);
+    }
+    // …and the provider was never called for any of it.
+    expect(stubCalls).toBe(callsBefore);
+
+    // ---- M7: Escape peels ONE layer — popover first, dashboard survives ----
+    await page.getByTestId("ai-chip").click();
+    await expect(page.getByTestId("ai-settings")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("ai-settings")).not.toBeVisible();
+    await expect(page.getByTestId("dashboard")).toBeVisible();
+
+    // ---- L5: save-time URL validation, protocol-aware ----
+    await page.getByTestId("ai-chip").click();
+    await expect(page.getByTestId("ai-settings")).toBeVisible();
+    await page.getByTestId("ai-base-url").fill("not a url");
+    await page.getByTestId("ai-save").click();
+    await expect(page.getByTestId("ai-url-error")).toBeVisible();
+    await expect(page.getByTestId("ai-settings")).toBeVisible(); // still open, nothing saved
+    // the likeliest paste mistake PARSES (protocol "localhost:") — still rejected
+    await page.getByTestId("ai-base-url").fill("localhost:11434/v1");
+    await expect(page.getByTestId("ai-url-error")).not.toBeVisible(); // cleared on edit
+    await page.getByTestId("ai-save").click();
+    await expect(page.getByTestId("ai-url-error")).toBeVisible();
+    await expect(page.getByTestId("ai-url-error")).toContainText("http");
+    // focus is inside the form field: the popover's own Escape handler owns
+    // this close (App's window handler yields at isEditableTarget)
+    await page.getByTestId("ai-base-url").click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("ai-settings")).not.toBeVisible();
+    await expect(page.getByTestId("dashboard")).toBeVisible();
+    // the failed saves changed nothing backend-side
+    await expect(page.getByTestId("ai-chip")).toContainText("AI: stub-1");
+
     // ---- break the provider: honest heuristic fallback + surfaced error ----
     await new Promise<void>((resolve) => stub.close(() => resolve()));
     const fallen = (await (
@@ -220,7 +343,6 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     ).json()) as Rank;
     expect(fallen.engine).toBe("heuristic");
     expect(fallen.error).toBeTruthy();
-    expect(fallen.opportunities.map((o) => o.id)).toEqual(plainIds);
     expect(fallen.opportunities.every((o) => o.note === undefined)).toBe(true);
 
     await page.keyboard.press("Escape");
@@ -234,6 +356,26 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     // non-fatal: the status-bar chip carries the error, the dashboard lives on
     await expect(page.getByTestId("sb-error")).toContainText("model", { ignoreCase: true });
     await page.keyboard.press("Escape");
+
+    // ---- H1: a provider call in flight never wedges the bridge — hydrate
+    // (and every other endpoint) answers while the model is still thinking.
+    // Generous margins: the stub sleeps 3 s, hydrate must answer in < 1.5 s. ----
+    const slow = await startSlowStub();
+    try {
+      await request.post(`${API}/ai/config`, {
+        data: JSON.stringify({ baseUrl: `http://127.0.0.1:${SLOW_PORT}/v1`, model: "slow-1" }),
+      });
+      const inflight = request.post(`${API}/next/rank`, { data: "{}" });
+      await new Promise((r) => setTimeout(r, 500)); // rank is off-lock by now
+      const t0 = Date.now();
+      const hyd = await request.get(`${API}/hydrate`);
+      const elapsedMs = Date.now() - t0;
+      expect(hyd.ok()).toBe(true);
+      expect(elapsedMs).toBeLessThan(1500);
+      expect((await inflight).ok()).toBe(true); // drain before teardown
+    } finally {
+      await new Promise<void>((resolve) => slow.close(() => resolve()));
+    }
   } finally {
     stub.close();
     // leave the shared session unconfigured for any spec that follows
