@@ -11,7 +11,10 @@
 
 # ---- build ----
 FROM node:22-alpine AS build
-RUN corepack enable
+# Pin pnpm 10 explicitly — the repo has no packageManager field, so a bare
+# `corepack enable` would leave the pnpm version unresolved. This matches the CI
+# jobs (pnpm/action-setup version: 10).
+RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /app/renderer
 
 # Install deps against the lockfile first (cached until the lockfile changes).
