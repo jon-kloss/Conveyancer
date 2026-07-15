@@ -20,6 +20,10 @@ use planner_core::state::PlanState;
 pub const DEBOUNCE_S: u64 = 30;
 /// Visible hourly model-call budget (A: "visible hourly call budget").
 pub const HOURLY_CALL_BUDGET: u32 = 6;
+/// "Running at capacity" within solver float noise — mirrors `FULL` in
+/// renderer/src/lib/format.ts (`routeBottleneck`), the renderer half of the
+/// same efficiency-grammar rule.
+const FULL: f64 = 0.999;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,28 +136,56 @@ pub fn evaluate(state: &PlanState, derived: &Derived) -> Vec<Event> {
         });
     }
 
-    // SaturationHigh — any route ≥75% is a trend worth flagging
+    // RouteBottleneck — a route running at full capacity that provably caps
+    // demand: a deficit is registered THROUGH it (efficiency grammar: a %
+    // alone never alarms — a full route whose consumers are satisfied is
+    // OPTIMAL and stays quiet). Replaces the retired congestion-grammar
+    // saturation_high rule; persisted "saturation_high" mute keys no longer
+    // match any rule and become inert no-ops.
+    // Severity is Trend, not Conflict, deliberately: the starve itself
+    // already fires new_deficit at Conflict — this card is causal
+    // attribution, and two red cards per starve is exactly the nag the
+    // gating exists to prevent.
     for (rid, dr) in &derived.routes {
-        if dr.saturation >= 0.75 {
-            events.push(Event {
-                key: format!("sat:{rid}"),
-                rule: "saturation_high",
-                severity: Severity::Trend,
-                title: "A route is running hot".into(),
-                body: format!(
-                    "{:.0}% of capacity ({:.1}/{:.1} per min). One tier bump or a second \
-                     route keeps headroom before it binds.",
-                    dr.saturation * 100.0,
-                    dr.flow,
-                    dr.capacity
-                ),
-                saw: format!("route {} at {:.0}%", rid, dr.saturation * 100.0),
-                cta: Some(CardCta::Trace {
-                    selection: "route".into(),
-                    id: rid.clone(),
-                }),
-            });
+        if dr.saturation < FULL {
+            continue;
         }
+        if !derived
+            .deficits
+            .iter()
+            .any(|d| d.route.as_ref() == Some(rid))
+        {
+            continue;
+        }
+        let missed: f64 = derived
+            .deficits
+            .iter()
+            .filter(|d| d.route.as_ref() == Some(rid))
+            .map(|d| d.needed - d.supplied)
+            .sum();
+        events.push(Event {
+            key: format!("bottleneck:{rid}"),
+            rule: "route_bottleneck",
+            severity: Severity::Trend,
+            title: "A route caps demand".into(),
+            body: format!(
+                "Running at full capacity ({:.1}/{:.1} per min) while downstream \
+                 misses {:.1}/min through it. A tier bump or a second route raises \
+                 the ceiling; a full route that meets demand is optimal and stays \
+                 quiet.",
+                dr.flow, dr.capacity, missed
+            ),
+            saw: format!(
+                "route {} at {:.0}% with {:.1}/min deficit through it",
+                rid,
+                dr.saturation * 100.0,
+                missed
+            ),
+            cta: Some(CardCta::Trace {
+                selection: "route".into(),
+                id: rid.clone(),
+            }),
+        });
     }
 
     // PowerSwing — circuit margin dips under 20% headroom

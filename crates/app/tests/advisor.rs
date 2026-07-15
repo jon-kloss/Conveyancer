@@ -12,6 +12,23 @@ fn gp(x: f64, y: f64) -> GraphPos {
 
 /// Two factories where dropping the upstream target starves the downstream.
 fn build_starvable(s: &mut Session) -> (Id, Id) {
+    let (a, out, _route) = build_chain(s, 120.0, 2, 30.0, 30.0);
+    (a, out)
+}
+
+/// A two-factory ore→ingot→rod chain with a tunable inter-factory belt:
+/// upstream smelts behind an ore In ceiling of `ore_ceiling`, a Mk.`route_tier`
+/// belt ships the ingots, downstream constructs rods. Output targets land
+/// last (upstream `up_rate`, downstream `down_rate`), so route saturation and
+/// any deficit become true on the final edit. Returns (upstream factory,
+/// upstream out port, route id).
+fn build_chain(
+    s: &mut Session,
+    ore_ceiling: f64,
+    route_tier: u8,
+    up_rate: f64,
+    down_rate: f64,
+) -> (Id, Id, Id) {
     let mk = |s: &mut Session, name: &str, x: f64| -> Id {
         s.edit(vec![Command::CreateFactory {
             name: name.into(),
@@ -30,7 +47,7 @@ fn build_starvable(s: &mut Session) -> (Id, Id) {
             direction: PortDirection::In,
             item: "Desc_OreIron_C".into(),
             rate: 0.0,
-            rate_ceiling: Some(120.0),
+            rate_ceiling: Some(ore_ceiling),
             graph_pos: gp(0.0, 100.0),
         }])
         .unwrap()
@@ -140,35 +157,38 @@ fn build_starvable(s: &mut Session) -> (Id, Id) {
         }])
         .unwrap();
     }
-    s.edit(vec![Command::AddRoute {
-        kind: RouteKind::Belt { tier: 2 },
-        from: out.clone(),
-        to: inp,
-        path: vec![
-            MapPos {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            MapPos {
-                x: 400.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        ],
-    }])
-    .unwrap();
+    let route = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Belt { tier: route_tier },
+            from: out.clone(),
+            to: inp,
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 400.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
     s.edit(vec![Command::SetPortRate {
         id: out.clone(),
-        rate: 30.0,
+        rate: up_rate,
     }])
     .unwrap();
     s.edit(vec![Command::SetPortRate {
         id: rod_out,
-        rate: 30.0,
+        rate: down_rate,
     }])
     .unwrap();
-    (a, out)
+    (a, out, route)
 }
 
 #[test]
@@ -220,6 +240,124 @@ fn advisor_fires_on_new_deficit_and_dismiss_mutes() {
             .iter()
             .any(|c| c.rule == "new_deficit" && !c.dismissed),
         "muted rule stays silent even for brand-new conditions"
+    );
+}
+
+/// Efficiency grammar (route_bottleneck): a route at full capacity WITH a
+/// deficit registered through it is causal attribution — one amber card.
+#[test]
+fn route_bottleneck_fires_on_deficit_through_a_full_route() {
+    let mut s = Session::in_memory(None).unwrap();
+    // Healthy 120/min chain over a Mk.2 belt, then the link is downgraded to
+    // Mk.1 (cap 60): the recompute starves downstream THROUGH the now-full
+    // route — the route itself caps demand. (Targets are set while feasible:
+    // an explicitly edited target that clamps is written back, so the honest
+    // starve path is a later Recompute.)
+    let (_a, _out, route) = build_chain(&mut s, 120.0, 2, 120.0, 120.0);
+    assert!(s.advisor.cards.is_empty(), "healthy chain, silent advisor");
+    s.edit(vec![Command::SetRouteTier {
+        id: route.clone(),
+        tier: 1,
+    }])
+    .unwrap();
+    let cards: Vec<_> = s
+        .advisor
+        .cards
+        .iter()
+        .filter(|c| c.rule == "route_bottleneck")
+        .collect();
+    assert_eq!(
+        cards.len(),
+        1,
+        "exactly one bottleneck card: {:?}",
+        s.advisor.cards
+    );
+    assert_eq!(
+        cards[0].severity,
+        app::advisor::Severity::Trend,
+        "causal attribution rides amber — the starve itself is the red card"
+    );
+    assert!(
+        matches!(&cards[0].cta, Some(app::advisor::CardCta::Trace { id, .. }) if *id == route),
+        "CTA traces the capping route"
+    );
+    assert!(
+        s.advisor.cards.iter().any(|c| c.rule == "new_deficit"),
+        "the starve still reports at Conflict"
+    );
+}
+
+/// The old ≥75% grammar's kill shot: a full route whose consumers are all
+/// satisfied is OPTIMAL — the advisor stays silent.
+#[test]
+fn full_route_meeting_demand_stays_silent() {
+    let mut s = Session::in_memory(None).unwrap();
+    // 60/min through a Mk.1 belt (cap 60): saturation 1.0, demand met.
+    let (_a, _out, route) = build_chain(&mut s, 120.0, 1, 60.0, 60.0);
+    let derived = s.solve_all_readonly();
+    assert!(
+        derived.routes[&route].saturation >= 0.999,
+        "the scenario really runs full: {} at {}",
+        route,
+        derived.routes[&route].saturation
+    );
+    assert!(
+        s.advisor.cards.is_empty(),
+        "full route meeting demand must not alarm: {:?}",
+        s.advisor.cards
+    );
+}
+
+/// A deficit over a SLACK route is an upstream production problem — the
+/// starve card fires, the bottleneck card must not blame the link.
+#[test]
+fn starved_but_slack_route_blames_upstream() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_a, out, _route) = build_chain(&mut s, 120.0, 2, 30.0, 30.0);
+    // Upstream dips to 10/min on the Mk.2 belt (cap 120) — plenty of slack.
+    s.edit(vec![Command::SetPortRate {
+        id: out,
+        rate: 10.0,
+    }])
+    .unwrap();
+    assert!(
+        s.advisor.cards.iter().any(|c| c.rule == "new_deficit"),
+        "starve reports: {:?}",
+        s.advisor.cards
+    );
+    assert!(
+        !s.advisor.cards.iter().any(|c| c.rule == "route_bottleneck"),
+        "slack route is not the culprit: {:?}",
+        s.advisor.cards
+    );
+}
+
+/// Pins FULL (0.999): 95% saturation with a real deficit through the route is
+/// still not bottleneck evidence — loosening the threshold to 0.9-ish would
+/// re-introduce the old ≥95% congestion grammar.
+#[test]
+fn nearly_full_route_with_deficit_stays_silent() {
+    let mut s = Session::in_memory(None).unwrap();
+    // Healthy 120/min chain, then upstream dips to 57/min and the link is
+    // downgraded to Mk.1 (cap 60): 57/60 = 95% saturation with a real
+    // deficit through the route — still not FULL.
+    let (_a, out, route) = build_chain(&mut s, 120.0, 2, 120.0, 120.0);
+    s.edit(vec![Command::SetPortRate {
+        id: out,
+        rate: 57.0,
+    }])
+    .unwrap();
+    s.edit(vec![Command::SetRouteTier { id: route, tier: 1 }])
+        .unwrap();
+    assert!(
+        s.advisor.cards.iter().any(|c| c.rule == "new_deficit"),
+        "starve reports: {:?}",
+        s.advisor.cards
+    );
+    assert!(
+        !s.advisor.cards.iter().any(|c| c.rule == "route_bottleneck"),
+        "95% is not full: {:?}",
+        s.advisor.cards
     );
 }
 
