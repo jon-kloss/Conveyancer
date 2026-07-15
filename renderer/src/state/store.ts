@@ -8,6 +8,7 @@ import type {
   AdvisorFeed,
   AiConfigPublic,
   AiConfigUpdate,
+  AiSettingsContext,
   AltOpportunity,
   AuditTab,
   Command,
@@ -18,6 +19,7 @@ import type {
   GameData,
   Id,
   LastImport,
+  NextPreferences,
   Opportunity,
   Plan,
   RankResponse,
@@ -56,8 +58,10 @@ export type Selection =
 
 export type ViewMode = { mode: "map" } | { mode: "factory"; factoryId: Id };
 
+export type AdvisorTab = "feed" | "chat" | "next";
+
 const emptyPlan: Plan = {
-  meta: { schemaVersion: 1, gameBuild: "", name: "" },
+  meta: { schemaVersion: 1, gameBuild: "", name: "", preferences: { noTrains: false, ignorePower: false } },
   factories: {},
   groups: {},
   ports: {},
@@ -130,8 +134,14 @@ export interface AppStore {
       before any later-registered listener, so the popover registers its
       open-ness here and App closes IT first (one Escape, one layer). Cleared
       by AiSettings on unmount so the flag never leaks across dashboard
-      closes. */
-  aiSettingsOpen: boolean;
+      closes.
+      M2: SCOPED by context — the dashboard NEXT header and the panel NEXT
+      header each mount an <AiSettings/>, so a single boolean would cross-wire
+      them (one click opens both, unmounting one slams the other shut). The
+      flag names the owning header ("dashboard" | "panel"); an instance is open
+      only when it equals its own context, and its unmount clears only when it
+      still owns the flag. */
+  aiSettingsOpen: AiSettingsContext | null;
   /** pending "open the audit drawer on this tab" request (PR 9 openAudit
       action). The drawer's open flag lives in App.tsx local state, so this is
       the one store-visible signal: App opens the drawer when it appears, the
@@ -147,6 +157,16 @@ export interface AppStore {
   /** PR 10: public model-config view (hasKey, never the key) — fetched lazily
       when the dashboard opens; null until then / on refusal. */
   aiConfig: AiConfigPublic | null;
+  /** PR 3: the SHARED ranked next-move state — a single owner both the
+      dashboard and the docked advisor NEXT tab render, so they never
+      double-bill the provider or disagree. null until a feed first opens (the
+      status-bar chip stays hidden until then — no flash). */
+  rank: RankResponse | null;
+  /** bumped on a config save or a preference toggle → open feeds re-rank. */
+  rankEpoch: number;
+  /** which advisor-panel tab is active; the status-bar NEXT chip deep-links
+      here by setting it to "next". */
+  advisorTab: AdvisorTab;
 
   hydrate(): Promise<void>;
   /** Resolves with the created ids, or null when the backend refused the
@@ -169,8 +189,25 @@ export interface AppStore {
   acceptProposal(id: Id): Promise<void>;
   setAdvisor(feed: AdvisorFeed): void;
   setAdvisorOpen(open: boolean): void;
+  setAdvisorTab(tab: AdvisorTab): void;
+  /** PR 3: a NEXT-MOVES feed surface mounted — ref-counts so the model rank is
+      issued once per (planHash, epoch) across BOTH surfaces, and refetched on
+      a genuinely fresh open (all surfaces were closed). */
+  registerFeed(): void;
+  unregisterFeed(): void;
+  /** PR 3: full model rank on surface-open / epoch change, guarded so a second
+      surface opening at the same (planHash, epoch) does NOT re-bill. */
+  openRankFeed(): Promise<void>;
+  /** PR 3: per-edit refetch of the FREE heuristic list, folded under the
+      model's standing order via mergeRank (no provider call). Wired centrally
+      to planHash so it runs once per edit regardless of open surfaces. */
+  mergeOnEdit(): Promise<void>;
+  /** PR 3: bump the rank epoch (config save / preference toggle) → re-rank. */
+  bumpRankEpoch(): void;
+  /** PR 3: persist plan-scoped NEXT preferences and re-rank. */
+  setPreferences(prefs: NextPreferences): Promise<void>;
   setDashboardOpen(open: boolean): void;
-  setAiSettingsOpen(open: boolean): void;
+  setAiSettingsOpen(context: AiSettingsContext | null): void;
   /** mark a build-queue step done/undone (manual override), or clear it back
       to derived with `null` — one undoable step (SetBuildDone). */
   markBuildDone(id: Id, done: boolean | null): Promise<void>;
@@ -207,6 +244,71 @@ export interface AppStore {
   clearFly(): void;
 }
 
+/** PR 10 (review M5), hoisted verbatim into the store slice (PR 3): fold a
+ *  FRESH heuristic card list into the ranked view after a plan edit, without a
+ *  model round-trip. The model's ORDER is cheap opinion and may go stale
+ *  between opens; its PROSE quotes numbers — and prose never outlives the
+ *  evidence it quoted. So: keep the model's order for surviving cards, but every
+ *  card body comes from the fresh fetch, a note survives ONLY while its card's
+ *  evidence is byte-identical to what the note was written against, vanished
+ *  cards drop, new cards append in fresh (heuristic) relative order un-noted,
+ *  and the headline survives only while the top card's id AND evidence are both
+ *  unchanged. Exported pure — unit-pinnable without mounting a component. */
+export function mergeRank(prev: RankResponse | null, fresh: Opportunity[]): RankResponse {
+  if (!prev || prev.engine !== "model") {
+    // Nothing model-authored to preserve: plain heuristic swap. A prior
+    // fetch error is carried on the object (state stays truthful) but is
+    // never re-surfaced per edit — rankMoves() already chipped it once.
+    return { engine: "heuristic", opportunities: fresh, ...(prev?.error ? { error: prev.error } : {}) };
+  }
+  const freshById = new Map(fresh.map((o) => [o.id, o]));
+  const merged: Opportunity[] = [];
+  for (const p of prev.opportunities) {
+    const f = freshById.get(p.id);
+    if (!f) continue; // subject vanished — the card goes with it
+    freshById.delete(p.id);
+    // Evidence gate: byte-identical evidence keeps the note; any drift drops
+    // it (a "15% headroom" note under refreshed 40% evidence is a visible
+    // self-contradiction).
+    merged.push(p.note !== undefined && f.evidence === p.evidence ? { ...f, note: p.note } : f);
+  }
+  for (const f of fresh) {
+    if (freshById.has(f.id)) merged.push(f); // new since the rank — un-noted
+  }
+  const headlineSurvives =
+    prev.headline !== undefined &&
+    merged.length > 0 &&
+    prev.opportunities.length > 0 &&
+    merged[0].id === prev.opportunities[0].id &&
+    merged[0].evidence === prev.opportunities[0].evidence;
+  // DC-F2: DROP prev.wildcards on an edit. Wildcards are the model's
+  // unverified brainstorm, tied to the exact plan state it saw — carrying them
+  // across an unbounded run of edits would show stale ideas against drifted
+  // numbers (worse than a brief flicker). They return on the next full rank /
+  // epoch bump. The evidence-gated notes + headline above still ride along,
+  // but only while the evidence they quoted is byte-identical.
+  return {
+    engine: prev.engine,
+    ...(prev.model !== undefined ? { model: prev.model } : {}),
+    ...(headlineSurvives ? { headline: prev.headline } : {}),
+    opportunities: merged,
+  };
+}
+
+// PR 3 shared-rank guard state — module-level (a store singleton), NOT reactive
+// store fields, so touching them never triggers a render. `rankSeq` is the
+// last-writer-wins token PR 10 kept per-component: every fetch (model rank OR
+// per-edit merge) takes the next seq and only writes if still newest, so a slow
+// model rank can never clobber a later merge and vice versa. `rankedKey` records
+// the (planHash, epoch) a current rank already covers; it clears when the LAST
+// feed surface closes, so a genuinely fresh open refetches while a second
+// simultaneous surface does not re-bill. `mountedFeeds` ref-counts open feeds.
+let rankSeq = 0;
+let rankedKey: string | null = null;
+let mountedFeeds = 0;
+let lastMergedHash = "";
+const rankKey = (): string => `${useStore.getState().planHash}:${useStore.getState().rankEpoch}`;
+
 export const useStore = create<AppStore>((set, get) => ({
   ready: false,
   error: null,
@@ -233,12 +335,24 @@ export const useStore = create<AppStore>((set, get) => ({
   lastImport: null,
   unlocked: new Set(),
   dashboardOpen: false,
-  aiSettingsOpen: false,
+  aiSettingsOpen: null,
   auditRequest: null,
   flyTo: null,
   aiConfig: null,
+  rank: null,
+  rankEpoch: 0,
+  advisorTab: "feed",
 
   async hydrate() {
+    // DC-F3: a hydrate is a fresh plan surface (boot, or optimizeAdopt's
+    // same-plan re-hydrate). Reset the shared rank slice, its epoch, and the
+    // module singletons so one plan's model content — ESPECIALLY unverified
+    // wildcards — can never carry onto another across a plan-switch/reload. A
+    // still-mounted feed simply re-ranks on its next open, which is correct.
+    rankedKey = null;
+    mountedFeeds = 0;
+    lastMergedHash = "";
+    set({ rank: null, rankEpoch: 0 });
     try {
       const init = await backend.hydrate();
       const openFactory = init.viewState?.openFactory;
@@ -388,8 +502,8 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ dashboardOpen: open });
   },
 
-  setAiSettingsOpen(open) {
-    set({ aiSettingsOpen: open });
+  setAiSettingsOpen(context) {
+    set({ aiSettingsOpen: context });
   },
 
   async markBuildDone(id, done) {
@@ -479,6 +593,94 @@ export const useStore = create<AppStore>((set, get) => ({
       get().reportCmdError(errText(e));
       return false;
     }
+  },
+
+  setAdvisorTab(tab) {
+    set({ advisorTab: tab });
+  },
+
+  registerFeed() {
+    mountedFeeds += 1;
+    void get().openRankFeed();
+  },
+
+  unregisterFeed() {
+    mountedFeeds -= 1;
+    // Last surface closed: forget which key we ranked so a genuinely fresh
+    // open refetches (matches PR 10's per-open remount behaviour). The rank
+    // itself is KEPT so the status-bar chip survives a feed close.
+    if (mountedFeeds <= 0) {
+      mountedFeeds = 0;
+      rankedKey = null;
+    }
+  },
+
+  // Full model rank on surface-open / epoch change. Guard: skip when the
+  // current (planHash, epoch) already has a rank issued during this open
+  // session — so a second surface opening (dashboard then panel), and the
+  // openRankFeed the epoch-effect fires alongside the mount, never re-bill.
+  async openRankFeed() {
+    const key = rankKey();
+    if (rankedKey === key) return;
+    rankedKey = key;
+    // Capture the hash we're actually ranking. On resolve we may claim ONLY
+    // this hash — never "now" (H1): an edit landing mid-flight leaves the
+    // resolved cards describing the PRE-edit plan, and stamping the current
+    // hash would swallow that edit, freezing a stale, dead-clickable list.
+    const startHash = get().planHash;
+    const seq = ++rankSeq;
+    const r = await get().rankMoves();
+    if (rankSeq !== seq) return; // a later merge/rank already won
+    set({ rank: r });
+    lastMergedHash = startHash;
+    // Plan moved while this first rank was in flight? App's per-edit effect
+    // already fired mergeOnEdit for the new hash, but rank was still null then
+    // so it bailed without stamping — reconcile the delta now that a rank
+    // exists (folds the fresh heuristic list over the current hash).
+    if (get().planHash !== startHash) void get().mergeOnEdit();
+  },
+
+  // Per-edit fold of the FREE heuristic list under the model's standing order.
+  // Dedups on planHash so App's central effect can call it on every change; a
+  // null rank (no feed ever opened) needs no upkeep — the chip is hidden.
+  async mergeOnEdit() {
+    const h = get().planHash;
+    if (h === lastMergedHash) return;
+    // A null rank (no feed ever opened) needs no upkeep — the chip is hidden.
+    // Guard BEFORE stamping: a mergeOnEdit that fires during the first
+    // in-flight rank (rank still null) must NOT claim this hash, or the merge
+    // that reconciles it once the rank lands would be skipped (H1).
+    if (get().rank === null) return;
+    const seq = ++rankSeq;
+    const fresh = await get().nextMoves();
+    if (rankSeq !== seq) return; // a later merge/rank already won
+    set((s) => ({ rank: mergeRank(s.rank, fresh) }));
+    // Claim the hash only AFTER a real merge writes — never a hash we didn't
+    // fold. DC-F2: do NOT claim rankedKey here; a genuinely fresh reopen must
+    // re-rank the model rather than reuse a merge's heuristic-only result.
+    lastMergedHash = h;
+  },
+
+  bumpRankEpoch() {
+    set((s) => ({ rankEpoch: s.rankEpoch + 1 }));
+  },
+
+  // Persist the preference (not undoable, outside plan_hash), fold in the fresh
+  // heuristic list optimistically, and bump the epoch so open feeds re-rank
+  // (planHash is unchanged, so mergeOnEdit will not fire — the epoch drives it).
+  async setPreferences(prefs) {
+    let view;
+    try {
+      view = await backend.setPreferences(prefs);
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return;
+    }
+    set((s) => ({
+      plan: { ...s.plan, meta: { ...s.plan.meta, preferences: view.preferences } },
+      rank: mergeRank(s.rank, view.opportunities),
+    }));
+    get().bumpRankEpoch();
   },
 
   openAuditTab(tab) {

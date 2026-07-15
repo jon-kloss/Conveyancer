@@ -27,6 +27,7 @@ export default function App() {
   const dashboardOpen = useStore((s) => s.dashboardOpen);
   const emptyPlan = useStore((s) => Object.keys(s.plan.factories).length === 0);
   const auditRequest = useStore((s) => s.auditRequest);
+  const planHash = useStore((s) => s.planHash);
   const hydrate = useStore((s) => s.hydrate);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -73,6 +74,15 @@ export default function App() {
     if (auditRequest) setAuditOpen(true);
   }, [auditRequest]);
 
+  // PR 3: the SINGLE central per-edit merge. The shared NEXT rank state has one
+  // owner; folding the free heuristic list under the model's standing order
+  // must happen exactly once per edit regardless of how many feed surfaces are
+  // open — mergeOnEdit dedups on planHash internally (and no-ops until a feed
+  // has ranked at least once, so an untouched app never derives on every edit).
+  useEffect(() => {
+    void useStore.getState().mergeOnEdit();
+  }, [planHash]);
+
   // Backstop: a rejection that escaped every local handler still lands in
   // the status-bar chip instead of dying silently in the console.
   useEffect(() => {
@@ -115,9 +125,11 @@ export default function App() {
         // handler fires before any popover-local listener could — so the
         // popover defers through the store (aiSettingsOpen, the same pattern
         // as wizard/reviewing above) and Escape closes the TOP layer only:
-        // popover first, dashboard on the next press.
-        if (st.aiSettingsOpen) {
-          st.setAiSettingsOpen(false);
+        // popover first, dashboard on the next press. M2: the flag now names
+        // the owning header (context) rather than a bare boolean — non-null
+        // means some popover is open; closing clears it wholesale.
+        if (st.aiSettingsOpen !== null) {
+          st.setAiSettingsOpen(null);
           e.preventDefault();
           e.stopImmediatePropagation();
           return;

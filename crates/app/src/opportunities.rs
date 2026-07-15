@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use gamedata::docs::{extraction_rate, GameData};
 use gamedata::worldnodes::WorldSnapshot;
 use planner_core::entities::*;
-use planner_core::state::PlanState;
+use planner_core::state::{NextPreferences, PlanState};
 use serde::Serialize;
 
 use crate::session::{circuit_level, Derived};
@@ -50,6 +50,20 @@ const UNTAPPED_LIMIT: usize = 3;
 
 /// Ranked list cap — a shortlist, not a report.
 const CAP: usize = 12;
+
+/// Demoted ranking CLASS for a `power_deficit` under the `ignore_power`
+/// preference (PR 3): the overdraw FACT never leaves the list, but its class
+/// sinks below the actionable repair families the player chose to act on
+/// (`deficit_repair` class 1, `route_bottleneck_fix` class 2) — a REAL
+/// cross-class demotion, not a magnitude hack (power_deficit is class 0's sole
+/// member, so nudging magnitude alone left it at #1). Reuses `power_margin`'s
+/// band; that advisory card is itself hidden under `ignore_power`, so the two
+/// never collide. The status-bar power chip and STARVING section are untouched.
+const DEMOTED_POWER_CLASS: u8 = 3;
+
+/// Honest note appended to a demoted `power_deficit` (PR 3): the preference
+/// quieted the SUGGESTIONS, it cannot un-overdraw a grid.
+const IGNORE_POWER_NOTE: &str = " — power ignored by preference — this grid is still overdrawn";
 
 /// Candidate family, in ranking-class order (the discriminant IS the class).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -221,7 +235,19 @@ fn production_gaps(state: &PlanState, derived: &Derived) -> BTreeMap<String, f64
 /// there is deliberately NO empire-level `power_margin` fallback. The
 /// `total_generation_mw > 0` gate keeps mid-planning bases (machines drawn, no
 /// generators yet) un-nagged.
-fn power_deficit(derived: &Derived, out: &mut Vec<Candidate>) {
+fn power_deficit(derived: &Derived, prefs: &NextPreferences, out: &mut Vec<Candidate>) {
+    // PR 3: `ignore_power` may DEMOTE + NOTE this card (a real overdraw is a
+    // FACT, never hidden), but it can never suppress it.
+    let ignored = prefs.ignore_power;
+    // A demoted overdraw keeps its true magnitude (the overdraw figure is a
+    // FACT) — only its ranking CLASS changes, sinking it below the repairs.
+    let class = if ignored { DEMOTED_POWER_CLASS } else { 0 };
+    let note = |mut evidence: String| {
+        if ignored {
+            evidence.push_str(IGNORE_POWER_NOTE);
+        }
+        evidence
+    };
     for c in &derived.circuits {
         let (headroom, _) = circuit_level(c.generation_mw, c.demand_mw);
         if headroom >= 0.0 {
@@ -229,7 +255,7 @@ fn power_deficit(derived: &Derived, out: &mut Vec<Candidate>) {
         }
         let overdraw = c.demand_mw - c.generation_mw;
         out.push(Candidate {
-            class: 0,
+            class,
             magnitude: overdraw,
             opp: Opportunity {
                 id: format!("power_deficit:{}", c.name),
@@ -239,10 +265,10 @@ fn power_deficit(derived: &Derived, out: &mut Vec<Candidate>) {
                     c.name,
                     fmt_overdraw_mw(overdraw)
                 ),
-                evidence: format!(
+                evidence: note(format!(
                     "{:.0} MW demand against {:.0} MW generated",
                     c.demand_mw, c.generation_mw
-                ),
+                )),
                 item: None,
                 action: OpportunityAction::OpenAudit {
                     tab: "power".into(),
@@ -256,7 +282,7 @@ fn power_deficit(derived: &Derived, out: &mut Vec<Candidate>) {
     {
         let overdraw = derived.total_power_mw - derived.total_generation_mw;
         out.push(Candidate {
-            class: 0,
+            class,
             magnitude: overdraw,
             opp: Opportunity {
                 id: "power_deficit:empire".into(),
@@ -265,10 +291,10 @@ fn power_deficit(derived: &Derived, out: &mut Vec<Candidate>) {
                     "Plan-wide power demand exceeds generation by {} MW",
                     fmt_overdraw_mw(overdraw)
                 ),
-                evidence: format!(
+                evidence: note(format!(
                     "{:.0} MW demand vs {:.0} MW generated — no power routes drawn, per-grid balance unknown",
                     derived.total_power_mw, derived.total_generation_mw
-                ),
+                )),
                 item: None,
                 action: OpportunityAction::OpenAudit {
                     tab: "power".into(),
@@ -376,8 +402,14 @@ fn route_bottleneck_fix(
     state: &PlanState,
     gd: &GameData,
     derived: &Derived,
+    prefs: &NextPreferences,
     out: &mut Vec<Candidate>,
 ) {
+    // Per-item PRODUCTION gaps — only needed to tell a `no_trains`-suppressed
+    // rail route that is a TRANSPORT-ONLY starve (re-emit under a non-train
+    // framing) from a MIXED one (a `deficit_repair` card already alludes to the
+    // route in its evidence — leave the "+1 consist" suggestion suppressed).
+    let prod_gaps = prefs.no_trains.then(|| production_gaps(state, derived));
     for (rid, dr) in &derived.routes {
         if dr.saturation < FULL {
             continue;
@@ -394,21 +426,51 @@ fn route_bottleneck_fix(
         let Some(route) = state.routes.get(rid) else {
             continue;
         };
-        let endpoints = route_endpoints(state, route);
-        let fix = match &route.kind {
-            RouteKind::Belt { tier } => {
-                // Smallest tier that actually clears the decomposed need
-                // (reuses planner_core's belt table — never a copy).
-                match ((tier + 1)..=6u8).find(|t| belt_capacity(*t) + EPS >= dr.flow + recoverable)
-                {
-                    Some(t) => format!("bump it to Mk.{t}"),
-                    None => "beyond Mk.6 — add a parallel belt".into(),
-                }
+        // PR 3: `no_trains` suppresses RAIL route-fix suggestions (the fix names
+        // a "+1 consist"); belt/pipe/truck/drone route cards are unaffected.
+        // EXCEPTION (PR #11 M4): a rail route that carries a transport-only
+        // starve is the ONLY advice about a factory the player already starved
+        // with a train they built — dropping it hides a real problem. When no
+        // `deficit_repair` covers the item's production gap, RE-EMIT the card
+        // under a non-train framing (name the route as the cap, suggest a
+        // belt/truck alternative — never "+1 consist").
+        let is_rail = matches!(route.kind, RouteKind::Rail { .. });
+        let reframe_no_train = if prefs.no_trains && is_rail {
+            let production_capped = dr
+                .item
+                .as_ref()
+                .and_then(|i| prod_gaps.as_ref().map(|g| g.get(i).copied().unwrap_or(0.0)))
+                .unwrap_or(0.0)
+                > EPS;
+            if production_capped {
+                continue; // mixed gap — deficit_repair already alludes to it
             }
-            RouteKind::Rail { .. } => "+1 consist".into(),
-            RouteKind::Truck { .. } => "+1 truck".into(),
-            RouteKind::Drone { .. } => "add a second drone route".into(),
-            _ => "add a second route".into(),
+            true
+        } else {
+            false
+        };
+        let endpoints = route_endpoints(state, route);
+        let fix = if reframe_no_train {
+            // The fact is an EXISTING overloaded rail route, not a suggestion to
+            // add a consist — point at a belt/truck alternative instead.
+            "carry it by belt or truck instead".to_string()
+        } else {
+            match &route.kind {
+                RouteKind::Belt { tier } => {
+                    // Smallest tier that actually clears the decomposed need
+                    // (reuses planner_core's belt table — never a copy).
+                    match ((tier + 1)..=6u8)
+                        .find(|t| belt_capacity(*t) + EPS >= dr.flow + recoverable)
+                    {
+                        Some(t) => format!("bump it to Mk.{t}"),
+                        None => "beyond Mk.6 — add a parallel belt".into(),
+                    }
+                }
+                RouteKind::Rail { .. } => "+1 consist".into(),
+                RouteKind::Truck { .. } => "+1 truck".into(),
+                RouteKind::Drone { .. } => "add a second drone route".into(),
+                _ => "add a second route".into(),
+            }
         };
         out.push(Candidate {
             class: 2,
@@ -436,7 +498,12 @@ fn route_bottleneck_fix(
 /// NEGATED headroom: thinner margin ranks first within the class. The
 /// percentage FLOORS in title and evidence both — 19.5% headroom must read
 /// "19%", never round up out of its own alarm band.
-fn power_margin(derived: &Derived, out: &mut Vec<Candidate>) {
+fn power_margin(derived: &Derived, prefs: &NextPreferences, out: &mut Vec<Candidate>) {
+    // PR 3: `ignore_power` HIDES this purely-advisory card entirely (headroom
+    // is a suggestion, not a fact — nothing is broken yet).
+    if prefs.ignore_power {
+        return;
+    }
     for c in &derived.circuits {
         let (headroom, level) = circuit_level(c.generation_mw, c.demand_mw);
         if headroom < 0.0 || level == "ok" {
@@ -815,12 +882,13 @@ pub fn derive_opportunities(
     derived: &Derived,
     world: &WorldSnapshot,
     unlocked: &BTreeSet<String>,
+    prefs: &NextPreferences,
 ) -> Vec<Opportunity> {
     let mut cands: Vec<Candidate> = Vec::new();
-    power_deficit(derived, &mut cands);
+    power_deficit(derived, prefs, &mut cands);
     deficit_repair(state, gd, derived, &mut cands);
-    route_bottleneck_fix(state, gd, derived, &mut cands);
-    power_margin(derived, &mut cands);
+    route_bottleneck_fix(state, gd, derived, prefs, &mut cands);
+    power_margin(derived, prefs, &mut cands);
     milestone_gap(gd, unlocked, &mut cands);
     alt_adopt(state, gd, unlocked, &mut cands);
     under_extracted(state, gd, derived, world, &mut cands);
