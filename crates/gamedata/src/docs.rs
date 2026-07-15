@@ -607,9 +607,16 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
     // (items before or after schematics) never matters.
     {
         let items = &gd.items;
-        for m in gd.milestones.values_mut() {
+        // Drop cost entries that don't resolve to a known item, then DROP any
+        // milestone whose cost became EMPTY — mirroring the parse-time
+        // `cost.is_empty()` guard. An all-unknown milestone must never survive
+        // as a zero-cost entry: in `milestone_gap` its empty cost loop selects
+        // nothing, `best` stays None, and the whole family goes silent BEHIND
+        // it, suppressing the real higher milestone (B1, PR 4 review).
+        gd.milestones.retain(|_, m| {
             m.cost.retain(|(item, _)| items.contains_key(item));
-        }
+            !m.cost.is_empty()
+        });
     }
 
     let liquid_forms = ["RF_LIQUID", "RF_GAS"];
@@ -1093,6 +1100,74 @@ mod tests {
             vec![("Desc_IronPlate_C".to_string(), 20.0)],
             "the unknown-item entry is dropped, the known one survives"
         );
+    }
+
+    #[test]
+    fn milestone_with_all_unknown_cost_is_dropped() {
+        // B1: when EVERY mCost item is unknown the retain empties the cost —
+        // that zero-cost milestone must NOT survive (it would dead-end
+        // `milestone_gap`), mirroring the parse-time `cost.is_empty()` guard.
+        let text = r#"[
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'",
+            "Classes": [
+              { "ClassName": "Desc_IronPlate_C", "mDisplayName": "Iron Plate", "mForm": "RF_SOLID", "mStackSize": "SS_MEDIUM" }
+            ]
+          },
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGSchematic'",
+            "Classes": [
+              {
+                "ClassName": "Schematic_All_Unknown_C",
+                "mDisplayName": "Phantom Tier",
+                "mType": "EST_Milestone",
+                "mTechTier": "2",
+                "mCost": "((ItemClass=\"/Game/.../Desc_Unobtainium.Desc_Unobtainium_C'\",Amount=10),(ItemClass=\"/Game/.../Desc_Vibranium.Desc_Vibranium_C'\",Amount=5))"
+              }
+            ]
+          }
+        ]"#;
+        let gd = parse_docs(text, "test").unwrap();
+        assert!(
+            !gd.milestones.contains_key("Schematic_All_Unknown_C"),
+            "an all-unknown-cost milestone is dropped, never a zero-cost entry"
+        );
+        assert!(gd.milestones.is_empty());
+        // still a normal schematic (recipe-unlock map is untouched)
+        assert!(gd.schematics.contains_key("Schematic_All_Unknown_C"));
+    }
+
+    #[test]
+    fn milestone_with_unparseable_tier_is_skipped() {
+        // L3: mTechTier is a STRING; a non-numeric value → the milestone is
+        // skipped without panic (never a guessed tier). Its recipe-unlock
+        // schematic entry still lands.
+        let text = r#"[
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'",
+            "Classes": [
+              { "ClassName": "Desc_IronPlate_C", "mDisplayName": "Iron Plate", "mForm": "RF_SOLID", "mStackSize": "SS_MEDIUM" }
+            ]
+          },
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGSchematic'",
+            "Classes": [
+              {
+                "ClassName": "Schematic_Bad_Tier_C",
+                "mDisplayName": "Malformed Tier",
+                "mType": "EST_Milestone",
+                "mTechTier": "not-a-number",
+                "mCost": "((ItemClass=\"/Game/.../Desc_IronPlate.Desc_IronPlate_C'\",Amount=20))"
+              }
+            ]
+          }
+        ]"#;
+        let gd = parse_docs(text, "test").unwrap();
+        assert!(
+            gd.milestones.is_empty(),
+            "an unparseable mTechTier skips the milestone, never a guessed tier"
+        );
+        assert!(gd.schematics.contains_key("Schematic_Bad_Tier_C"));
     }
 
     #[test]
