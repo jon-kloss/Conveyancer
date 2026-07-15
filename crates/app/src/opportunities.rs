@@ -51,12 +51,15 @@ const UNTAPPED_LIMIT: usize = 3;
 /// Ranked list cap — a shortlist, not a report.
 const CAP: usize = 12;
 
-/// Within-class demotion offset for a `power_deficit` under the `ignore_power`
-/// preference (PR 3): the overdraw FACT never leaves the list, it sorts to the
-/// bottom of its class instead. Subtracting a value far past any real MW figure
-/// keeps demoted cards below every non-demoted class-0 card while preserving
-/// their relative overdraw order among themselves.
-const IGNORE_POWER_DEMOTE: f64 = 1e12;
+/// Demoted ranking CLASS for a `power_deficit` under the `ignore_power`
+/// preference (PR 3): the overdraw FACT never leaves the list, but its class
+/// sinks below the actionable repair families the player chose to act on
+/// (`deficit_repair` class 1, `route_bottleneck_fix` class 2) — a REAL
+/// cross-class demotion, not a magnitude hack (power_deficit is class 0's sole
+/// member, so nudging magnitude alone left it at #1). Reuses `power_margin`'s
+/// band; that advisory card is itself hidden under `ignore_power`, so the two
+/// never collide. The status-bar power chip and STARVING section are untouched.
+const DEMOTED_POWER_CLASS: u8 = 3;
 
 /// Honest note appended to a demoted `power_deficit` (PR 3): the preference
 /// quieted the SUGGESTIONS, it cannot un-overdraw a grid.
@@ -236,13 +239,9 @@ fn power_deficit(derived: &Derived, prefs: &NextPreferences, out: &mut Vec<Candi
     // PR 3: `ignore_power` may DEMOTE + NOTE this card (a real overdraw is a
     // FACT, never hidden), but it can never suppress it.
     let ignored = prefs.ignore_power;
-    let magnitude = |overdraw: f64| {
-        if ignored {
-            overdraw - IGNORE_POWER_DEMOTE
-        } else {
-            overdraw
-        }
-    };
+    // A demoted overdraw keeps its true magnitude (the overdraw figure is a
+    // FACT) — only its ranking CLASS changes, sinking it below the repairs.
+    let class = if ignored { DEMOTED_POWER_CLASS } else { 0 };
     let note = |mut evidence: String| {
         if ignored {
             evidence.push_str(IGNORE_POWER_NOTE);
@@ -256,8 +255,8 @@ fn power_deficit(derived: &Derived, prefs: &NextPreferences, out: &mut Vec<Candi
         }
         let overdraw = c.demand_mw - c.generation_mw;
         out.push(Candidate {
-            class: 0,
-            magnitude: magnitude(overdraw),
+            class,
+            magnitude: overdraw,
             opp: Opportunity {
                 id: format!("power_deficit:{}", c.name),
                 kind: OpportunityKind::PowerDeficit,
@@ -283,8 +282,8 @@ fn power_deficit(derived: &Derived, prefs: &NextPreferences, out: &mut Vec<Candi
     {
         let overdraw = derived.total_power_mw - derived.total_generation_mw;
         out.push(Candidate {
-            class: 0,
-            magnitude: magnitude(overdraw),
+            class,
+            magnitude: overdraw,
             opp: Opportunity {
                 id: "power_deficit:empire".into(),
                 kind: OpportunityKind::PowerDeficit,
@@ -406,6 +405,11 @@ fn route_bottleneck_fix(
     prefs: &NextPreferences,
     out: &mut Vec<Candidate>,
 ) {
+    // Per-item PRODUCTION gaps — only needed to tell a `no_trains`-suppressed
+    // rail route that is a TRANSPORT-ONLY starve (re-emit under a non-train
+    // framing) from a MIXED one (a `deficit_repair` card already alludes to the
+    // route in its evidence — leave the "+1 consist" suggestion suppressed).
+    let prod_gaps = prefs.no_trains.then(|| production_gaps(state, derived));
     for (rid, dr) in &derived.routes {
         if dr.saturation < FULL {
             continue;
@@ -424,24 +428,49 @@ fn route_bottleneck_fix(
         };
         // PR 3: `no_trains` suppresses RAIL route-fix suggestions (the fix names
         // a "+1 consist"); belt/pipe/truck/drone route cards are unaffected.
-        if prefs.no_trains && matches!(route.kind, RouteKind::Rail { .. }) {
-            continue;
-        }
-        let endpoints = route_endpoints(state, route);
-        let fix = match &route.kind {
-            RouteKind::Belt { tier } => {
-                // Smallest tier that actually clears the decomposed need
-                // (reuses planner_core's belt table — never a copy).
-                match ((tier + 1)..=6u8).find(|t| belt_capacity(*t) + EPS >= dr.flow + recoverable)
-                {
-                    Some(t) => format!("bump it to Mk.{t}"),
-                    None => "beyond Mk.6 — add a parallel belt".into(),
-                }
+        // EXCEPTION (PR #11 M4): a rail route that carries a transport-only
+        // starve is the ONLY advice about a factory the player already starved
+        // with a train they built — dropping it hides a real problem. When no
+        // `deficit_repair` covers the item's production gap, RE-EMIT the card
+        // under a non-train framing (name the route as the cap, suggest a
+        // belt/truck alternative — never "+1 consist").
+        let is_rail = matches!(route.kind, RouteKind::Rail { .. });
+        let reframe_no_train = if prefs.no_trains && is_rail {
+            let production_capped = dr
+                .item
+                .as_ref()
+                .and_then(|i| prod_gaps.as_ref().map(|g| g.get(i).copied().unwrap_or(0.0)))
+                .unwrap_or(0.0)
+                > EPS;
+            if production_capped {
+                continue; // mixed gap — deficit_repair already alludes to it
             }
-            RouteKind::Rail { .. } => "+1 consist".into(),
-            RouteKind::Truck { .. } => "+1 truck".into(),
-            RouteKind::Drone { .. } => "add a second drone route".into(),
-            _ => "add a second route".into(),
+            true
+        } else {
+            false
+        };
+        let endpoints = route_endpoints(state, route);
+        let fix = if reframe_no_train {
+            // The fact is an EXISTING overloaded rail route, not a suggestion to
+            // add a consist — point at a belt/truck alternative instead.
+            "carry it by belt or truck instead".to_string()
+        } else {
+            match &route.kind {
+                RouteKind::Belt { tier } => {
+                    // Smallest tier that actually clears the decomposed need
+                    // (reuses planner_core's belt table — never a copy).
+                    match ((tier + 1)..=6u8)
+                        .find(|t| belt_capacity(*t) + EPS >= dr.flow + recoverable)
+                    {
+                        Some(t) => format!("bump it to Mk.{t}"),
+                        None => "beyond Mk.6 — add a parallel belt".into(),
+                    }
+                }
+                RouteKind::Rail { .. } => "+1 consist".into(),
+                RouteKind::Truck { .. } => "+1 truck".into(),
+                RouteKind::Drone { .. } => "add a second drone route".into(),
+                _ => "add a second route".into(),
+            }
         };
         out.push(Candidate {
             class: 2,

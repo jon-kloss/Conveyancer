@@ -1813,11 +1813,13 @@ fn composite_plan_fires_all_seven_families_in_class_order() {
 
 // ---------- PR 3 preferences: hide suggestions, never facts ----------
 
-/// `no_trains` suppresses a RAIL route-fix card (a "+1 consist" suggestion),
-/// while the identical full-belt case still fires — belt/pipe/truck/drone route
-/// cards are untouched.
+/// `no_trains` fully suppresses a RAIL route-fix card (the "+1 consist"
+/// suggestion) in the MIXED-gap case — where a `deficit_repair` already covers
+/// the item's production gap and alludes to the route, so re-emitting it would
+/// be redundant. (The complementary transport-ONLY case is re-emitted under a
+/// non-train framing — see `no_trains_reemits_transport_only_rail_route_…`.)
 #[test]
-fn no_trains_suppresses_rail_route_card() {
+fn no_trains_suppresses_rail_route_card_when_deficit_repair_covers_it() {
     let mut s = Session::in_memory(None).unwrap();
     let (_, ingot_out) = ingot_factory(&mut s, "BIG SMELT", 0.0, 0.0, 8, 240.0);
     let (_, ingot_in, rod_out) = rod_sink(&mut s, "ROD SINK", 80000.0, 0.0, 16);
@@ -1850,23 +1852,138 @@ fn no_trains_suppresses_rail_route_card() {
         },
     }])
     .unwrap();
+    // A SEPARATE slack-route ingot chain with a pure PRODUCTION gap → an
+    // empire-wide Iron Ingot `deficit_repair` now COVERS the item the rail
+    // carries. That makes the rail route the MIXED case: under `no_trains` it
+    // stays fully suppressed (the deficit card alludes to it), never re-emitted.
+    let (_, gap_out) = ingot_factory(&mut s, "SLACK SMELT", 0.0, 6000.0, 4, 60.0);
+    let (_, gap_in, gap_rod) = rod_sink(&mut s, "SLACK RODS", 500.0, 6000.0, 4);
+    belt_route(&mut s, &gap_out, &gap_in, 4); // slack Mk.4 → no route card
+    set_rate(&mut s, &gap_rod, 60.0); // satisfiable now
+    set_rate(&mut s, &gap_out, 10.0); // dip → pure Iron Ingot production gap
 
-    // Default (no preference): the rail route-fix fires.
+    // Default (no preference): the rail route-fix fires (as "+1 consist").
+    let before = next(&mut s);
     assert!(
-        find_kind(&next(&mut s), OpportunityKind::RouteBottleneckFix).is_some(),
-        "rail route card fires without the preference"
+        find_kind(&before, OpportunityKind::RouteBottleneckFix)
+            .is_some_and(|o| o.title.contains("consist")),
+        "rail route card fires as a consist suggestion without the preference"
     );
-    // no_trains: the rail suggestion is suppressed.
+    assert!(
+        find_kind(&before, OpportunityKind::DeficitRepair).is_some(),
+        "the slack chain fires a deficit_repair covering Iron Ingot"
+    );
+    // no_trains: the covered rail suggestion is suppressed ENTIRELY (the only
+    // remaining deficit story is the slack chain, whose route has no card).
     s.state.meta.preferences.no_trains = true;
     assert!(
         find_kind(&next(&mut s), OpportunityKind::RouteBottleneckFix).is_none(),
-        "no_trains must suppress the rail route-fix suggestion"
+        "no_trains must suppress the covered rail route-fix suggestion"
+    );
+}
+
+/// TA-#2: `no_trains` touches ONLY rail cards — a BELT `route_bottleneck_fix`
+/// still fires (kills an over-broad `if prefs.no_trains { continue }` mutation).
+#[test]
+fn no_trains_keeps_belt_route_card() {
+    let mut s = Session::in_memory(None).unwrap();
+    // A Mk.1 belt capping a recoverable transport gap → a belt route card.
+    let route = capped_chain(&mut s, 4, 120.0, 8, 120.0, None);
+    assert!(
+        find_kind(&next(&mut s), OpportunityKind::RouteBottleneckFix).is_some(),
+        "belt route-fix fires by default"
+    );
+    s.state.meta.preferences.no_trains = true;
+    let opps = next(&mut s);
+    let o = find_kind(&opps, OpportunityKind::RouteBottleneckFix)
+        .expect("no_trains must NOT suppress a belt route-fix card");
+    assert_eq!(o.action, OpportunityAction::SelectRoute { id: route });
+    // The belt fix is a tier bump, never a train wording.
+    assert!(
+        o.title.contains("Mk."),
+        "belt fix names a tier: {}",
+        o.title
+    );
+}
+
+/// M4: `no_trains` must not silently DROP the only advice about an EXISTING
+/// overloaded rail route. A transport-ONLY starve (upstream produces the full
+/// need, the rail consist caps flow, no deficit_repair covers it) is RE-EMITTED
+/// under a non-train framing — same route + evidence, but suggesting a
+/// belt/truck alternative instead of "+1 consist".
+#[test]
+fn no_trains_reemits_transport_only_rail_route_without_train_wording() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_, ingot_out) = ingot_factory(&mut s, "BIG SMELT", 0.0, 0.0, 8, 240.0);
+    let (_, ingot_in, rod_out) = rod_sink(&mut s, "ROD SINK", 80000.0, 0.0, 16);
+    // Create as a Mk.4 belt over an 80 km path (the 240-rod target must be set
+    // while achievable), then swap to a default 1-consist rail → FULL, with the
+    // upstream producing the whole 240 (transport-only, no production gap).
+    let route = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Belt { tier: 4 },
+            from: ingot_out.clone(),
+            to: ingot_in.clone(),
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 80000.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    set_rate(&mut s, &rod_out, 240.0);
+    s.edit(vec![Command::SetRouteSpec {
+        id: route.clone(),
+        kind: RouteKind::Rail {
+            spec: RailSpec::default(),
+        },
+    }])
+    .unwrap();
+
+    // Precondition: transport-only, so no deficit_repair exists to allude to it.
+    s.state.meta.preferences.no_trains = true;
+    let opps = next(&mut s);
+    assert!(
+        !opps
+            .iter()
+            .any(|o| o.kind == OpportunityKind::DeficitRepair),
+        "upstream produces the whole need — a transport-only starve"
+    );
+    let o = find_kind(&opps, OpportunityKind::RouteBottleneckFix)
+        .expect("the existing overloaded rail route is re-emitted, not dropped");
+    assert!(
+        !o.title.contains("consist"),
+        "re-emit must NOT suggest a train: {}",
+        o.title
+    );
+    assert!(
+        o.title.contains("belt") || o.title.contains("truck"),
+        "re-emit names a belt/truck alternative: {}",
+        o.title
+    );
+    assert!(o.title.contains("caps demand"), "{}", o.title);
+    // Same action + recoverable evidence as the suppressed rail card.
+    assert_eq!(o.action, OpportunityAction::SelectRoute { id: route });
+    assert!(
+        o.evidence.contains("recoverable through it"),
+        "{}",
+        o.evidence
     );
 }
 
 /// `ignore_power` HIDES the advisory `power_margin` card entirely, but only
-/// DEMOTES the `power_deficit` FACT to the bottom of its class and appends an
-/// honest note — never removes it.
+/// REAL-cross-class-DEMOTES the `power_deficit` FACT (below the actionable
+/// repairs the player chose to act on) and appends an honest note — never
+/// removes it.
 #[test]
 fn ignore_power_hides_margin_but_demotes_deficit_with_note() {
     // Thin grid alone: power_margin present by default, hidden under ignore_power.
@@ -1884,14 +2001,26 @@ fn ignore_power_hides_margin_but_demotes_deficit_with_note() {
         "ignore_power must HIDE the advisory power_margin card"
     );
 
-    // Overdrawn grid: the FACT survives ignore_power — demoted + noted.
+    // Overdrawn grid AND an actionable production starve on a DIFFERENT chain:
+    // the FACT survives ignore_power — demoted BELOW the repair + noted.
     let mut over = Session::in_memory(None).unwrap();
     let p = coal_plant(&mut over, "OVER PLANT", 0.0, 0.0, 75.0);
     let (l, _) = ingot_factory(&mut over, "OVER LOAD", 100.0, 0.0, 32, 960.0);
     power_route(&mut over, &p, &l);
+    // A separate starved chain (far from the grid) → a deficit_repair (class 1)
+    // card the player CAN act on: 4 smelters dipped to 10/min under a 60-rod
+    // sink over a slack Mk.4 route → 50/min Iron Ingot production gap.
+    let (_, ingot_out) = ingot_factory(&mut over, "SMELT GAP", 5000.0, 5000.0, 4, 60.0);
+    let (_, ingot_in, rod_out) = rod_sink(&mut over, "ROD GAP", 5500.0, 5000.0, 4);
+    belt_route(&mut over, &ingot_out, &ingot_in, 4);
+    set_rate(&mut over, &rod_out, 60.0); // satisfiable now
+    set_rate(&mut over, &ingot_out, 10.0); // upstream dips → downstream starves
+
     let before = next(&mut over);
     let d = find_kind(&before, OpportunityKind::PowerDeficit).expect("overdraw fires by default");
     assert!(!d.evidence.contains("ignored by preference"));
+    // By default the overdraw is class 0 and leads everything.
+    assert_eq!(before[0].kind, OpportunityKind::PowerDeficit);
 
     over.state.meta.preferences.ignore_power = true;
     let after = next(&mut over);
@@ -1905,4 +2034,18 @@ fn ignore_power_hides_margin_but_demotes_deficit_with_note() {
     );
     // The title (the actual overdraw figure) is unchanged — the fact is intact.
     assert!(d.title.contains("overdrawn by"), "{}", d.title);
+    // REAL demotion: the deficit_repair the player chose to act on now ranks
+    // ABOVE the demoted overdraw (a mutation leaving power at class 0 fails).
+    let di = after
+        .iter()
+        .position(|o| o.kind == OpportunityKind::DeficitRepair)
+        .expect("the starved chain fires a deficit_repair card");
+    let pi = after
+        .iter()
+        .position(|o| o.kind == OpportunityKind::PowerDeficit)
+        .expect("the overdraw is still listed");
+    assert!(
+        di < pi,
+        "ignore_power sinks the overdraw BELOW the actionable repair: deficit@{di} power@{pi}"
+    );
 }
