@@ -305,6 +305,14 @@ pub struct Session {
     /// meta KV store, OUTSIDE the undo journal / plan_hash (a save-derived fact,
     /// not canonical plan state). Empty when no save with schematics is imported.
     pub unlocked: BTreeSet<String>,
+    /// Purchased milestone/schematic ids the imported save has bought (PR 4).
+    /// The RAW `mPurchasedSchematics` class names (`Schematic_3-1_C`, …),
+    /// captured at import (before they are resolved to recipes and dropped) and
+    /// persisted in the meta KV store, OUTSIDE the undo journal / plan_hash — a
+    /// save-derived fact, not canonical plan state, treated identically to
+    /// `unlocked`. Empty when no save with schematics is imported. Consumed by
+    /// the `milestone_gap` opportunity family to know which milestones remain.
+    pub purchased_schematics: BTreeSet<String>,
     /// Bring-your-own-model endpoint config (PR 10). Env defaults
     /// (`FICSIT_AI_BASE_URL` / `FICSIT_AI_MODEL` / `FICSIT_AI_KEY`), grown
     /// from the old `ai_key` field. IN MEMORY ONLY — the key is never
@@ -361,6 +369,12 @@ impl Session {
             .unlocked()
             .and_then(|s| serde_json::from_str::<BTreeSet<String>>(&s).ok())
             .unwrap_or_default();
+        // Purchased-schematic ids survive restarts the same way (save-derived
+        // fact). Tolerant default: a plan file with no blob hydrates as empty.
+        let purchased_schematics = file
+            .purchased_schematics()
+            .and_then(|s| serde_json::from_str::<BTreeSet<String>>(&s).ok())
+            .unwrap_or_default();
         Ok(Self {
             state,
             undo,
@@ -370,6 +384,7 @@ impl Session {
             slow_solves: BTreeMap::new(),
             advisor,
             unlocked,
+            purchased_schematics,
             ai: crate::ai::AiConfig::from_env(),
         })
     }
@@ -397,6 +412,7 @@ impl Session {
             "viewState": self.file.view_state().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
             "lastImport": self.file.last_import().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
             "unlocked": self.unlocked,
+            "purchasedSchematics": self.purchased_schematics,
         })
     }
 
@@ -1302,6 +1318,16 @@ impl Session {
             self.unlocked = resolved;
             let _ = self.file.set_unlocked(
                 &serde_json::to_string(&self.unlocked).unwrap_or_else(|_| "[]".into()),
+            );
+        }
+        // Capture the RAW purchased-schematic ids (before resolution drops them)
+        // for the milestone_gap family. Same save-derived treatment as
+        // `unlocked`, and the SAME non-empty guard: a transient absent schematic
+        // set must not wipe a prior import's purchases.
+        if !snapshot.unlocked_schematics.is_empty() {
+            self.purchased_schematics = snapshot.unlocked_schematics.iter().cloned().collect();
+            let _ = self.file.set_purchased_schematics(
+                &serde_json::to_string(&self.purchased_schematics).unwrap_or_else(|_| "[]".into()),
             );
         }
         let clusters = crate::import::cluster(&snapshot, &self.gamedata);
@@ -2288,6 +2314,7 @@ impl Session {
             &derived,
             &self.world,
             &self.unlocked,
+            &self.purchased_schematics,
             &self.state.meta.preferences,
         )
     }

@@ -77,8 +77,8 @@ pub enum OpportunityKind {
     RouteBottleneckFix,
     /// Class 3 — a grid is one spike from a brownout (trending broken).
     PowerMargin,
-    /// Class 4 — the next milestone purchase needs an item you under-produce.
-    /// HONEST-SILENT today: see [`milestone_gap`].
+    /// Class 4 — the next unpurchased HUB milestone needs an item the empire
+    /// under-produces (broken → milestone → savings): see [`milestone_gap`].
     MilestoneGap,
     /// Class 5 — an unlocked alternate saves machines empire-wide (savings).
     AltAdopt,
@@ -530,25 +530,93 @@ fn power_margin(derived: &Derived, prefs: &NextPreferences, out: &mut Vec<Candid
     }
 }
 
-/// Class 4 — `milestone_gap`: HONEST-SILENT, deliberately. The family needs
-/// two inputs that do not exist at runtime today, and inventing either would
-/// violate the never-guess rule:
+/// Empire-wide gross OUTPUT rate of `item` — summed over every group's derived
+/// `out_rates` across all factories. The same accessor the power rollups
+/// (`gen_of` / `total_generation_mw`) use for POWER_ITEM; pure over `derived`,
+/// no re-solve, and gross production is the honest "how much the empire makes"
+/// figure (matching buildqueue's "milestone built = gross production").
+fn empire_output(derived: &Derived, item: &str) -> f64 {
+    derived
+        .factories
+        .values()
+        .flat_map(|f| f.groups.values())
+        .filter_map(|g| g.out_rates.get(item).copied())
+        .sum()
+}
+
+/// Class 4 — `milestone_gap`: the single next HUB milestone the empire can't
+/// yet build from an hour of its own production. The next milestone is the
+/// lowest UNPURCHASED one by `(tier, class_name)` (tier ≠ ClassName prefix in a
+/// few cases, so order by the parsed tier). For each costed item, `gap =
+/// max(0, qty − 60·production)` — units still short of a one-hour build at the
+/// empire's current OUTPUT rate; the largest-gap item is surfaced with a
+/// WizardGoal producing the remainder in ~60 min (`(gap / 60).ceil()`, a clean
+/// ≥1 number, the deficit_repair grammar).
 ///
-/// 1. gamedata carries NO schematic milestone costs — `GameData.schematics`
-///    maps schematic class → unlocked RECIPE classes only (docs.rs parses
-///    `mUnlocks`, not `mCost` quantities or tier structure);
-/// 2. the session persists NO purchased-schematic set — import resolves
-///    `unlocked_schematics × FGSchematic` straight into the unlocked RECIPE
-///    set (`Session.unlocked`) and drops the schematic ids.
-///
-/// When both land (BACKLOG: parse `mCost`/tier, persist purchased ids), the
-/// design is: lowest incomplete tier's next unpurchased milestone, diff its
-/// item costs against current empire output rates, surface the largest-gap
-/// item with a WizardGoal whose target rate clears the remaining quantity in
-/// ~60 minutes, rounded UP to a clean number (`(gap / 60).ceil()`).
-fn milestone_gap(_gd: &GameData, _unlocked: &BTreeSet<String>, _out: &mut [Candidate]) {
-    // No schematic costs in gamedata + no purchased-schematic ids in state
-    // ⇒ nothing honest to say. Emit NOTHING (never a guessed number).
+/// HONEST FRAMING: HUB inventory is untracked (the save carries no
+/// lifetime-crafted counter), so we never claim to know what's already stocked
+/// — we help PRODUCE the parts as a rate, and stay SILENT when the empire
+/// already out-produces every cost within an hour (`gap ≤ ε`). Silent, too,
+/// when no milestones are parsed (the trimmed fixture) or all are purchased.
+/// Exactly ONE card — the next milestone — never a per-milestone nag.
+fn milestone_gap(
+    gd: &GameData,
+    purchased: &BTreeSet<String>,
+    derived: &Derived,
+    out: &mut Vec<Candidate>,
+) {
+    // Next milestone = lowest unpurchased by (tier, class_name). None left (all
+    // purchased, or none parsed) → honest silence.
+    let Some((class, m)) = gd
+        .milestones
+        .iter()
+        .filter(|(id, _)| !purchased.contains(id.as_str()))
+        .min_by(|(a_id, a), (b_id, b)| a.tier.cmp(&b.tier).then_with(|| a_id.cmp(b_id)))
+    else {
+        return;
+    };
+    // Largest-gap cost item: gap = max(0, qty − 60·production). Deterministic
+    // tie-break by item class so the pick is stable across re-fetches.
+    let mut best: Option<(f64, &String, f64, f64)> = None; // (gap, item, qty, produced)
+    for (item, qty) in &m.cost {
+        // A production rate is never negative; clamp float noise. The trailing
+        // `+ 0.0` normalizes a signed -0.0 (an empty/near-zero solve — and LLVM
+        // fmax can pass -0.0 through `.max`) to +0.0, so the evidence never
+        // reads "makes -0/min".
+        let produced = empire_output(derived, item).max(0.0) + 0.0;
+        let gap = (qty - produced * 60.0).max(0.0);
+        let replace = match &best {
+            None => true,
+            Some((bg, bi, _, _)) => gap > *bg || (gap == *bg && item < *bi),
+        };
+        if replace {
+            best = Some((gap, item, *qty, produced));
+        }
+    }
+    let Some((gap, item, qty, produced)) = best else {
+        return; // no resolvable cost entries — silence
+    };
+    if gap <= EPS {
+        return; // the empire already out-produces every cost within an hour
+    }
+    out.push(Candidate {
+        class: 4,
+        magnitude: gap,
+        opp: Opportunity {
+            id: format!("milestone_gap:{class}"),
+            kind: OpportunityKind::MilestoneGap,
+            title: format!("Advance to {} (Tier {})", m.display_name, m.tier),
+            evidence: format!(
+                "needs {qty} {}; empire makes {produced:.0}/min — {gap:.0} short of a 1-hour build",
+                item_name(gd, item)
+            ),
+            item: Some(item.clone()),
+            action: OpportunityAction::WizardGoal {
+                item: item.clone(),
+                rate: (gap / 60.0).ceil(),
+            },
+        },
+    });
 }
 
 /// Class 5 — `alt_adopt`: the TOP alternate-recipe opportunity by machines
@@ -882,6 +950,7 @@ pub fn derive_opportunities(
     derived: &Derived,
     world: &WorldSnapshot,
     unlocked: &BTreeSet<String>,
+    purchased: &BTreeSet<String>,
     prefs: &NextPreferences,
 ) -> Vec<Opportunity> {
     let mut cands: Vec<Candidate> = Vec::new();
@@ -889,7 +958,7 @@ pub fn derive_opportunities(
     deficit_repair(state, gd, derived, &mut cands);
     route_bottleneck_fix(state, gd, derived, prefs, &mut cands);
     power_margin(derived, prefs, &mut cands);
-    milestone_gap(gd, unlocked, &mut cands);
+    milestone_gap(gd, purchased, derived, &mut cands);
     alt_adopt(state, gd, unlocked, &mut cands);
     under_extracted(state, gd, derived, world, &mut cands);
     untapped_node(state, gd, world, &mut cands);
