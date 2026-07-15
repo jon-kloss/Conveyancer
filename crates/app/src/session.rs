@@ -295,8 +295,11 @@ pub struct Session {
     /// meta KV store, OUTSIDE the undo journal / plan_hash (a save-derived fact,
     /// not canonical plan state). Empty when no save with schematics is imported.
     pub unlocked: BTreeSet<String>,
-    /// Model API key (env `FICSIT_AI_KEY`; OS keychain when the shell wires it).
-    pub ai_key: Option<String>,
+    /// Bring-your-own-model endpoint config (PR 10). Env defaults
+    /// (`FICSIT_AI_BASE_URL` / `FICSIT_AI_MODEL` / `FICSIT_AI_KEY`), grown
+    /// from the old `ai_key` field. IN MEMORY ONLY — the key is never
+    /// serialized, logged, or persisted (v1; keychain is the shell's later).
+    pub ai: crate::ai::AiConfig,
 }
 
 impl Session {
@@ -357,9 +360,7 @@ impl Session {
             slow_solves: BTreeMap::new(),
             advisor,
             unlocked,
-            ai_key: std::env::var("FICSIT_AI_KEY")
-                .ok()
-                .filter(|k| !k.is_empty()),
+            ai: crate::ai::AiConfig::from_env(),
         })
     }
 
@@ -1461,7 +1462,10 @@ impl Session {
     /// that reopens the proposal revives the card for free. Non-Review cards
     /// pass through untouched; mutes/pause/budget are the gate's as-is.
     pub fn advisor_feed(&self) -> AdvisorFeed {
-        let mut feed = self.advisor.feed(self.ai_key.is_some());
+        // ai_ready gates on configured() (base + model), not on the key —
+        // keyless endpoints (Ollama / LM Studio) are first-class, and the
+        // OFFLINE chip must agree with the ranking layer's own gate.
+        let mut feed = self.advisor.feed(self.ai.configured());
         feed.cards.retain(|c| match &c.cta {
             Some(crate::advisor::CardCta::Review { proposal }) => self
                 .state

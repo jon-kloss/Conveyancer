@@ -6,6 +6,8 @@ import { applyPatches } from "./patch";
 import type {
   AdoptOutcome,
   AdvisorFeed,
+  AiConfigPublic,
+  AiConfigUpdate,
   AltOpportunity,
   AuditTab,
   Command,
@@ -18,6 +20,7 @@ import type {
   LastImport,
   Opportunity,
   Plan,
+  RankResponse,
   ViewState,
   World,
 } from "./types";
@@ -121,6 +124,14 @@ export interface AppStore {
   unlocked: Set<string>;
   /** resume dashboard overlay — auto-presents once per plan (viewState.resumeSeen) */
   dashboardOpen: boolean;
+  /** PR 10 (review M7): App's Escape-deference flag for the AI-settings
+      popover — the same pattern as `wizard.open`/`reviewing`. The popover
+      layers OVER the dashboard, but App's capture-phase window handler fires
+      before any later-registered listener, so the popover registers its
+      open-ness here and App closes IT first (one Escape, one layer). Cleared
+      by AiSettings on unmount so the flag never leaks across dashboard
+      closes. */
+  aiSettingsOpen: boolean;
   /** pending "open the audit drawer on this tab" request (PR 9 openAudit
       action). The drawer's open flag lives in App.tsx local state, so this is
       the one store-visible signal: App opens the drawer when it appears, the
@@ -133,6 +144,9 @@ export interface AppStore {
       — lets the request survive the MapView remount when a SHOW lands while
       the app is in graph view. */
   flyTo: { x: number; y: number } | null;
+  /** PR 10: public model-config view (hasKey, never the key) — fetched lazily
+      when the dashboard opens; null until then / on refusal. */
+  aiConfig: AiConfigPublic | null;
 
   hydrate(): Promise<void>;
   /** Resolves with the created ids, or null when the backend refused the
@@ -156,6 +170,7 @@ export interface AppStore {
   setAdvisor(feed: AdvisorFeed): void;
   setAdvisorOpen(open: boolean): void;
   setDashboardOpen(open: boolean): void;
+  setAiSettingsOpen(open: boolean): void;
   /** mark a build-queue step done/undone (manual override), or clear it back
       to derived with `null` — one undoable step (SetBuildDone). */
   markBuildDone(id: Id, done: boolean | null): Promise<void>;
@@ -175,6 +190,15 @@ export interface AppStore {
   optimizeAdopt(recipe: string): Promise<AdoptOutcome | null>;
   /** PR 9: fetch the ranked next-move list (read-only; [] on refusal). */
   nextMoves(): Promise<Opportunity[]>;
+  /** PR 10: rank-and-narrate NEXT MOVES over the same candidates. Always
+      answers a list; a failed model call surfaces via the status-bar chip and
+      falls back to the heuristic order (never blocks the dashboard). */
+  rankMoves(): Promise<RankResponse>;
+  /** PR 10: refresh the public model-config view. */
+  fetchAiConfig(): Promise<void>;
+  /** PR 10: save the model config (in-memory backend-side; key write-only).
+      Returns true on success; refusals land in cmdError. */
+  saveAiConfig(update: AiConfigUpdate): Promise<boolean>;
   /** PR 9: ask for the audit drawer on a specific tab (openAudit action). */
   openAuditTab(tab: AuditTab): void;
   clearAuditRequest(): void;
@@ -209,8 +233,10 @@ export const useStore = create<AppStore>((set, get) => ({
   lastImport: null,
   unlocked: new Set(),
   dashboardOpen: false,
+  aiSettingsOpen: false,
   auditRequest: null,
   flyTo: null,
+  aiConfig: null,
 
   async hydrate() {
     try {
@@ -362,6 +388,10 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ dashboardOpen: open });
   },
 
+  setAiSettingsOpen(open) {
+    set({ aiSettingsOpen: open });
+  },
+
   async markBuildDone(id, done) {
     // One undoable step: SetBuildDone upserts (Some) or clears (null) the
     // override; the response patches /buildOverrides and the derived queue.
@@ -414,6 +444,40 @@ export const useStore = create<AppStore>((set, get) => ({
     } catch (e) {
       get().reportCmdError(errText(e));
       return [];
+    }
+  },
+
+  // PR 10: same read-only species as nextMoves. A backend refusal degrades to
+  // an empty heuristic list; a model-call failure arrives as `error` on an
+  // otherwise-usable heuristic response — surface it on the status-bar chip
+  // and keep rendering (fail-quiet + surfaced, never wedged).
+  async rankMoves() {
+    let resp: RankResponse;
+    try {
+      resp = await backend.nextRank();
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return { engine: "heuristic", opportunities: [] };
+    }
+    if (resp.error) get().reportCmdError(resp.error);
+    return resp;
+  },
+
+  async fetchAiConfig() {
+    try {
+      set({ aiConfig: await backend.aiConfig() });
+    } catch {
+      // fail-quiet: the chip just reads AI: OFF until the backend answers
+    }
+  },
+
+  async saveAiConfig(update) {
+    try {
+      set({ aiConfig: await backend.setAiConfig(update) });
+      return true;
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return false;
     }
   },
 
@@ -485,6 +549,15 @@ export const useStore = create<AppStore>((set, get) => ({
     }));
   },
 }));
+
+// e2e observability (dev server only): the w4 spec pins the M5 merge path —
+// a planHash change while the dashboard is open must NOT re-call the model —
+// which requires a REAL in-page dispatch (external /api/edit calls from the
+// test fixture never reach this store; the dev bridge has no SSE push). The
+// hook exposes nothing the dev tools couldn't already reach.
+if (import.meta.env.DEV) {
+  (window as Window & { __ficsitStore?: typeof useStore }).__ficsitStore = useStore;
+}
 
 /** Solve-time chip content for a factory (A4: always present, always honest). */
 export function solveChip(df: DerivedFactory | undefined): { text: string; over: boolean } {

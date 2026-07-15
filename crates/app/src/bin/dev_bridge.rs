@@ -58,6 +58,31 @@ fn main() -> anyhow::Result<()> {
         let mut body = String::new();
         let _ = request.as_reader().read_to_string(&mut body);
 
+        // PR 10: /api/next/rank is the ONLY endpoint allowed off the serial
+        // loop — the provider round-trip can take whole seconds and must
+        // never block hydrate/edit behind it. Prepare (candidates + config
+        // snapshot) runs under the same single-lock discipline as everything
+        // else; only the blocking HTTP call moves to a throwaway thread,
+        // which responds by itself (tiny_http's documented pattern —
+        // `Request` is Send and `respond` consumes it).
+        if method == Method::Post && url == "/api/next/rank" {
+            let prep = {
+                let mut s = session.lock().unwrap();
+                app::ai::prepare_rank(&mut s)
+            };
+            match prep {
+                app::ai::RankPrep::Done(resp) => {
+                    let _ = request.respond(ok(&resp));
+                }
+                app::ai::RankPrep::Call(job) => {
+                    std::thread::spawn(move || {
+                        let _ = request.respond(ok(&app::ai::execute_rank(job)));
+                    });
+                }
+            }
+            continue;
+        }
+
         let response = if method == Method::Options {
             json_response(204, String::new())
         } else {
@@ -202,6 +227,16 @@ fn main() -> anyhow::Result<()> {
                 // solve (same species as the advisor feed) — nothing persisted.
                 (Method::Get, "/api/next") => {
                     ok(&serde_json::json!({ "opportunities": s.next_moves() }))
+                }
+                // ---- PR 10 bring-your-own-model ranking ----
+                // Config lives in memory on the Session; the GET view never
+                // carries the key (hasKey boolean only — key hygiene).
+                (Method::Get, "/api/ai/config") => ok(&app::ai::config_public(&s)),
+                (Method::Post, "/api/ai/config") => {
+                    match serde_json::from_str::<app::ai::AiConfigUpdate>(&body) {
+                        Ok(update) => ok(&app::ai::set_config(&mut s, update)),
+                        Err(e) => err(400, e),
+                    }
                 }
                 // ---- W2b-D empire alternate-recipe optimizer ----
                 // Read-only ranked opportunities (empty in the fixture — no

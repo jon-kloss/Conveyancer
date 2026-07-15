@@ -5,6 +5,8 @@
 import type {
   AdoptOutcome,
   AdvisorFeed,
+  AiConfigPublic,
+  AiConfigUpdate,
   AltOpportunity,
   ChatReply,
   ChatScope,
@@ -20,6 +22,7 @@ import type {
   Opportunity,
   Proposal,
   ProposalConsequence,
+  RankResponse,
   RouteKind,
   TrainAnswer,
   ViewState,
@@ -55,6 +58,13 @@ export interface Backend {
   optimizeAdopt(recipe: string): Promise<AdoptOutcome>;
   /** PR 9: ranked next-move opportunities — a derived, read-only projection. */
   nextMoves(): Promise<Opportunity[]>;
+  /** PR 10: rank-and-narrate over the SAME candidates as nextMoves. Always
+   *  answers — unconfigured or failed model calls return the heuristic list. */
+  nextRank(): Promise<RankResponse>;
+  /** PR 10: public model-config view (hasKey boolean, never the key). */
+  aiConfig(): Promise<AiConfigPublic>;
+  /** PR 10: set the in-memory model config (nothing persisted in v1). */
+  setAiConfig(update: AiConfigUpdate): Promise<AiConfigPublic>;
   importRun(snapshot: ImportSnapshot): Promise<ImportOutcome>;
   advisorDismiss(id: string): Promise<AdvisorFeed>;
   advisorUnmute(rule: string): Promise<AdvisorFeed>;
@@ -128,6 +138,15 @@ class TauriBackend implements Backend {
   }
   nextMoves() {
     return this.invoke<Opportunity[]>("next_moves");
+  }
+  nextRank() {
+    return this.invoke<RankResponse>("next_rank");
+  }
+  aiConfig() {
+    return this.invoke<AiConfigPublic>("ai_config_get");
+  }
+  setAiConfig(update: AiConfigUpdate) {
+    return this.invoke<AiConfigPublic>("ai_config_set", { update });
   }
   importRun(snapshot: ImportSnapshot) {
     return this.invoke<ImportOutcome>("import_run", { snapshot });
@@ -220,6 +239,15 @@ class BridgeBackend implements Backend {
   async nextMoves() {
     const r = await this.call<{ opportunities: Opportunity[] }>("next");
     return r.opportunities;
+  }
+  nextRank() {
+    return this.call<RankResponse>("next/rank", { method: "POST" });
+  }
+  aiConfig() {
+    return this.call<AiConfigPublic>("ai/config");
+  }
+  setAiConfig(update: AiConfigUpdate) {
+    return this.call<AiConfigPublic>("ai/config", { method: "POST", body: JSON.stringify(update) });
   }
   importRun(snapshot: ImportSnapshot) {
     return this.call<ImportOutcome>("import/run", { method: "POST", body: JSON.stringify(snapshot) });
