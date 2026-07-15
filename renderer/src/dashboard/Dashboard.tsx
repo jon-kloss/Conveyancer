@@ -13,10 +13,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtRate } from "../lib/format";
-import type { BuildStep, Cutover, CutoverPlan, CutoverStep } from "../state/types";
+import ItemIcon from "../lib/ItemIcon";
+import type { BuildStep, Cutover, CutoverPlan, CutoverStep, Opportunity, OpportunityKind } from "../state/types";
 import "./dashboard.css";
 
 const GLYPH: Record<string, string> = { pending: "◇", partial: "◈", done: "◆" };
+
+/** Family chip labels for NEXT MOVES cards (PR 9). */
+const MOVE_LABEL: Record<OpportunityKind, string> = {
+  power_deficit: "POWER",
+  deficit_repair: "DEFICIT",
+  route_bottleneck_fix: "ROUTE",
+  power_margin: "MARGIN",
+  milestone_gap: "MILESTONE",
+  alt_adopt: "ALT",
+  under_extracted: "CLOCK",
+  untapped_node: "NODE",
+};
 
 const CUTOVER_PHASES = [
   { key: "build_new", label: "BUILD NEW" },
@@ -36,6 +49,11 @@ export default function Dashboard() {
   const setWizard = useStore((s) => s.setWizard);
   const markBuildDone = useStore((s) => s.markBuildDone);
   const cutoverPlan = useStore((s) => s.cutoverPlan);
+  const nextMoves = useStore((s) => s.nextMoves);
+  const openAuditTab = useStore((s) => s.openAuditTab);
+  const requestFly = useStore((s) => s.requestFly);
+  const world = useStore((s) => s.world);
+  const planHash = useStore((s) => s.planHash);
 
   const itemName = (cls: string) => gamedata.items[cls]?.displayName ?? cls;
   const queue = derived.buildQueue;
@@ -69,6 +87,24 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutoverSig, cutoverPlan]);
 
+  // NEXT MOVES (PR 9): fetched LAZILY when the dashboard opens — this
+  // component only mounts while dashboardOpen, so mount-fetch IS open-fetch,
+  // and unmount discards the list (no stale cards from a previous plan).
+  // null = still loading → the section stays hidden (no spinner flash).
+  const [moves, setMoves] = useState<Opportunity[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    void nextMoves().then((m) => {
+      if (live) setMoves(m);
+    });
+    return () => {
+      live = false;
+    };
+    // planHash: refetch when an edit lands while the dashboard is open — a
+    // card whose subject vanished refreshes away instead of dead-clicking;
+    // the in-flight click window stays fail-quiet.
+  }, [nextMoves, planHash]);
+
   const doneCount = useMemo(() => queue.filter((s) => s.done).length, [queue]);
   const partial = useMemo(() => queue.filter((s) => s.state === "partial"), [queue]);
   const nextStep = useMemo(() => queue.find((s) => !s.done), [queue]);
@@ -86,6 +122,60 @@ export default function Dashboard() {
   );
 
   const dismiss = () => setDashboardOpen(false);
+
+  // Where the camera should land for a select action (M5). Node resolution
+  // uses the SAME precedence as the Rust untapped ranking (post-L3): a cave
+  // node's ENTRANCE always wins (you route via it), the plan-local override
+  // corrects entrance-less nodes, else the catalog x/y. Missing subject →
+  // null (fail-quiet: the selection still dispatches, the map just doesn't
+  // pan — same contract as a GO THERE onto a deleted step).
+  const movePos = (a: Opportunity["action"]): { x: number; y: number } | null => {
+    if (a.kind === "selectFactory") return plan.factories[a.id]?.position ?? null;
+    if (a.kind === "selectNode") {
+      const n = world.nodes.find((w) => w.id === a.id);
+      const pos = n?.entrance ?? plan.nodeOverrides[a.id]?.pos ?? n;
+      return pos ? { x: pos.x, y: pos.y } : null;
+    }
+    if (a.kind === "selectRoute") {
+      const p = plan.routes[a.id]?.path ?? [];
+      if (p.length === 0) return null;
+      // path midpoint: middle vertex, or the average of the middle pair
+      const lo = p[Math.floor((p.length - 1) / 2)];
+      const hi = p[Math.ceil((p.length - 1) / 2)];
+      return { x: (lo.x + hi.x) / 2, y: (lo.y + hi.y) / 2 };
+    }
+    return null;
+  };
+
+  // NEXT MOVES actions — every one lands on an existing pipe: the wizard
+  // prefill (FIX WITH SOLVER pattern), a map selection (same as GO THERE) plus
+  // a camera fly to the subject, or an audit tab. The dashboard always
+  // dismisses so the target shows through.
+  const actMove = (o: Opportunity) => {
+    const a = o.action;
+    if (a.kind === "wizardGoal") {
+      dismiss();
+      setWizard({ open: true, prefill: { item: a.item, rate: a.rate } });
+    } else if (a.kind === "selectRoute" || a.kind === "selectNode" || a.kind === "selectFactory") {
+      setView({ mode: "map" });
+      setSelection(
+        a.kind === "selectRoute"
+          ? { kind: "route", id: a.id }
+          : a.kind === "selectNode"
+            ? { kind: "node", id: a.id }
+            : { kind: "factory", id: a.id },
+      );
+      const pos = movePos(a);
+      if (pos) requestFly(pos);
+      dismiss();
+    } else {
+      dismiss();
+      openAuditTab(a.tab);
+    }
+  };
+
+  const moveVerb = (o: Opportunity) =>
+    o.action.kind === "wizardGoal" ? "PLAN IT" : o.action.kind === "openAudit" ? "OPEN" : "SHOW";
 
   // "go there" — reveal the step on the underlying view, then dismiss so the
   // restored map/factory shows through unchanged.
@@ -312,6 +402,37 @@ export default function Dashboard() {
               </div>
             )}
           </section>
+
+          {/* NEXT MOVES (PR 9): ranked opportunities from derived state.
+              Hidden entirely when empty — a healthy finished base shows
+              nothing here (honest quiet), and while loading (moves null). */}
+          {moves && moves.length > 0 && (
+            <section className="dash-section" data-testid="next-moves">
+              <h3 className="t-label">NEXT MOVES ({moves.length})</h3>
+              {moves.slice(0, 3).map((o) => (
+                <div className="dash-move" key={o.id} data-testid="next-move">
+                  <span className="dash-badge dash-move-kind">{MOVE_LABEL[o.kind]}</span>
+                  {o.item && (
+                    <ItemIcon item={o.item} displayName={gamedata.items[o.item]?.displayName} size={20} />
+                  )}
+                  <span className="dash-step-main">
+                    <span className="dash-step-label">{o.title}</span>
+                    <span className="dash-step-detail mono" data-testid="next-move-evidence">
+                      {o.evidence}
+                    </span>
+                  </span>
+                  <button className="chip warn dash-move-act" data-testid="next-move-action" onClick={() => actMove(o)}>
+                    {moveVerb(o)}
+                  </button>
+                </div>
+              ))}
+              {moves.length > 3 && (
+                <div className="dash-line mono dim" data-testid="next-moves-more">
+                  +{moves.length - 3} more
+                </div>
+              )}
+            </section>
+          )}
 
           {/* what's next */}
           {nextStep && (

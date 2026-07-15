@@ -26,6 +26,7 @@ export default function App() {
   const reviewingProposal = useStore((s) => (s.reviewing ? s.plan.proposals[s.reviewing] ?? null : null));
   const dashboardOpen = useStore((s) => s.dashboardOpen);
   const emptyPlan = useStore((s) => Object.keys(s.plan.factories).length === 0);
+  const auditRequest = useStore((s) => s.auditRequest);
   const hydrate = useStore((s) => s.hydrate);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -64,6 +65,13 @@ export default function App() {
       st.setDashboardOpen(true);
     }
   }, [ready]);
+
+  // PR 9 openAudit action: the drawer's open flag is local state here, so a
+  // store-level request opens it; the drawer itself selects the requested tab
+  // and clears the request.
+  useEffect(() => {
+    if (auditRequest) setAuditOpen(true);
+  }, [auditRequest]);
 
   // Backstop: a rejection that escaped every local handler still lands in
   // the status-bar chip instead of dying silently in the console.

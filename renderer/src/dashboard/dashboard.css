@@ -173,6 +173,27 @@
   margin-left: auto;
 }
 
+/* NEXT MOVES (PR 9): one ranked opportunity card — same anatomy as a step
+   row (label + mono evidence) with a family chip and one action. */
+.dash-move {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+}
+.dash-move:hover {
+  background: var(--steel-800);
+}
+.dash-move-kind {
+  width: 72px;
+  text-align: center;
+}
+.dash-move-act {
+  flex: none;
+  margin-left: auto;
+}
+
 /* W2a cutover timeline: one card per refactor, phases stacked */
 .dash-cutover {
   padding: 8px;

@@ -203,6 +203,13 @@ fn optimize_adopt(
     state.0.lock().unwrap().optimize_adopt(&recipe)
 }
 
+/// PR 9: ranked next-move opportunities — a read-only projection computed on
+/// demand over a fresh solve (nothing persisted, nothing undoable).
+#[tauri::command]
+fn next_moves(state: State<AppState>) -> Vec<app::opportunities::Opportunity> {
+    state.0.lock().unwrap().next_moves()
+}
+
 /// Task #49: read-only trains-needed answer for a PROSPECTIVE route (no route
 /// is created). Reuses the canonical transport math from the two factory pins.
 #[tauri::command]
@@ -261,6 +268,7 @@ fn main() {
             cutover_downtime,
             optimize_empire,
             optimize_adopt,
+            next_moves,
             route_calc
         ])
         .run(tauri::generate_context!())
