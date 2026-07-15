@@ -6,10 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:wasm": "cd .. && wasm-pack build crates/web --target web --out-dir ../../renderer/src/wasm/web-pkg --out-name web --release",
+    "build:web": "pnpm build:wasm && tsc -b && vite build --mode web",
     "preview": "vite preview",
+    "preview:web": "vite preview --outDir dist-web",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:web": "playwright test --config playwright.web.config.ts"
   },
   "dependencies": {
     "@etothepii/satisfactory-file-parser": "^4.1.1",

@@ -286,4 +286,17 @@ class BridgeBackend implements Backend {
   }
 }
 
-export const backend: Backend = isTauri() ? new TauriBackend() : new BridgeBackend();
+// Transport selection. A WEB build sets `VITE_BACKEND=wasm` (a
+// statically-replaced flag), which selects the WasmBackend — the wasm Session
+// in a Web Worker over IndexedDB — checked BEFORE the Tauri/Bridge split. The
+// import is dynamic + branch-guarded so a desktop/dev build eliminates the
+// whole wasm module (worker + .wasm) and stays byte-for-byte the old build.
+async function selectBackend(): Promise<Backend> {
+  if (__WASM_BACKEND__) {
+    const { WasmBackend } = await import("./wasmBackend");
+    return new WasmBackend();
+  }
+  return isTauri() ? new TauriBackend() : new BridgeBackend();
+}
+
+export const backend: Backend = await selectBackend();

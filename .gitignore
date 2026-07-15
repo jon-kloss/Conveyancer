@@ -6,3 +6,7 @@ dev-world.ficsit*
 renderer/test-results/
 renderer/playwright-report/
 renderer/tsconfig.tsbuildinfo
+
+# Web (--mode web) build output
+renderer/dist-web
+renderer/playwright-report/

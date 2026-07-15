@@ -1,0 +1,166 @@
+// WasmBackend (Web Phase 3): the THIRD transport behind the `Backend`
+// interface, alongside TauriBackend (IPC) and BridgeBackend (HTTP). It posts
+// `{ id, cmd, args }` to the wasm session worker (wasmWorker.ts) and awaits the
+// id-correlated reply from a small promise registry. Command names + arg shapes
+// mirror the wasm `dispatch` router, which itself mirrors the dev-bridge route
+// table — so this transport is a 1:1 restatement of BridgeBackend over
+// worker-RPC instead of HTTP.
+//
+// This module is imported ONLY when `import.meta.env.VITE_BACKEND === "wasm"`
+// (a statically-replaced flag), via a dynamic import in backend.ts, so a
+// desktop/dev build eliminates it and never bundles the worker or the wasm.
+
+import type {
+  AdoptOutcome,
+  AdvisorFeed,
+  AiConfigPublic,
+  AiConfigUpdate,
+  AltOpportunity,
+  ChatReply,
+  ChatScope,
+  Command,
+  ContextSnapshot,
+  CutoverPlan,
+  EditResponse,
+  Id,
+  ImportOutcome,
+  ImportSnapshot,
+  InitPayload,
+  JobProgress,
+  NextPreferences,
+  Opportunity,
+  PreferencesView,
+  Proposal,
+  ProposalConsequence,
+  RankResponse,
+  RouteKind,
+  TrainAnswer,
+  ViewState,
+  WizardGoal,
+} from "./types";
+import type { Backend, PlanReplacementResult } from "./backend";
+
+interface WorkerReply {
+  id: number;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+export class WasmBackend implements Backend {
+  private worker: Worker;
+  private seq = 0;
+  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+  constructor() {
+    this.worker = new Worker(new URL("./wasmWorker.ts", import.meta.url), { type: "module" });
+    this.worker.onmessage = (e: MessageEvent<WorkerReply>) => {
+      const { id, ok, result, error } = e.data;
+      const p = this.pending.get(id);
+      if (!p) return;
+      this.pending.delete(id);
+      if (ok) p.resolve(result);
+      else p.reject(new Error(error ?? "wasm session error"));
+    };
+    // A worker-level failure (bad wasm load, uncaught throw) must reject every
+    // in-flight call rather than hang the UI on a promise that never settles.
+    this.worker.onerror = (e) => {
+      const err = new Error(e.message || "wasm session worker crashed");
+      for (const [, p] of this.pending) p.reject(err);
+      this.pending.clear();
+    };
+  }
+
+  private call<T>(cmd: string, args?: unknown): Promise<T> {
+    const id = ++this.seq;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.worker.postMessage({ id, cmd, args });
+    });
+  }
+
+  hydrate() {
+    return this.call<InitPayload>("hydrate");
+  }
+  edit(cmds: Command[]) {
+    return this.call<EditResponse>("edit", { cmds });
+  }
+  undo() {
+    return this.call<EditResponse | null>("undo");
+  }
+  redo() {
+    return this.call<EditResponse | null>("redo");
+  }
+  async setViewState(v: ViewState) {
+    await this.call("set_view_state", v);
+  }
+  async wizardSolve(goal: WizardGoal) {
+    const r = await this.call<{ jobId: string }>("wizard_solve", goal);
+    return r.jobId;
+  }
+  wizardProgress(jobId: string, after: number) {
+    return this.call<JobProgress>("wizard_progress", { jobId, after });
+  }
+  async wizardCancel(jobId: string) {
+    await this.call("wizard_cancel", { jobId });
+  }
+  async t2Optimize(factory: string) {
+    const r = await this.call<{ proposal: Proposal | null }>("t2_optimize", { factory });
+    return r.proposal;
+  }
+  proposalAccept(id: string) {
+    return this.call<EditResponse>("proposal_accept", { id });
+  }
+  proposalEval(id: string) {
+    return this.call<ProposalConsequence>("proposal_eval", { id });
+  }
+  planReplacement(factory: string) {
+    return this.call<PlanReplacementResult>("plan_replacement", { factory });
+  }
+  cutoverPlan(factory: string) {
+    return this.call<CutoverPlan>("cutover_plan", { factory });
+  }
+  optimizeEmpire() {
+    return this.call<AltOpportunity[]>("optimize_empire");
+  }
+  optimizeAdopt(recipe: string) {
+    return this.call<AdoptOutcome>("optimize_adopt", { recipe });
+  }
+  async nextMoves() {
+    const r = await this.call<{ opportunities: Opportunity[] }>("next_moves");
+    return r.opportunities;
+  }
+  nextRank() {
+    return this.call<RankResponse>("next_rank");
+  }
+  setPreferences(prefs: NextPreferences) {
+    return this.call<PreferencesView>("set_next_preferences", prefs);
+  }
+  aiConfig() {
+    return this.call<AiConfigPublic>("ai_config_get");
+  }
+  setAiConfig(update: AiConfigUpdate) {
+    return this.call<AiConfigPublic>("ai_config_set", update);
+  }
+  importRun(snapshot: ImportSnapshot) {
+    return this.call<ImportOutcome>("import_run", snapshot);
+  }
+  advisorDismiss(id: string) {
+    return this.call<AdvisorFeed>("advisor_dismiss", { id });
+  }
+  advisorUnmute(rule: string) {
+    return this.call<AdvisorFeed>("advisor_unmute", { rule });
+  }
+  advisorPause(paused: boolean) {
+    return this.call<AdvisorFeed>("advisor_pause", { paused });
+  }
+  chatSend(scope: ChatScope, message: string) {
+    return this.call<ChatReply>("chat_send", { scope, message });
+  }
+  chatContext(scope: ChatScope) {
+    return this.call<ContextSnapshot>("chat_context", scope);
+  }
+  routeCalc(from: Id, to: Id, kind: RouteKind, demandPerMin: number, item: string | null) {
+    return this.call<TrainAnswer | null>("route_calc", { from, to, kind, demandPerMin, item });
+  }
+}
