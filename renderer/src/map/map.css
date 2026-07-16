@@ -655,6 +655,57 @@
   font-size: 11px;
   color: var(--ink-500);
 }
+/* Auto-sync toggle: a status dot + an interval chip row when enabled. The block
+   groups the toggle button and its chips so the bottom border reads as one row. */
+.data-menu-block {
+  border-bottom: 1px solid var(--steel-700);
+}
+.data-menu-block .data-menu-item {
+  border-bottom: none;
+}
+.autosync-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 6px;
+  vertical-align: middle;
+  background: var(--steel-600);
+}
+.autosync-dot.on {
+  background: var(--signal-orange, #ff7a1a);
+  box-shadow: 0 0 6px var(--signal-orange, #ff7a1a);
+}
+.autosync-intervals {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 10px 12px;
+}
+.autosync-label {
+  font-size: 10.5px;
+  color: var(--ink-500);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.autosync-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--steel-600);
+  color: var(--ink-300);
+  background: transparent;
+  cursor: pointer;
+}
+.autosync-chip:hover {
+  border-color: var(--ink-300);
+}
+.autosync-chip.active {
+  border-color: var(--signal-orange, #ff7a1a);
+  color: var(--signal-orange, #ff7a1a);
+  background: color-mix(in srgb, var(--signal-orange, #ff7a1a) 14%, transparent);
+}
 .data-menu-hint {
   padding: 10px 12px;
   background: var(--steel-900);

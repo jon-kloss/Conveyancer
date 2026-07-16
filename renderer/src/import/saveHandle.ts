@@ -136,6 +136,33 @@ export async function pickSaveForSync(): Promise<File | null> {
   return handle.getFile();
 }
 
+/**
+ * Silent re-read for auto-sync: return the retained save File **only** if we
+ * already hold read permission. Never prompts — a timer tick has no user
+ * gesture, so `requestPermission`/`showOpenFilePicker` would throw. Returns
+ * `null` when there is no handle, permission isn't already granted, or the file
+ * is gone; the caller simply skips that tick. (First-grant happens through the
+ * gesture-driven {@link pickSaveForSync}.)
+ */
+export async function readStoredHandleSilently(): Promise<File | null> {
+  const stored = await idbGet<HandleWithPermission>(HANDLE_KEY);
+  if (!stored) return null;
+  try {
+    if (stored.queryPermission && (await stored.queryPermission({ mode: "read" })) !== "granted") {
+      return null;
+    }
+    return await stored.getFile();
+  } catch {
+    return null;
+  }
+}
+
+/** Option B rule: a drift with zero conflicts auto-applies; any mine/theirs
+ *  conflict needs a human, so it goes to review instead. */
+export function driftConflictCount(items: { conflict?: unknown }[]): number {
+  return items.filter((i) => i.conflict).length;
+}
+
 /** Compact "time since" for the last-synced affordance. */
 export function relTime(then: number, now: number = Date.now()): string {
   const s = Math.max(0, Math.round((now - then) / 1000));
