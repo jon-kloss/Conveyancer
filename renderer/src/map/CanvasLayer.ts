@@ -708,22 +708,34 @@ export class MapCanvasLayer extends L.Layer {
    *  that owns it; selection/hover promotes it to signal and names the
    *  factory at the midpoint. Conflicted claims read crit. */
   private drawClaimLinks(ctx: CanvasRenderingContext2D, map: L.Map) {
+    const signal = css("--signal-500");
     for (const link of this.data.claimLinks) {
       const a = map.latLngToContainerPoint(toLatLng(link.node));
       const b = map.latLngToContainerPoint(toLatLng(link.factory));
+      const color = link.conflict
+        ? css("--flow-crit")
+        : link.planned && !link.highlight
+          ? css("--bp-400")
+          : signal;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = link.conflict
-        ? css("--flow-crit")
-        : link.highlight
-          ? css("--signal-500")
-          : link.planned
-            ? css("--bp-400")
-            : css("--steel-600");
-      ctx.lineWidth = link.highlight ? 1.5 : 1;
-      ctx.setLineDash([3, 5]);
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = color;
+      // Glow so the claim path reads over the busy map — strong when the node
+      // or its factory is selected/hovered (trace what this factory uses), a
+      // soft hint at rest so the paths are never invisible dim-steel again.
+      ctx.shadowColor = color;
+      ctx.shadowBlur = link.highlight ? 9 : 4;
+      ctx.lineWidth = link.highlight ? 2 : 1.25;
+      ctx.globalAlpha = link.highlight ? 1 : 0.7;
       ctx.stroke();
+      // crisp core with the glow off, so the dash stays sharp and the blur
+      // never bleeds into the nodes drawn next
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "rgba(0,0,0,0)";
+      ctx.stroke();
+      ctx.globalAlpha = 1;
       ctx.setLineDash([]);
       if (link.highlight) {
         const text = `→ ${link.factoryName.toUpperCase()}`;
