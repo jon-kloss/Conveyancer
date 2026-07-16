@@ -28,14 +28,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The Windows runner's cache-SAVE post-step intermittently fails path
+          # validation ("Path(s) specified ... do not exist"), which marks the
+          # whole exe job failed even though the build compiles and its artifact
+          # uploads fine. Restore still runs (keeps the release build fast); only
+          # the flaky save is disabled, so a build-cache optimization can no
+          # longer fail a green build.
+          save-if: false
       - uses: pnpm/action-setup@v4
         with:
           version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: renderer/pnpm-lock.yaml
+          # NOTE: `cache: pnpm` is intentionally omitted. Its cache-SAVE post-step
+          # is the one hitting the Windows runner's "Path Validation Error: Path(s)
+          # ... do not exist" and failing the whole exe job even though the build
+          # + artifact succeed. This is a build-speed optimization, not a gate;
+          # dropping it (like rust-cache's `save-if: false` above) makes the exe
+          # job robust to the transient cache-service failure.
 
       - name: renderer production bundle (embedded into the exe)
         working-directory: renderer
