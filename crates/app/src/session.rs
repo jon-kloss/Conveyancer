@@ -1843,6 +1843,14 @@ impl Session {
     /// manifests) — all inside the causing command's undo entry.
     fn empire_solve(&mut self, trigger: &T0Edit, mut tx: Option<&mut Transaction>) -> Derived {
         let started = now_us();
+        // Keep this session's world purity in sync with the save-derived overrides
+        // before every solve. This is the single chokepoint every solve funnels
+        // through (import, accept-proposal, and the read-only passes all call it),
+        // so claim rates, the map overlay, and the opportunity/wizard passes read
+        // the authoritative purity (handles randomized/modded nodes) without any
+        // caller having to remember to bake first. Cheap + idempotent; the ambient
+        // asset on disk is never touched.
+        crate::import::apply_purity_overrides(&mut self.world, &self.state.node_overrides);
         let mut derived = Derived::default();
         let (order, cyclic) = self.empire_order();
         derived.empire_cycle = cyclic;
@@ -2344,12 +2352,7 @@ impl Session {
 
     /// Recompute derived state for everything, without touching canonical state.
     pub fn solve_all_readonly(&mut self) -> Derived {
-        // Keep this session's world purity in sync with the save-derived
-        // overrides before every solve, so claim rates, the map overlay, and the
-        // opportunity/wizard passes all read the authoritative purity (handles
-        // randomized/modded nodes). Cheap + idempotent; the ambient asset on
-        // disk is never touched.
-        crate::import::apply_purity_overrides(&mut self.world, &self.state.node_overrides);
+        // Purity sync happens inside empire_solve (the single solve chokepoint).
         self.empire_solve(&T0Edit::Recompute, None)
     }
 

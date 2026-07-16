@@ -496,7 +496,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
               labelY: y,
               pathLen: 72,
             };
-            dimmed = false;
+            // A cross-floor stub is un-dimmed by the floor filter, but a trace
+            // selection still owns it: keep it dim when it's off the traced chain.
+            if (!traceDim) dimmed = false;
           }
         }
       }
