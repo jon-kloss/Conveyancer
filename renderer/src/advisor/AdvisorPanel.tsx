@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore, errText } from "../state/store";
 import { backend } from "../state/backend";
-import { fmtRate } from "../lib/format";
+import { fmtRate, itemLabel } from "../lib/format";
 import NextMovesFeed from "../next/NextMovesFeed";
 import type { AdvisorCard, ChatReply, ChatScope, ContextSnapshot } from "../state/types";
 import "./advisor.css";
@@ -148,7 +148,7 @@ function Feed({ cards, muted }: { cards: AdvisorCard[]; muted: string[] }) {
             <div className="advisor-card-actions">
               {c.cta?.kind === "planProduction" && (
                 <button className="chip warn" onClick={() => act(c)} data-testid="card-cta">
-                  CREATE PROPOSAL — {(gamedata.items[c.cta.item]?.displayName ?? c.cta.item).toUpperCase()}{" "}
+                  CREATE PROPOSAL — {itemLabel(gamedata.items, c.cta.item).toUpperCase()}{" "}
                   {fmtRate(c.cta.rate)}/MIN
                 </button>
               )}

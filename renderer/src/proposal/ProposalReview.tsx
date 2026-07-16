@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { backend } from "../state/backend";
-import { fmtDuration, fmtPower, fmtRate } from "../lib/format";
+import { fmtDuration, fmtPower, fmtRate, itemLabel } from "../lib/format";
 import type { Proposal, ProposalConsequence, ProposalItem } from "../state/types";
 import "./proposal.css";
 
@@ -92,7 +92,7 @@ export default function ProposalReview({ proposal }: { proposal: Proposal }) {
   }, [ordered, cursor, toggle, accept, setReviewing]);
 
   const goalCell = consequence?.goal[0];
-  const itemName = (cls: string) => gamedata.items[cls]?.displayName ?? cls;
+  const itemName = (cls: string) => itemLabel(gamedata.items, cls);
 
   return (
     <div className="prop-review" data-testid="proposal-review">

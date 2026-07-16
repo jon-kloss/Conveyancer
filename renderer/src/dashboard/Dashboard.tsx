@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
-import { fmtRate } from "../lib/format";
+import { fmtRate, itemLabel } from "../lib/format";
 import NextMovesFeed from "../next/NextMovesFeed";
 import type { BuildStep, Cutover, CutoverPlan, CutoverStep } from "../state/types";
 import "./dashboard.css";
@@ -38,7 +38,7 @@ export default function Dashboard() {
   const markBuildDone = useStore((s) => s.markBuildDone);
   const cutoverPlan = useStore((s) => s.cutoverPlan);
 
-  const itemName = (cls: string) => gamedata.items[cls]?.displayName ?? cls;
+  const itemName = (cls: string) => itemLabel(gamedata.items, cls);
   const queue = derived.buildQueue;
   const cutovers = derived.cutovers;
 
