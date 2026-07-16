@@ -244,10 +244,8 @@ export class MapCanvasLayer extends L.Layer {
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size.x, size.y);
-    ctx.strokeStyle = css("--ink-100");
-    ctx.globalAlpha = 0.45;
-    ctx.lineWidth = 2;
     ctx.lineCap = "round";
+    const ink = css("--ink-100");
     const secs = t / 1000;
     for (const r of this.flowingRoutes()) {
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
@@ -255,8 +253,18 @@ export class MapCanvasLayer extends L.Layer {
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
       for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
-      ctx.setLineDash([5, ANIM_PERIOD - 5]);
+      ctx.setLineDash([6, ANIM_PERIOD - 6]);
       ctx.lineDashOffset = -((secs * animSpeed(r.saturation)) % ANIM_PERIOD);
+      // Dark casing first, then the bright beads on top: the casing gives the
+      // light dash a contrasting edge so it stays obvious over the light amber
+      // (under-used) band, where a translucent white dash used to wash out.
+      ctx.strokeStyle = "rgba(6, 10, 14, 0.85)";
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      ctx.strokeStyle = ink;
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 3;
       ctx.stroke();
     }
     ctx.setLineDash([]);

@@ -432,11 +432,14 @@
 .edge-flowing {
   fill: none;
   stroke: var(--ink-100);
-  stroke-opacity: 0.45;
-  stroke-width: 2;
-  stroke-dasharray: 5 13;
+  stroke-opacity: 0.92;
+  stroke-width: 3;
+  stroke-dasharray: 6 12;
   stroke-linecap: round;
   pointer-events: none;
+  /* Dark halo so the light beads stay obvious even on the light amber
+     (under-used) band, where a translucent white dash used to disappear. */
+  filter: drop-shadow(0 0 1.4px rgba(6, 10, 14, 0.95));
   animation: edge-flow var(--flow-speed, 2s) linear infinite;
 }
 @keyframes edge-flow {
