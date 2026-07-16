@@ -312,7 +312,15 @@ fn keep_mine_label_reflects_all_edited_components() {
     let mut s = Session::in_memory(None).unwrap();
     s.import_save(snapshot(
         (0..4)
-            .map(|i| mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0 * i as f64, 0.0, 1.0))
+            .map(|i| {
+                mc(
+                    "Build_SmelterMk1_C",
+                    "Recipe_IngotIron_C",
+                    50.0 * i as f64,
+                    0.0,
+                    1.0,
+                )
+            })
             .collect(),
     ))
     .unwrap();
@@ -334,7 +342,15 @@ fn keep_mine_label_reflects_all_edited_components() {
     let ImportOutcome::Drift { proposal, .. } = s
         .import_save(snapshot(
             (0..6)
-                .map(|i| mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0 * i as f64, 0.0, 1.0))
+                .map(|i| {
+                    mc(
+                        "Build_SmelterMk1_C",
+                        "Recipe_IngotIron_C",
+                        50.0 * i as f64,
+                        0.0,
+                        1.0,
+                    )
+                })
                 .collect(),
         ))
         .unwrap()

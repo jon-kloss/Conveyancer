@@ -849,8 +849,11 @@ pub fn diff_against_built(
                                     count: g.count,
                                     clock: g.clock,
                                 };
-                                let label =
-                                    format!("Δ {} — {} reclocked in game", f.name, item_name(&g.recipe));
+                                let label = format!(
+                                    "Δ {} — {} reclocked in game",
+                                    f.name,
+                                    item_name(&g.recipe)
+                                );
                                 // Conflict iff the user retuned the clock to a value
                                 // the save doesn't match.
                                 match delta

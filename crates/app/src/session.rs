@@ -708,55 +708,54 @@ impl Session {
         let label = format!("accept proposal #{}", p.number);
         let mut tx = Transaction::new(label);
         let mut symbols: BTreeMap<String, Id> = BTreeMap::new();
-        let mut apply_all = |state: &mut PlanState,
-                             tx: &mut Transaction|
-         -> Result<(), SessionError> {
-            for item in ordered_included(&p) {
-                // SaveReimport drift items sync the ◆ Built layer directly
-                // — the one documented exception to accept-creates-◇-only
-                if let Some(sync) = &item.sync {
-                    let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
-                        .map_err(|e| SessionError::Internal(e.to_string()))?;
-                    let take_save = matches!(
-                        item.conflict.as_ref().and_then(|c| c.choice),
-                        Some(planner_core::proposals::ConflictSide::Theirs)
-                    );
-                    crate::import::apply_sync(
-                        state,
-                        tx,
-                        &op,
-                        &p.id,
-                        &self.gamedata,
-                        &self.world,
-                        take_save,
-                    );
-                    continue;
-                }
-                for (idx, cmd) in item.commands.iter().enumerate() {
-                    let resolved =
-                        resolve_aliases(cmd, &symbols).map_err(SessionError::Internal)?;
-                    let t = commands::apply(state, &resolved)?;
-                    if let (Some(Some(alias)), Some(created)) =
-                        (item.aliases.get(idx), t.created.first())
-                    {
-                        symbols.insert(alias.clone(), created.clone());
+        let mut apply_all =
+            |state: &mut PlanState, tx: &mut Transaction| -> Result<(), SessionError> {
+                for item in ordered_included(&p) {
+                    // SaveReimport drift items sync the ◆ Built layer directly
+                    // — the one documented exception to accept-creates-◇-only
+                    if let Some(sync) = &item.sync {
+                        let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
+                            .map_err(|e| SessionError::Internal(e.to_string()))?;
+                        let take_save = matches!(
+                            item.conflict.as_ref().and_then(|c| c.choice),
+                            Some(planner_core::proposals::ConflictSide::Theirs)
+                        );
+                        crate::import::apply_sync(
+                            state,
+                            tx,
+                            &op,
+                            &p.id,
+                            &self.gamedata,
+                            &self.world,
+                            take_save,
+                        );
+                        continue;
                     }
-                    tx.forward.extend(t.forward);
-                    tx.inverse.extend(t.inverse);
-                    tx.created.extend(t.created);
+                    for (idx, cmd) in item.commands.iter().enumerate() {
+                        let resolved =
+                            resolve_aliases(cmd, &symbols).map_err(SessionError::Internal)?;
+                        let t = commands::apply(state, &resolved)?;
+                        if let (Some(Some(alias)), Some(created)) =
+                            (item.aliases.get(idx), t.created.first())
+                        {
+                            symbols.insert(alias.clone(), created.clone());
+                        }
+                        tx.forward.extend(t.forward);
+                        tx.inverse.extend(t.inverse);
+                        tx.created.extend(t.created);
+                    }
                 }
-            }
-            let t = commands::apply(
-                state,
-                &Command::SetProposalStatus {
-                    id: id.to_string(),
-                    status: ProposalStatus::Accepted,
-                },
-            )?;
-            tx.forward.extend(t.forward);
-            tx.inverse.extend(t.inverse);
-            Ok(())
-        };
+                let t = commands::apply(
+                    state,
+                    &Command::SetProposalStatus {
+                        id: id.to_string(),
+                        status: ProposalStatus::Accepted,
+                    },
+                )?;
+                tx.forward.extend(t.forward);
+                tx.inverse.extend(t.inverse);
+                Ok(())
+            };
         if let Err(e) = apply_all(&mut self.state, &mut tx) {
             let mut rollback = tx.inverse.clone();
             rollback.reverse();
