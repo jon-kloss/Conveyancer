@@ -15,6 +15,8 @@ test.beforeEach(async ({ request }) => resetView(request));
 const SAVES = fileURLToPath(new URL("../../fixtures/saves", import.meta.url));
 
 async function importSave(page: Page, file: string) {
+  // Import now lives inside the toolbar DATA menu (#79); open it first.
+  await page.getByTestId("btn-data-menu").click();
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
     page.getByTestId("btn-import").click(),
@@ -72,6 +74,7 @@ test("import Dunarr-076 as the built layer; drift renders in DIFF", async ({ pag
   // ---- ⌘Z under the open preview: the scrim blocks clicks, not keys, so undo
   // can flip the ◆ built layer mid-preview — the header and CTA must track
   // live what the click will actually do ----
+  await page.getByTestId("btn-data-menu").click();
   const [flipChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
     page.getByTestId("btn-import").click(),
