@@ -36,7 +36,10 @@ async function connect(page: Page, source: string, target: string) {
   // half-drag from a missed attempt otherwise swallows the next one.
   await src.waitFor({ state: "visible" });
   await dst.waitFor({ state: "visible" });
-  for (let attempt = 0; attempt < 8; attempt++) {
+  // 12 attempts (was 8): when two CI runs share a runner, the drag-connect can
+  // exhaust 8 tries on pure scheduling contention — the extra headroom + backoff
+  // rides that out without touching the (unrelated) product code.
+  for (let attempt = 0; attempt < 12; attempt++) {
     // Re-scroll EVERY attempt: each landed belt adds labels and shifts layout,
     // so coordinates measured before the previous connect go stale mid-chain
     // (CI reproduced a miss on belt 3 of 7 that never happens locally).
