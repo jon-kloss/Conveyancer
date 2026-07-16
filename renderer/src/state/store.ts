@@ -99,7 +99,8 @@ function readAutoSyncEnabled(): boolean {
 function readAutoSyncInterval(): number {
   try {
     const n = Number(localStorage.getItem(AUTOSYNC_INTERVAL_KEY));
-    return Number.isFinite(n) && n > 0 ? n : DEFAULT_AUTOSYNC_MIN;
+    // ≥ 1 min: a tampered sub-minute value would hammer the parser every tick.
+    return Number.isFinite(n) && n >= 1 ? n : DEFAULT_AUTOSYNC_MIN;
   } catch {
     return DEFAULT_AUTOSYNC_MIN;
   }
@@ -335,7 +336,9 @@ export interface AppStore {
   saveViewState(patch: Partial<ViewState>): void;
   setReviewing(id: Id | null): void;
   setWizard(w: AppStore["wizard"]): void;
-  acceptProposal(id: Id): Promise<void>;
+  /** Resolves true when the accept applied; false when the backend refused it
+      (the refusal is surfaced via `cmdError`, never a rejection). */
+  acceptProposal(id: Id): Promise<boolean>;
   setAdvisor(feed: AdvisorFeed): void;
   setAdvisorOpen(open: boolean): void;
   setAdvisorTab(tab: AdvisorTab): void;
@@ -839,12 +842,18 @@ export const useStore = create<AppStore>((set, get) => ({
       const items = get().plan.proposals[outcome.proposal]?.items ?? [];
       const conflicts = driftConflictCount(items);
       if (conflicts === 0) {
-        // Option B: a conflict-free drift applies silently.
-        await get().acceptProposal(outcome.proposal);
-        get().pushToast(
-          `Auto-synced — ${items.length} change${items.length === 1 ? "" : "s"} applied`,
-          "success",
-        );
+        // Option B: a conflict-free drift applies silently — but only toast
+        // success if the accept actually landed. If the backend refuses it
+        // (acceptProposal already raised the error), open the draft in review
+        // so the next tick's `reviewing` guard stops us re-running it in a loop.
+        if (await get().acceptProposal(outcome.proposal)) {
+          get().pushToast(
+            `Auto-synced — ${items.length} change${items.length === 1 ? "" : "s"} applied`,
+            "success",
+          );
+        } else {
+          get().setReviewing(outcome.proposal);
+        }
       } else {
         // Real mine/theirs conflicts need a human — open review, never auto-apply.
         get().setReviewing(outcome.proposal);
@@ -1155,7 +1164,7 @@ export const useStore = create<AppStore>((set, get) => ({
     } catch (e) {
       // review surface stays open — the user decides what to do with the draft
       get().reportCmdError(errText(e));
-      return;
+      return false;
     }
     set((s) => ({
       plan: applyPatches(s.plan, resp.patches),
@@ -1169,6 +1178,7 @@ export const useStore = create<AppStore>((set, get) => ({
       settled: new Set(resp.patches.map((p) => p.path)),
       cmdError: null,
     }));
+    return true;
   },
 }));
 

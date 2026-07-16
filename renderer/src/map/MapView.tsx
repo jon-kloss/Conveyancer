@@ -237,6 +237,8 @@ export default function MapView() {
       setAutoSync(false);
       return;
     }
+    if (syncing) return; // a pick/sync is already in flight — no double picker
+    setSyncing(true);
     try {
       // Establish a granted handle up front (this click is the user gesture the
       // silent timer can't provide later); bail if the user cancels the pick.
@@ -252,8 +254,10 @@ export default function MapView() {
       if (outcome) await recordSync(file.name);
     } catch (e) {
       pushToast(`Couldn't start auto-sync — ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setSyncing(false);
     }
-  }, [autoSyncReady, autoSync, setAutoSync, pushToast, autoPull, recordSync]);
+  }, [autoSyncReady, autoSync, setAutoSync, pushToast, autoPull, recordSync, syncing]);
   useEffect(() => {
     if (!__WASM_BACKEND__ || !autoSync.enabled || !autoSyncReady) return;
     let cancelled = false;
