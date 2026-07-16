@@ -1367,6 +1367,7 @@ fn untapped_node_entrance_wins_over_override() {
                 z: 0.0,
             }),
             save_actor: None,
+            purity: None,
         }),
     }])
     .unwrap();

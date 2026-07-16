@@ -584,3 +584,112 @@
   margin-top: 8px;
   width: 100%;
 }
+
+/* ---- #79: DATA menu (import save / upload docs) + drag-drop ---- */
+.data-menu-wrap {
+  position: relative;
+}
+.data-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+.data-menu {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  width: 340px;
+  background: var(--steel-800);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  overflow: hidden;
+  z-index: 40;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.data-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--steel-700);
+  cursor: pointer;
+  color: var(--ink-100);
+}
+.data-menu-item:hover:not(:disabled) {
+  background: var(--steel-700);
+}
+.data-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.data-menu-item-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.data-menu-item-sub {
+  font-size: 11px;
+  color: var(--ink-500);
+}
+.data-menu-hint {
+  padding: 10px 12px;
+  background: var(--steel-900);
+  font-family: var(--font-mono);
+}
+.data-menu-hint-head {
+  font-size: 11px;
+  color: var(--ink-300);
+  margin-bottom: 6px;
+}
+.data-menu-hint-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 6px;
+}
+.data-menu-hint-row:last-child {
+  margin-bottom: 0;
+}
+.data-menu-hint-key {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--signal-500);
+  text-transform: uppercase;
+}
+.data-menu-hint-row code {
+  font-size: 10px;
+  color: var(--ink-500);
+  word-break: break-all;
+}
+
+.map-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 16, 22, 0.72);
+  border: 3px dashed var(--signal-500);
+  pointer-events: none;
+}
+.map-drop-card {
+  text-align: center;
+  padding: 24px 40px;
+  border-radius: var(--radius);
+  background: var(--steel-800);
+  border: 1px solid var(--steel-600);
+}
+.map-drop-title {
+  font-size: 20px;
+  letter-spacing: 0.12em;
+  color: var(--signal-500);
+}
+.map-drop-sub {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-300);
+}

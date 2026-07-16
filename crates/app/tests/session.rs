@@ -2718,3 +2718,63 @@ fn in_port_rate_survives_clamped_solve_write_back() {
         s.state.ports[&inp].rate
     );
 }
+
+// Regression (task #75): a group whose recipe can't be resolved — a power
+// generator (imported with an empty recipe) or an unknown/modded recipe class —
+// must NOT make the WHOLE factory fail to solve. Before the fix, `snapshot`'s
+// `recipes.get(&g.recipe)?` early-returned None on the first such group, so the
+// factory reported "missing recipe or machine data" and EVERY machine rendered
+// 0/min. A real imported save with a biomass generator inside a production
+// factory hit exactly this.
+#[test]
+fn unresolvable_recipe_group_does_not_fail_the_whole_factory() {
+    let mut s = Session::in_memory(None).unwrap();
+    let r = s
+        .edit(vec![Command::CreateFactory {
+            name: "MIXED".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap();
+    let fid = r.created[0].clone();
+
+    // A valid production group (fixture recipe) …
+    let good = add_group(
+        &mut s,
+        &fid,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(200.0, 200.0),
+    );
+    // … and a generator-style group with an unresolvable (empty) recipe, exactly
+    // as import creates it. The edit response carries the fresh solve.
+    let resp = s
+        .edit(vec![Command::AddGroup {
+            factory: fid.clone(),
+            machine: "Build_GeneratorBiomass_Automated_C".into(),
+            recipe: "".into(),
+            count: 1,
+            clock: 1.0,
+            graph_pos: gp(200.0, 400.0),
+            floor: 0,
+        }])
+        .unwrap();
+    let df = &resp.derived.factories[&fid];
+    assert!(
+        df.solve_error.is_none(),
+        "one unresolvable-recipe group must not error the whole factory: {:?}",
+        df.solve_error
+    );
+
+    // The snapshot skips the generator and keeps the valid group.
+    let snap = s.snapshot(&fid).expect("factory snapshots");
+    assert_eq!(snap.groups.len(), 1, "the unresolvable group is skipped");
+    assert_eq!(
+        snap.groups[0].id, good,
+        "the valid production group survives"
+    );
+}

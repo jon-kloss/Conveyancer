@@ -379,8 +379,13 @@ impl Session {
         };
         let gd = gamedata::docs::parse_docs(&text, game_build)
             .map_err(|e| SessionError::Internal(format!("Docs.json parse failed: {e}")))?;
-        let world = gamedata::worldnodes::load();
+        let mut world = gamedata::worldnodes::load();
         let (state, entries, cursor) = store.load()?;
+        // Bake save-derived purity corrections into this session's world copy so
+        // every downstream read (claim rate, opportunities, wizard, the map
+        // overlay) sees the authoritative purity. The ambient asset on disk is
+        // never mutated — corrections live in the plan's node_overrides.
+        crate::import::apply_purity_overrides(&mut world, &state.node_overrides);
         let undo = UndoLog::hydrate_with_cursor(entries, cursor);
         let mut advisor = AdvisorState::default();
         for json in store.load_advisor_cards().unwrap_or_default() {
@@ -1627,7 +1632,18 @@ impl Session {
         let mut groups = Vec::new();
         for gid in &factory.groups {
             let g = self.state.groups.get(gid)?;
-            let recipe = self.gamedata.recipes.get(&g.recipe)?;
+            // A group whose recipe can't be resolved must NOT fail the whole
+            // factory's solve — skip it and keep solving the rest. This is a
+            // power generator (no production recipe; imported with an empty
+            // `recipe`) or an unknown/modded recipe class. Generators are
+            // accounted by the power derivation, not the material-flow solve.
+            // Before this, one such group made `snapshot` return None, so the
+            // entire factory reported "missing recipe or machine data" and every
+            // machine rendered 0/min — real imported saves with a biomass/coal
+            // generator inside a production factory hit exactly this.
+            let Some(recipe) = self.gamedata.recipes.get(&g.recipe) else {
+                continue;
+            };
             let power = gamedata::db::recipe_power(&self.gamedata, recipe, &g.machine);
             groups.push(GroupSpec {
                 id: g.id.clone(),
@@ -1827,6 +1843,14 @@ impl Session {
     /// manifests) — all inside the causing command's undo entry.
     fn empire_solve(&mut self, trigger: &T0Edit, mut tx: Option<&mut Transaction>) -> Derived {
         let started = now_us();
+        // Keep this session's world purity in sync with the save-derived overrides
+        // before every solve. This is the single chokepoint every solve funnels
+        // through (import, accept-proposal, and the read-only passes all call it),
+        // so claim rates, the map overlay, and the opportunity/wizard passes read
+        // the authoritative purity (handles randomized/modded nodes) without any
+        // caller having to remember to bake first. Cheap + idempotent; the ambient
+        // asset on disk is never touched.
+        crate::import::apply_purity_overrides(&mut self.world, &self.state.node_overrides);
         let mut derived = Derived::default();
         let (order, cyclic) = self.empire_order();
         derived.empire_cycle = cyclic;
@@ -2328,6 +2352,7 @@ impl Session {
 
     /// Recompute derived state for everything, without touching canonical state.
     pub fn solve_all_readonly(&mut self) -> Derived {
+        // Purity sync happens inside empire_solve (the single solve chokepoint).
         self.empire_solve(&T0Edit::Recompute, None)
     }
 

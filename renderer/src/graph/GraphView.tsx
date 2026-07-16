@@ -249,6 +249,40 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     projected && projected.factoryId === factoryId ? projected.result : derived.factories[factoryId];
   const isProjected = !!projected && projected.factoryId === factoryId;
 
+  // Trace-on-select: when a machine/junction/port is selected, the set of nodes
+  // reachable from it through belt edges (both directions) — its whole connected
+  // production chain. Everything OUTSIDE this set dims so the flow reads at a
+  // glance. `null` when nothing traceable is selected (no dimming).
+  const traceSet = useMemo<Set<string> | null>(() => {
+    if (!factory) return null;
+    if (selection?.kind !== "group" && selection?.kind !== "junction" && selection?.kind !== "port") {
+      return null;
+    }
+    const adj = new Map<string, string[]>();
+    const link = (a: string, b: string) => {
+      (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+    };
+    for (const e of Object.values(plan.edges)) {
+      if (e.factory !== factoryId) continue;
+      link(e.from.id, e.to.id);
+      link(e.to.id, e.from.id);
+    }
+    const seen = new Set<string>([selection.id]);
+    const queue = [selection.id];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      for (const nb of adj.get(cur) ?? []) {
+        if (!seen.has(nb)) {
+          seen.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+    // An isolated selection (nothing wired to it) traces only itself — no point
+    // dimming the whole graph for a single unconnected card.
+    return seen.size > 1 ? seen : null;
+  }, [factory, selection, plan.edges, factoryId]);
+
   // ---- nodes (positions locally tracked while dragging; committed on drop) ----
   const buildNodes = useCallback((): Node[] => {
     if (!factory) return [];
@@ -257,41 +291,55 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       const g = plan.groups[gid];
       if (!g) continue;
       const dimmed = floorFilter !== "all" && g.floor !== floorFilter;
+      const traceDim = !!traceSet && !traceSet.has(gid);
       out.push({
         id: gid,
         type: "group",
         position: { x: g.graphPos.x, y: g.graphPos.y },
         data: { group: g, factoryId, showFloorBadge: floors.length > 1 } satisfies GroupNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "group" && selection.id === gid,
-        // ghosts of other floors: visible context, but never interactive
-        style: dimmed ? { opacity: 0.22, pointerEvents: "none" as const } : undefined,
+        // ghosts of other floors: visible context, but never interactive. Trace
+        // dimming (off-chain when something is selected) stays clickable so you
+        // can hop along the chain.
+        style: dimmed
+          ? { opacity: 0.22, pointerEvents: "none" as const }
+          : traceDim
+            ? { opacity: 0.3 }
+            : undefined,
       });
     }
     for (const j of Object.values(plan.junctions)) {
       if (j.factory !== factoryId) continue;
       const dimmed = floorFilter !== "all" && j.floor !== floorFilter;
+      const traceDim = !!traceSet && !traceSet.has(j.id);
       out.push({
         id: j.id,
         type: "junction",
         position: { x: j.graphPos.x, y: j.graphPos.y },
         data: { junction: j, factoryId, showFloorBadge: floors.length > 1 } satisfies JunctionNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "junction" && selection.id === j.id,
-        style: dimmed ? { opacity: 0.22, pointerEvents: "none" as const } : undefined,
+        style: dimmed
+          ? { opacity: 0.22, pointerEvents: "none" as const }
+          : traceDim
+            ? { opacity: 0.3 }
+            : undefined,
       });
     }
     for (const pid of factory.ports) {
       const p = plan.ports[pid];
       if (!p) continue;
+      const traceDim = !!traceSet && !traceSet.has(pid);
       out.push({
         id: pid,
         type: "boundaryPort",
         position: { x: p.graphPos.x, y: p.graphPos.y },
         data: { port: p, factoryId } satisfies PortNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "port" && selection.id === pid,
+        style: traceDim ? { opacity: 0.3 } : undefined,
       });
     }
     return out;
-  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length]);
+  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet]);
 
   const [nodes, setNodes] = useState<Node[]>(buildNodes);
   // Plan/selection changes rebuild the node array — but xyflow adopts user
@@ -421,7 +469,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       const srcFloor = floorOfEnd(e.from);
       const dstFloor = floorOfEnd(e.to);
       const lift = srcFloor !== dstFloor;
-      let dimmed = floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter;
+      // Trace dim: an edge stays lit only when it links two on-chain nodes.
+      const traceDim = !!traceSet && !(traceSet.has(e.from.id) && traceSet.has(e.to.id));
+      let dimmed = traceDim || (floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter);
       let geom = layout[e.id] ?? null;
       let portal: { x: number; y: number; dir: "up" | "down"; otherFloor: number } | null = null;
       if (floorFilter !== "all" && lift) {
@@ -446,7 +496,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
               labelY: y,
               pathLen: 72,
             };
-            dimmed = false;
+            // A cross-floor stub is un-dimmed by the floor filter, but a trace
+            // selection still owns it: keep it dim when it's off the traced chain.
+            if (!traceDim) dimmed = false;
           }
         }
       }
@@ -474,7 +526,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
-  }, [factory, plan.edges, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor]);
+  }, [factory, plan.edges, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet]);
 
   // Card geometry for the floor plates (same source as the edge layout).
   const plateGeoms = useMemo(() => {
