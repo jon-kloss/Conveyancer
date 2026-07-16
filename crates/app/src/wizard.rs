@@ -760,6 +760,7 @@ pub fn global_solve(
         aliases,
         depends_on: vec![],
         sync: None,
+        conflict: None,
     });
 
     // CLAIM items (each excludable; factory alias binds them to the site)
@@ -780,6 +781,7 @@ pub fn global_solve(
             aliases: vec![None],
             depends_on: vec![create_id.clone()],
             sync: None,
+            conflict: None,
         });
     }
 
@@ -846,6 +848,7 @@ pub fn global_solve(
             aliases: vec![None],
             depends_on: vec![create_id.clone()],
             sync: None,
+            conflict: None,
         });
     }
     // routes consuming surplus from existing factories into the new site —
@@ -910,6 +913,7 @@ pub fn global_solve(
             aliases: route_aliases,
             depends_on: vec![create_id.clone()],
             sync: None,
+            conflict: None,
         });
     }
 
@@ -954,6 +958,7 @@ pub fn global_solve(
                     aliases: vec![None],
                     depends_on: vec![],
                     sync: None,
+                    conflict: None,
                 });
                 items.push(ProposalItem {
                     id: new_id(),
@@ -971,6 +976,7 @@ pub fn global_solve(
                     aliases: vec![None],
                     depends_on: vec![create_id.clone(), expand_id],
                     sync: None,
+                    conflict: None,
                 });
             }
             None => {
@@ -1429,6 +1435,7 @@ pub fn t2_optimize(
             aliases,
             depends_on: vec![],
             sync: None,
+            conflict: None,
         });
         goal.push((product.clone(), cur_rate));
     }

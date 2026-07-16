@@ -662,6 +662,18 @@ export type ProposalSource =
   | "refactor";
 export type ProposalItemKind = "create" | "modify" | "claim" | "route_add";
 
+/** Which side of a re-import conflict the user picked. */
+export type ConflictSide = "mine" | "theirs";
+
+/** A drift item where both the user (an in-app edit) and the save changed the
+ *  same machine group — the user must choose before accept. `mine`/`theirs` are
+ *  display strings; `choice` is undecided (undefined) until picked. */
+export interface SyncConflict {
+  mine: string;
+  theirs: string;
+  choice?: ConflictSide;
+}
+
 export interface ProposalItem {
   id: Id;
   kind: ProposalItemKind;
@@ -675,6 +687,8 @@ export interface ProposalItem {
   dependsOn: Id[];
   /** SaveReimport drift payload — accept syncs the ◆ Built layer */
   sync?: unknown;
+  /** present on a re-import CONFLICT row: the mine-vs-save choice to resolve */
+  conflict?: SyncConflict;
 }
 
 /** Total-quantity goal target carried alongside a proposal (goal-mode). The
@@ -842,6 +856,7 @@ export type Command =
   | { type: "rename_plan"; name: string }
   | { type: "create_proposal"; proposal: Proposal }
   | { type: "toggle_proposal_item"; proposal: Id; item: Id; included: boolean }
+  | { type: "set_proposal_item_choice"; proposal: Id; item: Id; choice: ConflictSide | null }
   | { type: "set_proposal_status"; id: Id; status: ProposalStatus }
   | { type: "delete_proposal"; id: Id }
   | { type: "add_priority_switch"; route: Id; priority: number }

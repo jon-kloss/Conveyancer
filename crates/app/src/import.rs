@@ -816,59 +816,119 @@ pub fn diff_against_built(
     for (ci, c) in clusters.iter().enumerate() {
         match assigned[ci].map(|fi| built[fi]) {
             Some(f) => {
-                // group-level diff
-                let existing: BTreeMap<(String, String), (u32, f64, Id)> = f
+                // group-level diff. Carry each built group's `planned_delta` so a
+                // save change that lands on a component the USER also edited can
+                // be surfaced as a conflict (mine vs theirs) rather than a plain
+                // one-directional drift.
+                // (built count, built clock, group id, the user's planned delta)
+                type Built = (u32, f64, Id, Option<GroupDelta>);
+                let existing: BTreeMap<(String, String), Built> = f
                     .groups
                     .iter()
                     .filter_map(|gid| state.groups.get(gid))
                     .map(|g| {
                         (
                             (g.machine.clone(), g.recipe.clone()),
-                            (g.count, g.clock, g.id.clone()),
+                            (g.count, g.clock, g.id.clone(), g.planned_delta),
                         )
                     })
                     .collect();
                 for g in &c.groups {
                     let key = (g.machine.clone(), g.recipe.clone());
                     match existing.get(&key) {
-                        Some((count, clock, _)) if *count == g.count => {
+                        Some((count, clock, _, delta)) if *count == g.count => {
                             // Compare against the clamped save clock — the
                             // value apply_sync will actually store — so an
                             // accepted item converges to InSync on re-import.
                             let target = g.clock.clamp(0.01, 2.5);
                             if (clock - target).abs() > CLOCK_EPS {
-                                items.push(drift_item(
-                                    format!(
-                                        "Δ {} — {} reclocked in game",
-                                        f.name,
-                                        item_name(&g.recipe)
-                                    ),
-                                    format!(
-                                        "{:.1}% built → {:.1}% in save",
-                                        clock * 100.0,
-                                        target * 100.0
-                                    ),
-                                    SyncOp::UpdateGroup {
-                                        factory: f.id.clone(),
-                                        machine: g.machine.clone(),
-                                        recipe: g.recipe.clone(),
-                                        count: g.count,
-                                        clock: g.clock,
-                                    },
-                                ));
+                                let op = SyncOp::UpdateGroup {
+                                    factory: f.id.clone(),
+                                    machine: g.machine.clone(),
+                                    recipe: g.recipe.clone(),
+                                    count: g.count,
+                                    clock: g.clock,
+                                };
+                                let label = format!(
+                                    "Δ {} — {} reclocked in game",
+                                    f.name,
+                                    item_name(&g.recipe)
+                                );
+                                // Conflict iff the user retuned the clock to a value
+                                // the save doesn't match.
+                                match delta
+                                    .and_then(|d| d.clock)
+                                    .filter(|mc| (mc - target).abs() > CLOCK_EPS)
+                                {
+                                    // Count is unchanged in the save here, but the
+                                    // user may have edited it — "keep mine" keeps
+                                    // that too, so show the effective count on the
+                                    // mine side (the save side is the built count).
+                                    Some(mc) => items.push(conflict_item(
+                                        label,
+                                        op,
+                                        format!(
+                                            "×{} @ {:.0}%",
+                                            delta.and_then(|d| d.count).unwrap_or(*count),
+                                            mc * 100.0
+                                        ),
+                                        format!("×{count} @ {:.0}%", target * 100.0),
+                                    )),
+                                    None => items.push(drift_item(
+                                        label,
+                                        format!(
+                                            "{:.1}% built → {:.1}% in save",
+                                            clock * 100.0,
+                                            target * 100.0
+                                        ),
+                                        op,
+                                    )),
+                                }
                             }
                         }
-                        Some((count, _, _)) => items.push(drift_item(
-                            format!("Δ {} — {}", f.name, item_name(&g.recipe)),
-                            format!("×{count} built → ×{} in save", g.count),
-                            SyncOp::UpdateGroup {
+                        Some((count, clock_b, _, delta)) => {
+                            let target = g.clock.clamp(0.01, 2.5);
+                            let op = SyncOp::UpdateGroup {
                                 factory: f.id.clone(),
                                 machine: g.machine.clone(),
                                 recipe: g.recipe.clone(),
                                 count: g.count,
                                 clock: g.clock,
-                            },
-                        )),
+                            };
+                            let label = format!("Δ {} — {}", f.name, item_name(&g.recipe));
+                            // Conflict only where the SAVE changed a component the
+                            // user also edited to a different value. Count drifted
+                            // by definition here (this is the count-change arm);
+                            // clock is a conflict only if the save moved it too
+                            // (baseline ≠ save) — a user merely "ahead" on an
+                            // unchanged clock is no collision.
+                            let mine_count = delta.and_then(|d| d.count).filter(|c| *c != g.count);
+                            let clock_drifted = (clock_b - target).abs() > CLOCK_EPS;
+                            let mine_clock = delta
+                                .and_then(|d| d.clock)
+                                .filter(|mc| clock_drifted && (mc - target).abs() > CLOCK_EPS);
+                            if mine_count.is_some() || mine_clock.is_some() {
+                                // Show the user's true effective values vs the
+                                // save's. "Keep mine" preserves the WHOLE delta,
+                                // so an edited-but-not-conflicting component is the
+                                // user's value too (not just the colliding one);
+                                // an unedited component follows the save.
+                                let eff_count = delta.and_then(|d| d.count).unwrap_or(g.count);
+                                let eff_clock = delta.and_then(|d| d.clock).unwrap_or(target);
+                                items.push(conflict_item(
+                                    label,
+                                    op,
+                                    format!("×{eff_count} @ {:.0}%", eff_clock * 100.0),
+                                    format!("×{} @ {:.0}%", g.count, target * 100.0),
+                                ));
+                            } else {
+                                items.push(drift_item(
+                                    label,
+                                    format!("×{count} built → ×{} in save", g.count),
+                                    op,
+                                ));
+                            }
+                        }
                         None => items.push(drift_item(
                             format!("Δ {} — {} added in game", f.name, item_name(&g.recipe)),
                             format!("×{} @ {:.0}%", g.count, g.clock * 100.0),
@@ -882,7 +942,7 @@ pub fn diff_against_built(
                         )),
                     }
                 }
-                for ((machine, recipe), (count, clock, _)) in &existing {
+                for ((machine, recipe), (count, clock, _, _)) in &existing {
                     if !c
                         .groups
                         .iter()
@@ -983,6 +1043,7 @@ pub fn diff_against_built(
                         })
                         .unwrap(),
                     ),
+                    conflict: None,
                 });
             }
         }
@@ -1066,10 +1127,41 @@ fn drift_item(label: String, detail: String, op: SyncOp) -> ProposalItem {
         aliases: vec![],
         depends_on: vec![],
         sync: Some(serde_json::to_value(op).unwrap()),
+        conflict: None,
+    }
+}
+
+/// A drift item where the save AND an in-app edit both touched this group — the
+/// user must pick a side (see [`SyncConflict`]). `mine`/`theirs` are the two
+/// candidate values, shown side by side; `choice` starts undecided so accept is
+/// blocked until the user resolves it. The `op` is the same `UpdateGroup` that
+/// writes the save baseline; "take theirs" additionally clears the delta at
+/// apply time (see [`apply_sync`]).
+fn conflict_item(label: String, op: SyncOp, mine: String, theirs: String) -> ProposalItem {
+    ProposalItem {
+        id: new_id(),
+        kind: ProposalItemKind::Modify,
+        included: true,
+        label,
+        detail: format!("you: {mine}  ·  save: {theirs}"),
+        impact: "CONFLICT".into(),
+        commands: vec![],
+        aliases: vec![],
+        depends_on: vec![],
+        sync: Some(serde_json::to_value(op).unwrap()),
+        conflict: Some(SyncConflict {
+            mine,
+            theirs,
+            choice: None,
+        }),
     }
 }
 
 /// Apply one sync op to the Built layer (accept path for SaveReimport items).
+/// `take_save` is only meaningful for a resolved CONFLICT item: `true` ("take
+/// save") drops the user's `planned_delta` so the effective value becomes the
+/// save's; `false` (non-conflict item, or "keep mine") preserves the delta,
+/// dissolving only components the game has caught up to.
 pub fn apply_sync(
     state: &mut PlanState,
     tx: &mut planner_core::commands::Transaction,
@@ -1077,6 +1169,7 @@ pub fn apply_sync(
     import_id: &str,
     gd: &gamedata::docs::GameData,
     world: &WorldSnapshot,
+    take_save: bool,
 ) {
     match op {
         SyncOp::CreateCluster { cluster } => {
@@ -1141,10 +1234,14 @@ pub fn apply_sync(
                 Some(mut g) if *count > 0 => {
                     g.count = *count;
                     g.clock = clock.clamp(0.01, 2.5);
-                    // Sync writes the baseline but keeps the user's planned
-                    // delta — except components the game caught up to, which
-                    // dissolve ("visible until built in-game").
-                    if let Some(mut d) = g.planned_delta {
+                    if take_save {
+                        // Conflict resolved "take save": the save wins wholesale,
+                        // so drop the user's overlay — effective == baseline.
+                        g.planned_delta = None;
+                    } else if let Some(mut d) = g.planned_delta {
+                        // Sync writes the baseline but keeps the user's planned
+                        // delta — except components the game caught up to, which
+                        // dissolve ("visible until built in-game").
                         if d.count == Some(g.count) {
                             d.count = None;
                         }

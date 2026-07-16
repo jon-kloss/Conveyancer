@@ -230,6 +230,215 @@ fn sync_clears_caught_up_delta_and_keeps_still_ahead_delta() {
     );
 }
 
+// A re-import where BOTH the user and the save changed the SAME component is a
+// conflict: accept is blocked until a side is chosen, and each side resolves as
+// documented (keep-mine re-anchors the user's target on the new baseline;
+// take-save discards the edit).
+#[test]
+fn same_component_edit_and_save_change_is_a_conflict() {
+    use planner_core::commands::Command;
+    use planner_core::entities::GroupDelta;
+    use planner_core::proposals::ConflictSide;
+
+    // 2 smelters @ 100% imported; user retunes the bank to 150% in the app.
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(snapshot(vec![
+        mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0, 1.0),
+        mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0, 0.0, 1.0),
+    ]))
+    .unwrap();
+    let gid = s.state.groups.values().next().unwrap().id.clone();
+    s.edit(vec![Command::SetGroupClock {
+        id: gid.clone(),
+        clock: 1.5,
+    }])
+    .unwrap();
+
+    // The game ALSO retuned the same bank — but to 200%. Same component, both
+    // sides changed ⇒ conflict.
+    let ImportOutcome::Drift { proposal, .. } = s
+        .import_save(snapshot(vec![
+            mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0, 0.0, 2.0),
+            mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0, 0.0, 2.0),
+        ]))
+        .unwrap()
+    else {
+        panic!("expected drift");
+    };
+    let item = s.state.proposals[&proposal]
+        .items
+        .iter()
+        .find(|i| i.conflict.is_some())
+        .expect("a conflict item")
+        .clone();
+    assert!(
+        item.conflict.as_ref().unwrap().choice.is_none(),
+        "conflict starts undecided"
+    );
+    // Undecided conflict blocks the whole accept — we always ask.
+    assert!(s.accept_proposal(&proposal).is_err());
+
+    // KEEP MINE: baseline moves to the save's 200%, but the user's 150% stays
+    // the effective target (re-anchored, not reverted).
+    s.edit(vec![Command::SetProposalItemChoice {
+        proposal: proposal.clone(),
+        item: item.id.clone(),
+        choice: Some(ConflictSide::Mine),
+    }])
+    .unwrap();
+    s.accept_proposal(&proposal).unwrap();
+    let g = &s.state.groups[&gid];
+    assert!((g.clock - 2.0).abs() < 1e-9, "baseline synced to the game");
+    assert_eq!(
+        g.planned_delta,
+        Some(GroupDelta {
+            count: None,
+            clock: Some(1.5),
+        }),
+        "your 150% kept as the plan target"
+    );
+}
+
+// When the user edited TWO components but only one collides, the "keep mine"
+// label must advertise the true effective values (keep-mine preserves the whole
+// delta), and accepting keep-mine must deliver exactly that.
+#[test]
+fn keep_mine_label_reflects_all_edited_components() {
+    use planner_core::commands::Command;
+    use planner_core::entities::GroupDelta;
+    use planner_core::proposals::ConflictSide;
+
+    // 4 smelters @ 100%; user edits BOTH count→8 and clock→150%.
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(snapshot(
+        (0..4)
+            .map(|i| {
+                mc(
+                    "Build_SmelterMk1_C",
+                    "Recipe_IngotIron_C",
+                    50.0 * i as f64,
+                    0.0,
+                    1.0,
+                )
+            })
+            .collect(),
+    ))
+    .unwrap();
+    let gid = s.state.groups.values().next().unwrap().id.clone();
+    s.edit(vec![
+        Command::SetGroupCount {
+            id: gid.clone(),
+            count: 8,
+        },
+        Command::SetGroupClock {
+            id: gid.clone(),
+            clock: 1.5,
+        },
+    ])
+    .unwrap();
+
+    // The game changed ONLY the count (4→6), clock still 100%. Count collides
+    // (user 8 ≠ save 6); clock does not (the save didn't move it).
+    let ImportOutcome::Drift { proposal, .. } = s
+        .import_save(snapshot(
+            (0..6)
+                .map(|i| {
+                    mc(
+                        "Build_SmelterMk1_C",
+                        "Recipe_IngotIron_C",
+                        50.0 * i as f64,
+                        0.0,
+                        1.0,
+                    )
+                })
+                .collect(),
+        ))
+        .unwrap()
+    else {
+        panic!("expected drift");
+    };
+    let item = s.state.proposals[&proposal]
+        .items
+        .iter()
+        .find(|i| i.conflict.is_some())
+        .expect("a conflict item")
+        .clone();
+    let conflict = item.conflict.as_ref().unwrap();
+    // The mine label must show BOTH of the user's edits, not just the colliding
+    // count — 150% clock included even though the save didn't touch it.
+    assert_eq!(conflict.mine, "×8 @ 150%");
+    assert_eq!(conflict.theirs, "×6 @ 100%");
+
+    s.edit(vec![Command::SetProposalItemChoice {
+        proposal: proposal.clone(),
+        item: item.id.clone(),
+        choice: Some(ConflictSide::Mine),
+    }])
+    .unwrap();
+    s.accept_proposal(&proposal).unwrap();
+    let g = &s.state.groups[&gid];
+    assert_eq!(g.count, 6, "baseline synced to the game count");
+    assert_eq!(
+        g.planned_delta,
+        Some(GroupDelta {
+            count: Some(8),
+            clock: Some(1.5),
+        }),
+        "both edits kept — effective ×8 @ 150%, exactly what the label promised"
+    );
+}
+
+#[test]
+fn take_save_discards_the_in_app_edit() {
+    use planner_core::commands::Command;
+    use planner_core::proposals::ConflictSide;
+
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(snapshot(vec![mc(
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        0.0,
+        0.0,
+        1.0,
+    )]))
+    .unwrap();
+    let gid = s.state.groups.values().next().unwrap().id.clone();
+    s.edit(vec![Command::SetGroupClock {
+        id: gid.clone(),
+        clock: 1.5,
+    }])
+    .unwrap();
+    let ImportOutcome::Drift { proposal, .. } = s
+        .import_save(snapshot(vec![mc(
+            "Build_SmelterMk1_C",
+            "Recipe_IngotIron_C",
+            0.0,
+            0.0,
+            2.0,
+        )]))
+        .unwrap()
+    else {
+        panic!("expected drift");
+    };
+    let item_id = s.state.proposals[&proposal]
+        .items
+        .iter()
+        .find(|i| i.conflict.is_some())
+        .expect("a conflict item")
+        .id
+        .clone();
+    s.edit(vec![Command::SetProposalItemChoice {
+        proposal: proposal.clone(),
+        item: item_id,
+        choice: Some(ConflictSide::Theirs),
+    }])
+    .unwrap();
+    s.accept_proposal(&proposal).unwrap();
+    let g = &s.state.groups[&gid];
+    assert!((g.clock - 2.0).abs() < 1e-9);
+    assert_eq!(g.planned_delta, None, "your edit discarded — the save won");
+}
+
 #[test]
 fn import_auto_wires_groups_ports_and_preserves_built_counts() {
     let mut s = Session::in_memory(None).unwrap();
