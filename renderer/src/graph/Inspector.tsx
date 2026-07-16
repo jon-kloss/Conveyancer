@@ -35,6 +35,9 @@ export default function Inspector({
 
   // Slider state: value tracks canonical rate except mid-drag.
   const [dragValue, setDragValue] = useState<number | null>(null);
+  // Manual entry: while the field is focused/edited, `numText` holds the raw
+  // string so typing isn't fought by re-renders; committed on blur/Enter.
+  const [numText, setNumText] = useState<string | null>(null);
   const dragging = dragValue !== null;
   const rate = dragging ? dragValue : outPort?.rate ?? 0;
   const wasmReady = useRef(false);
@@ -50,20 +53,76 @@ export default function Inspector({
     return Math.max(1, base);
   }, [ceiling, outPort?.rate]);
 
-  const onDrag = useCallback(
+  // Optimal-value breakpoints: rates at whole-machine counts (each machine at
+  // 100% on the final recipe) plus the input ceiling. Sliding/typing snaps to
+  // these clean values so the user lands on a build that runs full-clock rather
+  // than a fractional one. Derived from the group that outputs this port's item.
+  const breakpoints = useMemo(() => {
+    if (!outPort || outPort.item === POWER_ITEM) return [] as number[];
+    const finalGroup = Object.values(plan.groups).find(
+      (g) => g.factory === factoryId && gamedata.recipes[g.recipe]?.products.some(([it]) => it === outPort.item),
+    );
+    const perMachine = finalGroup
+      ? gamedata.recipes[finalGroup.recipe]?.products.find(([it]) => it === outPort.item)?.[1] ?? 0
+      : 0;
+    if (perMachine <= 0) return [] as number[];
+    const cap = ceiling ? ceiling.maxRate : sliderMax;
+    const pts: number[] = [];
+    for (let k = 1; k * perMachine <= cap + 1e-6 && pts.length < 16; k++) pts.push(k * perMachine);
+    if (ceiling && !pts.some((p) => Math.abs(p - ceiling.maxRate) < 1e-6)) pts.push(ceiling.maxRate);
+    return pts.sort((a, b) => a - b);
+  }, [outPort, plan.groups, factoryId, gamedata.recipes, ceiling, sliderMax]);
+
+  const snapToBreakpoint = useCallback(
     (v: number) => {
-      if (!outPort) return;
-      // hard stop AT the ceiling, with tick magnetism (within 1% snaps to it)
-      let clamped = ceiling ? Math.min(v, ceiling.maxRate) : v;
-      if (ceiling && clamped > ceiling.maxRate - sliderMax * 0.01) clamped = ceiling.maxRate;
-      setDragValue(clamped);
-      if (!wasmReady.current) return;
+      const thresh = sliderMax * 0.02; // within 2% of a clean value → snap to it
+      for (const bp of breakpoints) if (Math.abs(bp - v) < thresh) return bp;
+      return v;
+    },
+    [breakpoints, sliderMax],
+  );
+
+  // Live T0 projection for a candidate target (shared by drag, typing, chips).
+  const project = useCallback(
+    (clamped: number) => {
+      if (!outPort || !wasmReady.current) return;
       const snapshot = buildSnapshot(useStore.getState().plan, useStore.getState().gamedata, factoryId);
       if (!snapshot) return;
       const result = t0SetTarget(snapshot, outPort.id, clamped);
       if (result) setProjected({ factoryId, result, targetRate: clamped });
     },
-    [outPort, ceiling, factoryId, setProjected, sliderMax],
+    [outPort, factoryId, setProjected],
+  );
+
+  const clampTarget = useCallback(
+    (v: number) => {
+      let c = Math.max(0, ceiling ? Math.min(v, ceiling.maxRate) : v);
+      if (ceiling && c > ceiling.maxRate - sliderMax * 0.01) c = ceiling.maxRate;
+      return snapToBreakpoint(c);
+    },
+    [ceiling, sliderMax, snapToBreakpoint],
+  );
+
+  const onDrag = useCallback(
+    (v: number) => {
+      if (!outPort) return;
+      const clamped = clampTarget(v);
+      setDragValue(clamped);
+      project(clamped);
+    },
+    [outPort, clampTarget, project],
+  );
+
+  // Commit a target directly (numeric entry / breakpoint chip): project + persist.
+  const commitTarget = useCallback(
+    (v: number) => {
+      if (!outPort) return;
+      const clamped = clampTarget(v);
+      setDragValue(null);
+      project(clamped);
+      void dispatch([{ type: "set_port_rate", id: outPort.id, rate: clamped }]);
+    },
+    [outPort, clampTarget, project, dispatch],
   );
 
   const onRelease = useCallback(() => {
@@ -125,6 +184,35 @@ export default function Inspector({
                 </>
               )}
             </span>
+            {outPort.item !== POWER_ITEM && (
+              // Type an exact target instead of dragging; commits (and snaps to a
+              // clean value) on Enter or blur.
+              <span className="insp-target-entry mono">
+                <input
+                  type="number"
+                  className="insp-target-input"
+                  min={0}
+                  max={ceiling ? Math.ceil(ceiling.maxRate) : undefined}
+                  step="any"
+                  value={numText ?? String(Math.round(rate * 10) / 10)}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onChange={(e) => setNumText(e.target.value)}
+                  onBlur={() => {
+                    if (numText !== null) {
+                      const v = Number(numText);
+                      if (Number.isFinite(v)) commitTarget(v);
+                      setNumText(null);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  data-testid="target-input"
+                  aria-label="Set output target per minute"
+                />
+                <span className="unit">/min</span>
+              </span>
+            )}
           </div>
           <div className="insp-slider-wrap">
             <input
@@ -134,6 +222,7 @@ export default function Inspector({
               max={sliderMax}
               step={sliderMax / 200}
               value={rate}
+              list="insp-breakpoints"
               onChange={(e) => onDrag(Number(e.target.value))}
               onPointerUp={onRelease}
               onKeyUp={(e) => {
@@ -141,6 +230,11 @@ export default function Inspector({
               }}
               data-testid="target-slider"
             />
+            <datalist id="insp-breakpoints">
+              {breakpoints.map((bp, i) => (
+                <option key={i} value={bp} />
+              ))}
+            </datalist>
             {ceiling && (
               <span
                 className="insp-tick"
@@ -154,6 +248,30 @@ export default function Inspector({
             {ceiling && <span className="insp-ceiling-note">▲ CEILING {fmtRate(ceiling.maxRate)}/min</span>}
             <span>{fmtRate(sliderMax)}</span>
           </div>
+          {breakpoints.length > 1 && (
+            // Optimal-value snap chips: each whole-machine count at full clock,
+            // plus the ceiling. Clicking jumps the target straight to it.
+            <div className="insp-breakpoints" data-testid="target-breakpoints">
+              <span className="insp-bp-label mono">SNAP</span>
+              {(breakpoints.length > 6
+                ? [...breakpoints.slice(0, 5), breakpoints[breakpoints.length - 1]]
+                : breakpoints
+              ).map((bp, i) => {
+                const active = Math.abs(rate - bp) < sliderMax * 0.005;
+                const isCeil = !!ceiling && Math.abs(bp - ceiling.maxRate) < 1e-6;
+                return (
+                  <button
+                    key={i}
+                    className={`insp-bp-chip mono ${active ? "active" : ""} ${isCeil ? "ceil" : ""}`}
+                    onClick={() => commitTarget(bp)}
+                    title={isCeil ? "input ceiling" : "runs the machines at full clock"}
+                  >
+                    {fmtRate(bp)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="insp-solvenote mono">
             RE-SOLVES LIVE ON DRAG · {chip.text}
             {authoritative?.solveOnRelease && " · LIVE → ON RELEASE"}
