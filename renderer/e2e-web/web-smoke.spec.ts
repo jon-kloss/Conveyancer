@@ -15,6 +15,16 @@
 // specs.
 
 import { test, expect, type Page } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+// The bundled fixture catalog on disk — the SAME JSON compiled into the wasm as
+// the default. Uploading it exercises the whole upload→persist→reload path; the
+// observable signal is `buildVersion` flipping "fixture" → "uploaded" (the wasm
+// tags an uploaded Docs.json), which is what turns the first-run upload prompt
+// off. Resolved relative to this spec so cwd does not matter.
+const DOCS_FIXTURE = fileURLToPath(
+  new URL("../../crates/gamedata/assets/docs-fixture.json", import.meta.url),
+);
 
 /** The in-page store + backend handles store.ts exposes in the web build
  *  (__WASM_BACKEND__ guard). Only the members the smoke needs are typed. */
@@ -27,6 +37,7 @@ interface StoreWin {
         factories: Record<string, { name: string }>;
         proposals: Record<string, unknown>;
       };
+      gamedata: { buildVersion: string; recipes: Record<string, unknown> };
       dispatch(cmds: unknown[], opts?: { select?: boolean }): Promise<string[] | null>;
     };
   };
@@ -69,12 +80,66 @@ function proposalCount(page: Page): Promise<number> {
   );
 }
 
+function buildVersion(page: Page): Promise<string> {
+  return page.evaluate(
+    () => (window as unknown as StoreWin).__ficsitStore.getState().gamedata.buildVersion,
+  );
+}
+
 // The IndexedDB the worker owns — same names as wasmWorker.ts. The smoke reaches
 // into it directly to seed a corrupt blob (M2) and to read the -corrupt backup.
 const DB_NAME = "ficsit-planner";
 const STORE = "plans";
 const KEY = "current";
 const CORRUPT_KEY = "current-corrupt";
+const DOCS_KEY = "docs";
+const DOCS_CORRUPT_KEY = "docs-corrupt";
+
+/** Seed a value under an IndexedDB key in the worker's DB (creates the store if
+ *  the first boot hasn't yet). Used to plant corrupt bytes on the boot path. */
+function seedKey(page: Page, key: string, bytes: number[]): Promise<void> {
+  return page.evaluate(
+    ({ dbName, store, k, b }) =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(store);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(store, "readwrite");
+          tx.objectStore(store).put(new Uint8Array(b), k);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+    { dbName: DB_NAME, store: STORE, k: key, b: bytes },
+  );
+}
+
+/** Read a key from the worker's DB; resolves whether a value is present. */
+function hasKey(page: Page, key: string): Promise<boolean> {
+  return page.evaluate(
+    ({ dbName, store, k }) =>
+      new Promise<boolean>((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(store);
+        req.onsuccess = () => {
+          const db = req.result;
+          const g = db.transaction(store, "readonly").objectStore(store).get(k);
+          g.onsuccess = () => {
+            db.close();
+            resolve(!!g.result);
+          };
+          g.onerror = () => reject(g.error);
+        };
+        req.onerror = () => reject(req.error);
+      }),
+    { dbName: DB_NAME, store: STORE, k: key },
+  );
+}
 
 test("boots the wasm session, edits, and persists across reload", async ({ page }) => {
   // BOOT — fresh context ⇒ empty IndexedDB ⇒ the bundled fixture plan (no
@@ -212,4 +277,103 @@ test("M2: a corrupt saved blob boots fresh, not bricked, and is backed up", asyn
     { dbName: DB_NAME, store: STORE, corruptKey: CORRUPT_KEY },
   );
   expect(backedUp, "the unreadable blob was backed up under the -corrupt key").toBe(true);
+});
+
+// Phase 4a — uploading a Docs.json runs the browser session on a real catalog
+// instead of the bundled fixture, AND that choice survives a reload. Drives the
+// REAL UI: the hidden file input the "UPLOAD DOCS.JSON" button proxies. The
+// worker rebuilds the WebSession over the uploaded bytes (preserving the plan)
+// and persists them under the docs key; on reload the worker reads them back.
+test("Phase 4a: uploading a Docs.json swaps the catalog and persists across reload", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await waitReady(page);
+  expect(await buildVersion(page), "boots on the bundled fixture catalog").toBe("fixture");
+
+  // Upload through the real input the button drives (setInputFiles fires its
+  // onChange → store.uploadDocs → worker rebuild → hydrate). The button is
+  // web-only; the input is present in the built web app (__WASM_BACKEND__).
+  await page.getByTestId("docs-file-input").setInputFiles(DOCS_FIXTURE);
+
+  // The catalog is now a real (uploaded) one: the wasm tags it "uploaded", and
+  // the recipe set is non-empty. This is the signal the first-run prompt reads.
+  await expect
+    .poll(() => buildVersion(page), { timeout: 30_000 })
+    .toBe("uploaded");
+  const recipeCount = await page.evaluate(
+    () =>
+      Object.keys(
+        (window as unknown as StoreWin).__ficsitStore.getState().gamedata.recipes,
+      ).length,
+  );
+  expect(recipeCount, "the uploaded catalog has recipes").toBeGreaterThan(0);
+
+  // RELOAD + PERSIST — the worker reads the docs bytes back out of IndexedDB and
+  // reconstructs the session on the real catalog. If docs were not persisted,
+  // this would fall back to "fixture" (the M-class bug this test guards).
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "the uploaded catalog persisted across reload").toBe("uploaded");
+});
+
+// Phase 4a durability — the docs analogue of M2. A stored Docs.json that a later
+// wasm's parse_docs no longer accepts (a version bump) must NOT brick the boot:
+// ensureReady degrades to the bundled fixture, parks the bad docs under
+// docs-corrupt, and clears the docs key so the next boot doesn't re-throw. This
+// guards the exact "permanent brick on a version bump" hazard the plan-blob M2
+// fix closed, now for the catalog.
+test("Phase 4a: corrupt stored docs boot fresh on the fixture, not bricked", async ({ page }) => {
+  // Boot once so the worker creates the DB + object store.
+  await page.goto("/");
+  await waitReady(page);
+
+  // Plant unparseable bytes under the docs key (as a stale/incompatible catalog).
+  await seedKey(page, DOCS_KEY, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  // Reload — the worker meets the bad docs on boot. The app must still come up
+  // (waitReady asserts error === null) on the BUNDLED FIXTURE, not bricked.
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "bad docs → boots on the bundled fixture").toBe("fixture");
+
+  // The bad docs were parked under docs-corrupt AND the docs key was cleared, so
+  // the next boot won't re-throw on them.
+  expect(await hasKey(page, DOCS_CORRUPT_KEY), "the bad docs were backed up").toBe(true);
+  expect(await hasKey(page, DOCS_KEY), "the bad docs key was cleared off the boot path").toBe(false);
+});
+
+// Phase 4a durability — the OTHER cascade branch (PR #17 review): a corrupt PLAN
+// blob when a real catalog IS uploaded must drop ONLY the plan and KEEP the
+// catalog. A regression that discarded the docs here would silently throw away
+// the player's uploaded game data on any plan corruption — the branch worth a
+// guard.
+test("Phase 4a: a corrupt plan with uploaded docs keeps the catalog, drops only the plan", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await waitReady(page);
+
+  // Upload a real catalog, then make a plan edit so there IS a plan to corrupt.
+  await page.getByTestId("docs-file-input").setInputFiles(DOCS_FIXTURE);
+  await expect.poll(() => buildVersion(page), { timeout: 30_000 }).toBe("uploaded");
+  await page.evaluate(async () => {
+    await (window as unknown as StoreWin).__ficsitStore.getState().dispatch([
+      { type: "create_factory", name: "DOOMED", position: { x: 1, y: 2, z: 0 }, region: "GRASS FIELDS" },
+    ]);
+  });
+  expect(await factoryCount(page)).toBe(1);
+
+  // Corrupt ONLY the plan blob; leave the docs key intact.
+  await seedKey(page, KEY, [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+
+  // Reload — the cascade should keep the uploaded catalog and boot a fresh plan.
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "the uploaded catalog is KEPT when only the plan is corrupt").toBe(
+    "uploaded",
+  );
+  expect(await factoryCount(page), "the corrupt plan was dropped to a fresh one").toBe(0);
+  expect(await hasKey(page, CORRUPT_KEY), "the corrupt plan blob was backed up").toBe(true);
+  expect(await hasKey(page, DOCS_KEY), "the uploaded docs were NOT discarded").toBe(true);
 });

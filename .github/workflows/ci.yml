@@ -93,7 +93,7 @@ jobs:
           fi
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11.13.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -123,7 +123,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11.13.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -179,7 +179,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11.13.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -223,3 +223,39 @@ jobs:
           name: web-smoke-traces
           path: renderer/test-results/
           retention-days: 7
+
+  # Web Phase 4a: gate the Railway deploy artifact. Build the deploy image the
+  # same way Railway will (deploy/Dockerfile, repo-root context), RUN it, and
+  # curl the served bundle — index 200 + the wasm served as application/wasm.
+  # This is the runtime proof of the Dockerfile + Caddyfile, not just that they
+  # parse. The image builds from the committed web-pkg (no Rust toolchain).
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the deploy image
+        run: docker build -f deploy/Dockerfile -t ficsit-web:ci .
+      - name: run it and probe the served bundle
+        run: |
+          docker run -d --name web -e PORT=8080 -p 8080:8080 ficsit-web:ci
+          # Wait for Caddy to answer (up to ~20s).
+          for i in $(seq 1 20); do
+            if curl -fsS -o /dev/null http://localhost:8080/; then break; fi
+            sleep 1
+          done
+          echo "== index ==" && curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:8080/
+          # Assert the MIME of the MAIN app wasm specifically (web_bg-*.wasm, the
+          # 3.4MB module the worker instantiates) — not just any .wasm — since a
+          # wrong Content-Type makes the browser refuse to instantiate it.
+          wasm=$(docker exec web sh -c 'ls /srv/assets/web_bg-*.wasm' | head -1 | sed 's#/srv/##')
+          echo "== wasm asset: $wasm =="
+          ctype=$(curl -fsS -o /dev/null -D - "http://localhost:8080/$wasm" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}')
+          echo "content-type: $ctype"
+          case "$ctype" in
+            application/wasm*) echo "OK: wasm served as application/wasm" ;;
+            *) echo "::error::wasm not served as application/wasm (got: $ctype)"; docker logs web; exit 1 ;;
+          esac
+      - name: stop
+        if: always()
+        run: docker rm -f web || true

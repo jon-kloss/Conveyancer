@@ -130,6 +130,13 @@ export default function MapView() {
   const [routePopover, setRoutePopover] = useState<{ from: string; to: string } | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Web Phase 4a: upload a real Docs.json so the browser session runs on the
+  // player's game catalog instead of the bundled fixture. Web-only — the
+  // desktop shell reads the catalog from FICSIT_DOCS_JSON, so the button is
+  // compiled out (`__WASM_BACKEND__` is a Vite define, statically false there).
+  const uploadDocs = useStore((s) => s.uploadDocs);
+  const docsRef = useRef<HTMLInputElement>(null);
+  const [uploadingDocs, setUploadingDocs] = useState(false);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
   // one-shot: swallow the contextmenu that follows a route-drag release
@@ -682,6 +689,38 @@ export default function MapView() {
               e.currentTarget.value = "";
             }}
           />
+          {__WASM_BACKEND__ && (
+            <>
+              <button
+                className="btn btn-ghost"
+                onClick={() => docsRef.current?.click()}
+                disabled={uploadingDocs}
+                data-testid="btn-upload-docs"
+                title="Load your game's Docs.json for the full recipe catalog"
+              >
+                {uploadingDocs ? "LOADING CATALOG…" : "UPLOAD DOCS.JSON"}
+              </button>
+              <input
+                ref={docsRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: "none" }}
+                data-testid="docs-file-input"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  e.currentTarget.value = "";
+                  if (!f) return;
+                  setUploadingDocs(true);
+                  try {
+                    const bytes = new Uint8Array(await f.arrayBuffer());
+                    await uploadDocs(bytes);
+                  } finally {
+                    setUploadingDocs(false);
+                  }
+                }}
+              />
+            </>
+          )}
           <button className="btn btn-primary" onClick={() => setWizard({ open: true })} data-testid="btn-wizard">
             PLAN SUPPLY CHAIN <span className="key-hint">P</span>
           </button>

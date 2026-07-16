@@ -169,6 +169,11 @@ export interface AppStore {
   advisorTab: AdvisorTab;
 
   hydrate(): Promise<void>;
+  /** Web Phase 4a: upload a real Docs.json (raw bytes) for the browser session,
+      then re-hydrate so the richer catalog is live. Resolves true on success;
+      false when the backend refused (recorded in `cmdError`, never a rejection).
+      Web-only — non-wasm backends reject and this surfaces the refusal. */
+  uploadDocs(bytes: Uint8Array): Promise<boolean>;
   /** Resolves with the created ids, or null when the backend refused the
       commands (the refusal is recorded in `cmdError` — never a rejection). */
   dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[] | null>;
@@ -510,6 +515,22 @@ export const useStore = create<AppStore>((set, get) => ({
     // One undoable step: SetBuildDone upserts (Some) or clears (null) the
     // override; the response patches /buildOverrides and the derived queue.
     await get().dispatch([{ type: "set_build_done", id, done }]);
+  },
+
+  async uploadDocs(bytes) {
+    // Web Phase 4a: hand the raw uploaded Docs.json to the wasm worker, which
+    // rebuilds the session over the real catalog while preserving the plan,
+    // then re-hydrate so the richer recipe set is live (gamedata.buildVersion
+    // flips off "fixture"). A refusal (e.g. an unparseable file, or a non-wasm
+    // backend) surfaces on the status-bar chip — never a rejection to the UI.
+    try {
+      await backend.uploadDocs(bytes);
+    } catch (e) {
+      get().reportCmdError(errText(e));
+      return false;
+    }
+    await get().hydrate();
+    return true;
   },
 
   // Plan a replacement = one backend call that stores a Draft Refactor

@@ -85,6 +85,21 @@ export interface Backend {
     demandPerMin: number,
     item: string | null,
   ): Promise<TrainAnswer | null>;
+  /** Web Phase 4a: upload a real Docs.json (raw bytes) so the browser session
+   *  runs on the player's game catalog instead of the bundled fixture. Web-only
+   *  — the desktop shell and dev bridge read the catalog from the host
+   *  (FICSIT_DOCS_JSON), so their implementations reject. */
+  uploadDocs(bytes: Uint8Array): Promise<void>;
+}
+
+/** The desktop shell and dev bridge get their catalog from the host process
+ *  (FICSIT_DOCS_JSON), not an in-app upload; the UI only calls `uploadDocs` on
+ *  the web build (`__WASM_BACKEND__`), so this is an explicit guard, not a path
+ *  either backend takes. */
+function docsUploadUnsupported(): Promise<never> {
+  return Promise.reject(
+    new Error("Docs.json upload is only supported on the web build"),
+  );
 }
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -176,6 +191,9 @@ class TauriBackend implements Backend {
   }
   routeCalc(from: Id, to: Id, kind: RouteKind, demandPerMin: number, item: string | null) {
     return this.invoke<TrainAnswer | null>("route_calc", { from, to, kind, demandPerMin, item });
+  }
+  uploadDocs() {
+    return docsUploadUnsupported();
   }
 }
 
@@ -283,6 +301,9 @@ class BridgeBackend implements Backend {
       method: "POST",
       body: JSON.stringify({ from, to, kind, demandPerMin, item }),
     });
+  }
+  uploadDocs() {
+    return docsUploadUnsupported();
   }
 }
 

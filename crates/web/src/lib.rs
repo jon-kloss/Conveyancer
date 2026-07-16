@@ -86,7 +86,17 @@ impl WebSession {
                 .map_err(|e| JsValue::from_str(&format!("saved plan is unreadable: {e}")))?,
             None => MemoryPlanStore::new(),
         };
-        let inner = Session::with_store(Box::new(store), docs_json, "fixture")
+        // The build tag surfaces to the renderer as `gamedata.buildVersion`; the
+        // UI reads `=== "fixture"` as "no real catalog yet". An uploaded Docs.json
+        // (Phase 4) is a real catalog, so tag it "uploaded" — that flips the
+        // first-run "upload your Docs.json" prompt off. No docs → still "fixture"
+        // (the bundled catalog), byte-identical to the Phase-3 behavior.
+        let build = if docs_json.is_some() {
+            "uploaded"
+        } else {
+            "fixture"
+        };
+        let inner = Session::with_store(Box::new(store), docs_json, build)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(WebSession {
             inner,
