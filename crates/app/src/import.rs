@@ -857,10 +857,18 @@ pub fn diff_against_built(
                                     .and_then(|d| d.clock)
                                     .filter(|mc| (mc - target).abs() > CLOCK_EPS)
                                 {
+                                    // Count is unchanged in the save here, but the
+                                    // user may have edited it — "keep mine" keeps
+                                    // that too, so show the effective count on the
+                                    // mine side (the save side is the built count).
                                     Some(mc) => items.push(conflict_item(
                                         label,
                                         op,
-                                        format!("×{count} @ {:.0}%", mc * 100.0),
+                                        format!(
+                                            "×{} @ {:.0}%",
+                                            delta.and_then(|d| d.count).unwrap_or(*count),
+                                            mc * 100.0
+                                        ),
                                         format!("×{count} @ {:.0}%", target * 100.0),
                                     )),
                                     None => items.push(drift_item(
@@ -897,11 +905,13 @@ pub fn diff_against_built(
                                 .and_then(|d| d.clock)
                                 .filter(|mc| clock_drifted && (mc - target).abs() > CLOCK_EPS);
                             if mine_count.is_some() || mine_clock.is_some() {
-                                // Show the user's current effective values vs the
-                                // save's; unedited components follow the save on
-                                // "keep mine".
+                                // Show the user's true effective values vs the
+                                // save's. "Keep mine" preserves the WHOLE delta,
+                                // so an edited-but-not-conflicting component is the
+                                // user's value too (not just the colliding one);
+                                // an unedited component follows the save.
                                 let eff_count = delta.and_then(|d| d.count).unwrap_or(g.count);
-                                let eff_clock = mine_clock.unwrap_or(target);
+                                let eff_clock = delta.and_then(|d| d.clock).unwrap_or(target);
                                 items.push(conflict_item(
                                     label,
                                     op,

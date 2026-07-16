@@ -299,6 +299,79 @@ fn same_component_edit_and_save_change_is_a_conflict() {
     );
 }
 
+// When the user edited TWO components but only one collides, the "keep mine"
+// label must advertise the true effective values (keep-mine preserves the whole
+// delta), and accepting keep-mine must deliver exactly that.
+#[test]
+fn keep_mine_label_reflects_all_edited_components() {
+    use planner_core::commands::Command;
+    use planner_core::entities::GroupDelta;
+    use planner_core::proposals::ConflictSide;
+
+    // 4 smelters @ 100%; user edits BOTH count→8 and clock→150%.
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(snapshot(
+        (0..4)
+            .map(|i| mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0 * i as f64, 0.0, 1.0))
+            .collect(),
+    ))
+    .unwrap();
+    let gid = s.state.groups.values().next().unwrap().id.clone();
+    s.edit(vec![
+        Command::SetGroupCount {
+            id: gid.clone(),
+            count: 8,
+        },
+        Command::SetGroupClock {
+            id: gid.clone(),
+            clock: 1.5,
+        },
+    ])
+    .unwrap();
+
+    // The game changed ONLY the count (4→6), clock still 100%. Count collides
+    // (user 8 ≠ save 6); clock does not (the save didn't move it).
+    let ImportOutcome::Drift { proposal, .. } = s
+        .import_save(snapshot(
+            (0..6)
+                .map(|i| mc("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0 * i as f64, 0.0, 1.0))
+                .collect(),
+        ))
+        .unwrap()
+    else {
+        panic!("expected drift");
+    };
+    let item = s.state.proposals[&proposal]
+        .items
+        .iter()
+        .find(|i| i.conflict.is_some())
+        .expect("a conflict item")
+        .clone();
+    let conflict = item.conflict.as_ref().unwrap();
+    // The mine label must show BOTH of the user's edits, not just the colliding
+    // count — 150% clock included even though the save didn't touch it.
+    assert_eq!(conflict.mine, "×8 @ 150%");
+    assert_eq!(conflict.theirs, "×6 @ 100%");
+
+    s.edit(vec![Command::SetProposalItemChoice {
+        proposal: proposal.clone(),
+        item: item.id.clone(),
+        choice: Some(ConflictSide::Mine),
+    }])
+    .unwrap();
+    s.accept_proposal(&proposal).unwrap();
+    let g = &s.state.groups[&gid];
+    assert_eq!(g.count, 6, "baseline synced to the game count");
+    assert_eq!(
+        g.planned_delta,
+        Some(GroupDelta {
+            count: Some(8),
+            clock: Some(1.5),
+        }),
+        "both edits kept — effective ×8 @ 150%, exactly what the label promised"
+    );
+}
+
 #[test]
 fn take_save_discards_the_in_app_edit() {
     use planner_core::commands::Command;
