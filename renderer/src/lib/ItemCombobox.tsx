@@ -7,7 +7,7 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import type { GameItem } from "../state/types";
-import { prettyClass } from "./format";
+import { itemLabel } from "./format";
 import ItemIcon from "./ItemIcon";
 
 export default function ItemCombobox({
@@ -30,9 +30,9 @@ export default function ItemCombobox({
   const selected = items.find((i) => i.className === value);
   // `value` can name an item outside the offered list (e.g. a raw-ore deficit
   // prefill — ores are legitimate goals, just not in the craftable catalog).
-  // Show an honest pretty name instead of a blank input that hides what a
-  // solve would actually target.
-  const display = selected?.displayName ?? (value ? prettyClass(value) : "");
+  // itemLabel gives a known resource name ("Bauxite") or a humanised class,
+  // never a raw Desc_..._C or a blank input that hides what a solve targets.
+  const display = selected?.displayName ?? itemLabel({}, value);
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     // Prefix matches outrank substring matches ("iron plate" offers Iron Plate
