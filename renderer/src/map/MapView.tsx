@@ -137,6 +137,33 @@ export default function MapView() {
   const uploadDocs = useStore((s) => s.uploadDocs);
   const docsRef = useRef<HTMLInputElement>(null);
   const [uploadingDocs, setUploadingDocs] = useState(false);
+  // #79: both data-loading actions live behind one DATA menu; files can also be
+  // dropped straight onto the map. `.sav` opens the import review, `.json` (web
+  // only) swaps in the player's real recipe catalog.
+  const [dataMenu, setDataMenu] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const loadDocsFile = useCallback(
+    async (f: File) => {
+      setUploadingDocs(true);
+      try {
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        await uploadDocs(bytes);
+      } finally {
+        setUploadingDocs(false);
+      }
+    },
+    [uploadDocs],
+  );
+  const acceptFiles = useCallback(
+    (files: File[]) => {
+      const sav = files.find((f) => f.name.toLowerCase().endsWith(".sav"));
+      const docs = files.find((f) => f.name.toLowerCase().endsWith(".json"));
+      if (sav) setImportFile(sav);
+      if (docs && __WASM_BACKEND__) void loadDocsFile(docs);
+    },
+    [loadDocsFile],
+  );
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
   // one-shot: swallow the contextmenu that follows a route-drag release
@@ -630,8 +657,41 @@ export default function MapView() {
   const selectedNode = selection?.kind === "node" ? resolvedNodes.find((n) => n.id === selection.id) : null;
 
   return (
-    <div className={`map-root ${reviewing ? "reviewing" : ""}`} data-testid="map-root">
+    <div
+      className={`map-root ${reviewing ? "reviewing" : ""}`}
+      data-testid="map-root"
+      onDragEnter={(e) => {
+        if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(e) => {
+        if (dragging) e.preventDefault();
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragging(false);
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        if (files.length) acceptFiles(files);
+      }}
+    >
       <div ref={containerRef} className="map-leaflet" />
+      {dragging && (
+        <div className="map-drop-overlay" data-testid="map-drop-overlay">
+          <div className="map-drop-card mono">
+            <div className="map-drop-title">DROP TO LOAD</div>
+            <div className="map-drop-sub">
+              .sav imports your factories{__WASM_BACKEND__ ? " · .json loads your recipe catalog" : ""}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* top chrome */}
       <div className="map-chrome-top">
@@ -674,9 +734,67 @@ export default function MapView() {
           >
             + FACTORY <span className="key-hint">N</span>
           </button>
-          <button className="btn btn-ghost" onClick={() => fileRef.current?.click()} data-testid="btn-import">
-            IMPORT SAVE
-          </button>
+          <div className="data-menu-wrap">
+            <button
+              className={`btn btn-ghost ${dataMenu ? "active" : ""}`}
+              onClick={() => setDataMenu((o) => !o)}
+              data-testid="btn-data-menu"
+              title="Import a save or load your game's Docs.json"
+            >
+              {uploadingDocs ? "LOADING CATALOG…" : "DATA ▾"}
+            </button>
+            {dataMenu && (
+              <>
+                <div className="data-menu-backdrop" onClick={() => setDataMenu(false)} />
+                <div className="data-menu" data-testid="data-menu">
+                  <button
+                    className="data-menu-item"
+                    onClick={() => {
+                      setDataMenu(false);
+                      fileRef.current?.click();
+                    }}
+                    data-testid="btn-import"
+                  >
+                    <span className="data-menu-item-label">Import save</span>
+                    <span className="data-menu-item-sub">.sav — your factories as a Built layer</span>
+                  </button>
+                  {__WASM_BACKEND__ && (
+                    <button
+                      className="data-menu-item"
+                      onClick={() => {
+                        setDataMenu(false);
+                        docsRef.current?.click();
+                      }}
+                      disabled={uploadingDocs}
+                      data-testid="btn-upload-docs"
+                    >
+                      <span className="data-menu-item-label">Upload Docs.json</span>
+                      <span className="data-menu-item-sub">the full recipe catalog for your game version</span>
+                    </button>
+                  )}
+                  <div className="data-menu-hint">
+                    <div className="data-menu-hint-head">Or drag &amp; drop a file anywhere</div>
+                    <div className="data-menu-hint-row">
+                      <span className="data-menu-hint-key">Save</span>
+                      <code>%LOCALAPPDATA%\FactoryGame\Saved\SaveGames\</code>
+                    </div>
+                    {__WASM_BACKEND__ && (
+                      <>
+                        <div className="data-menu-hint-row">
+                          <span className="data-menu-hint-key">Docs (Steam)</span>
+                          <code>…\steamapps\common\Satisfactory\CommunityResources\Docs\en-US.json</code>
+                        </div>
+                        <div className="data-menu-hint-row">
+                          <span className="data-menu-hint-key">Docs (Epic)</span>
+                          <code>…\Epic Games\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json</code>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <input
             ref={fileRef}
             type="file"
@@ -690,36 +808,18 @@ export default function MapView() {
             }}
           />
           {__WASM_BACKEND__ && (
-            <>
-              <button
-                className="btn btn-ghost"
-                onClick={() => docsRef.current?.click()}
-                disabled={uploadingDocs}
-                data-testid="btn-upload-docs"
-                title="Load your game's Docs.json for the full recipe catalog"
-              >
-                {uploadingDocs ? "LOADING CATALOG…" : "UPLOAD DOCS.JSON"}
-              </button>
-              <input
-                ref={docsRef}
-                type="file"
-                accept=".json,application/json"
-                style={{ display: "none" }}
-                data-testid="docs-file-input"
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  e.currentTarget.value = "";
-                  if (!f) return;
-                  setUploadingDocs(true);
-                  try {
-                    const bytes = new Uint8Array(await f.arrayBuffer());
-                    await uploadDocs(bytes);
-                  } finally {
-                    setUploadingDocs(false);
-                  }
-                }}
-              />
-            </>
+            <input
+              ref={docsRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: "none" }}
+              data-testid="docs-file-input"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.currentTarget.value = "";
+                if (f) void loadDocsFile(f);
+              }}
+            />
           )}
           <button className="btn btn-primary" onClick={() => setWizard({ open: true })} data-testid="btn-wizard">
             PLAN SUPPLY CHAIN <span className="key-hint">P</span>
