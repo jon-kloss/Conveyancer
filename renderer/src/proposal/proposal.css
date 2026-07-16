@@ -173,6 +173,38 @@
   text-decoration: line-through;
 }
 
+/* Re-import conflict row: two mutually-exclusive choice chips (mine vs save).
+   `undecided` warns until the user picks a side (accept stays blocked). */
+.prop-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+}
+.prop-choice {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--steel-600);
+  color: var(--ink-300);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.prop-choice:hover {
+  border-color: var(--ink-300);
+}
+.prop-choice.chosen {
+  border-color: var(--signal-orange, #ff7a1a);
+  color: var(--signal-orange, #ff7a1a);
+  background: color-mix(in srgb, var(--signal-orange, #ff7a1a) 14%, transparent);
+}
+/* Undecided conflict: flag both chips so the row reads "you must choose". */
+.prop-conflict.undecided .prop-choice {
+  border-color: var(--flow-warn);
+}
+
 .prop-warnings {
   flex: none;
   padding: 8px 14px;

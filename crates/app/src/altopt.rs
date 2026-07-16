@@ -426,6 +426,7 @@ pub fn optimize_to_recipe(
                 aliases,
                 depends_on: vec![],
                 sync: None,
+                conflict: None,
             });
             goal.push((product.clone(), cur_rate));
         }

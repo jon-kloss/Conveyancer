@@ -691,6 +691,20 @@ impl Session {
                 cycles.join(", ")
             )));
         }
+        // Never silently pick a side: an INCLUDED conflict item with no chosen
+        // side blocks the whole accept until the user resolves it (mine vs save).
+        let undecided: Vec<String> = p
+            .items
+            .iter()
+            .filter(|i| i.included && i.conflict.as_ref().is_some_and(|c| c.choice.is_none()))
+            .map(|i| i.label.clone())
+            .collect();
+        if !undecided.is_empty() {
+            return Err(SessionError::Internal(format!(
+                "choose mine or save for the conflict(s) first: {}",
+                undecided.join(", ")
+            )));
+        }
         let label = format!("accept proposal #{}", p.number);
         let mut tx = Transaction::new(label);
         let mut symbols: BTreeMap<String, Id> = BTreeMap::new();
@@ -703,7 +717,19 @@ impl Session {
                 if let Some(sync) = &item.sync {
                     let op: crate::import::SyncOp = serde_json::from_value(sync.clone())
                         .map_err(|e| SessionError::Internal(e.to_string()))?;
-                    crate::import::apply_sync(state, tx, &op, &p.id, &self.gamedata, &self.world);
+                    let take_save = matches!(
+                        item.conflict.as_ref().and_then(|c| c.choice),
+                        Some(planner_core::proposals::ConflictSide::Theirs)
+                    );
+                    crate::import::apply_sync(
+                        state,
+                        tx,
+                        &op,
+                        &p.id,
+                        &self.gamedata,
+                        &self.world,
+                        take_save,
+                    );
                     continue;
                 }
                 for (idx, cmd) in item.commands.iter().enumerate() {
@@ -782,6 +808,10 @@ impl Session {
             if let Some(sync) = &item.sync {
                 if let Ok(op) = serde_json::from_value::<crate::import::SyncOp>(sync.clone()) {
                     let mut scratch = Transaction::new("eval");
+                    let take_save = matches!(
+                        item.conflict.as_ref().and_then(|c| c.choice),
+                        Some(planner_core::proposals::ConflictSide::Theirs)
+                    );
                     crate::import::apply_sync(
                         &mut self.state,
                         &mut scratch,
@@ -789,6 +819,7 @@ impl Session {
                         &p.id,
                         &self.gamedata,
                         &self.world,
+                        take_save,
                     );
                 }
                 continue 'items;

@@ -2427,6 +2427,7 @@ fn accept_proposal_persist_failure_rolls_back() {
             aliases: vec![None],
             depends_on: vec![],
             sync: None,
+            conflict: None,
         }],
     };
     let pid = s

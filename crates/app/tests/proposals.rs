@@ -233,6 +233,7 @@ fn power_route_item(from: &Id, to: &Id) -> ProposalItem {
         aliases: vec![None],
         depends_on: vec![],
         sync: None,
+        conflict: None,
     }
 }
 
@@ -1311,6 +1312,7 @@ fn delete_route_item(route: &Id) -> ProposalItem {
         aliases: vec![None],
         depends_on: vec![],
         sync: None,
+        conflict: None,
     }
 }
 

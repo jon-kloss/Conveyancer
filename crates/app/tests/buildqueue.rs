@@ -297,6 +297,7 @@ fn ordering_by_number_then_ulid() {
             aliases: vec![None],
             depends_on: vec![],
             sync: None,
+            conflict: None,
         }],
         milestone: None,
     };
@@ -368,6 +369,7 @@ fn milestone_progress_lights_from_built_production() {
             aliases: vec![None],
             depends_on: vec![],
             sync: None,
+            conflict: None,
         }],
         milestone: Some(Milestone {
             item: "Desc_IronIngot_C".into(),

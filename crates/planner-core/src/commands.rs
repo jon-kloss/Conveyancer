@@ -210,6 +210,13 @@ pub enum Command {
         item: Id,
         included: bool,
     },
+    /// Choose a side for a re-import CONFLICT item (mine vs the save). Only
+    /// meaningful on items carrying a `conflict`; a chosen side unblocks accept.
+    SetProposalItemChoice {
+        proposal: Id,
+        item: Id,
+        choice: Option<crate::proposals::ConflictSide>,
+    },
     SetProposalStatus {
         id: Id,
         status: ProposalStatus,
@@ -312,6 +319,7 @@ impl Command {
             Command::RenamePlan { .. } => "rename plan",
             Command::CreateProposal { .. } => "draft proposal",
             Command::ToggleProposalItem { .. } => "toggle proposal item",
+            Command::SetProposalItemChoice { .. } => "choose conflict side",
             Command::SetProposalStatus { .. } => "set proposal status",
             Command::DeleteProposal { .. } => "discard proposal",
             Command::AddPrioritySwitch { .. } => "add priority switch",
@@ -1386,6 +1394,39 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     } else if next == *item {
                         queue.extend(deps_of_next);
                     }
+                }
+            }
+            if p.status == ProposalStatus::Draft {
+                p.status = ProposalStatus::Reviewing;
+            }
+            tx.record(state.upsert(Entity::Proposal(p)));
+        }
+        Command::SetProposalItemChoice {
+            proposal,
+            item,
+            choice,
+        } => {
+            let mut p = state
+                .proposals
+                .get(proposal)
+                .cloned()
+                .ok_or(DomainError::NotFound {
+                    id: proposal.clone(),
+                })?;
+            if p.status == ProposalStatus::Accepted || p.status == ProposalStatus::Rejected {
+                return Err(DomainError::Invalid {
+                    message: "proposal is closed — re-solve to review again".into(),
+                });
+            }
+            let Some(it) = p.items.iter_mut().find(|i| &i.id == item) else {
+                return Err(DomainError::NotFound { id: item.clone() });
+            };
+            match it.conflict.as_mut() {
+                Some(c) => c.choice = *choice,
+                None => {
+                    return Err(DomainError::Invalid {
+                        message: "item has no conflict to resolve".into(),
+                    })
                 }
             }
             if p.status == ProposalStatus::Draft {

@@ -54,10 +54,22 @@ export default function ProposalReview({ proposal }: { proposal: Proposal }) {
     [dispatch, proposal.id],
   );
 
+  const choose = useCallback(
+    (item: ProposalItem, side: "mine" | "theirs") => {
+      // Toggle the side off if it's already picked (back to undecided).
+      const next = item.conflict?.choice === side ? null : side;
+      void dispatch([{ type: "set_proposal_item_choice", proposal: proposal.id, item: item.id, choice: next }]);
+    },
+    [dispatch, proposal.id],
+  );
+
+  // Included conflict rows with no side chosen block accept — we always ask.
+  const undecided = proposal.items.filter((i) => i.included && i.conflict && !i.conflict.choice).length;
+
   const accept = useCallback(() => {
-    if (includedCount === 0) return;
+    if (includedCount === 0 || undecided > 0) return;
     void acceptProposal(proposal.id);
-  }, [acceptProposal, proposal.id, includedCount]);
+  }, [acceptProposal, proposal.id, includedCount, undecided]);
 
   const reject = useCallback(() => {
     void dispatch([{ type: "set_proposal_status", id: proposal.id, status: "rejected" }]);
@@ -156,7 +168,32 @@ export default function ProposalReview({ proposal }: { proposal: Proposal }) {
                       <span className={`prop-glyph mono ${head.cls}`}>{head.glyph}</span>
                       <span className="prop-row-main">
                         <span className="prop-row-label">{item.label}</span>
-                        <span className="prop-row-detail">{item.detail}</span>
+                        {item.conflict ? (
+                          <span
+                            className={`prop-conflict ${item.conflict.choice ? "" : "undecided"}`}
+                            data-testid="prop-conflict"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className={`prop-choice ${item.conflict.choice === "mine" ? "chosen" : ""}`}
+                              data-testid="conflict-mine"
+                              onClick={() => choose(item, "mine")}
+                            >
+                              KEEP MINE · {item.conflict.mine}
+                            </button>
+                            <button
+                              type="button"
+                              className={`prop-choice ${item.conflict.choice === "theirs" ? "chosen" : ""}`}
+                              data-testid="conflict-theirs"
+                              onClick={() => choose(item, "theirs")}
+                            >
+                              TAKE SAVE · {item.conflict.theirs}
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="prop-row-detail">{item.detail}</span>
+                        )}
                       </span>
                       <span className="mono prop-row-impact">{item.impact}</span>
                     </div>
@@ -242,10 +279,13 @@ export default function ProposalReview({ proposal }: { proposal: Proposal }) {
             <button
               className="btn btn-primary"
               onClick={accept}
-              disabled={includedCount === 0}
+              disabled={includedCount === 0 || undecided > 0}
               data-testid="btn-accept-proposal"
+              title={undecided > 0 ? "resolve the conflict(s) first — choose mine or save" : undefined}
             >
-              ACCEPT {includedCount} AS PLANNED ⏎
+              {undecided > 0
+                ? `RESOLVE ${undecided} CONFLICT${undecided > 1 ? "S" : ""} FIRST`
+                : `ACCEPT ${includedCount} AS PLANNED ⏎`}
             </button>
             <button
               className="btn btn-ghost"

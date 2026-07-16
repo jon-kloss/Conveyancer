@@ -45,6 +45,30 @@ pub enum ProposalItemKind {
     RouteAdd,
 }
 
+/// Which side of a re-import conflict the user chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictSide {
+    /// Keep the in-app edit as the plan's target (the save value still becomes
+    /// the honest ◆ baseline; the user's edit is re-anchored on top).
+    Mine,
+    /// Adopt the save's value wholesale, discarding the in-app edit.
+    Theirs,
+}
+
+/// A re-import drift item where BOTH the user (a `planned_delta`) and the save
+/// changed the same machine group — the user must pick a side before accept.
+/// `mine`/`theirs` are display strings for the two candidate values; `choice`
+/// starts `None` (undecided → blocks accept, so we always ask).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflict {
+    pub mine: String,
+    pub theirs: String,
+    #[serde(default)]
+    pub choice: Option<ConflictSide>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProposalItem {
@@ -69,6 +93,11 @@ pub struct ProposalItem {
     /// the ◆ Built layer directly, the one documented exception to ◇-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<serde_json::Value>,
+    /// Present when this drift item collides with an in-app edit: the user must
+    /// choose `mine` vs `theirs` before accept. serde-default so every other
+    /// item kind (and legacy plan files) deserialize to `None` — no migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<SyncConflict>,
 }
 
 /// Milestone target carried alongside a goal: the game hands players a huge
