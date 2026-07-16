@@ -321,6 +321,9 @@ export interface DerivedFactory {
   solveUs: number;
   solveOnRelease: boolean;
   solveError: string | null;
+  /** Non-fatal solve notices (e.g. a group whose recipe isn't in the catalog
+   *  was skipped). Absent on older payloads. */
+  warnings?: string[];
 }
 
 /** A3 math block — every line the rail/truck/drone inspector renders. */

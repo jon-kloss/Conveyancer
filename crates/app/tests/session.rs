@@ -2778,3 +2778,80 @@ fn unresolvable_recipe_group_does_not_fail_the_whole_factory() {
         "the valid production group survives"
     );
 }
+
+// Task #82: skipping an unresolvable group is right, but a genuine unknown
+// PRODUCTION recipe (a modded machine, or a Docs.json missing a recipe the save
+// uses) must be SURFACED — otherwise the factory silently under-counts. A
+// generator (empty recipe) is not a warning; a non-empty unresolvable recipe is.
+#[test]
+fn unknown_production_recipe_surfaces_a_warning_but_a_generator_does_not() {
+    let mut s = Session::in_memory(None).unwrap();
+    let r = s
+        .edit(vec![Command::CreateFactory {
+            name: "MIXED".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap();
+    let fid = r.created[0].clone();
+
+    // A valid production group anchors the solve (so the factory isn't empty).
+    add_group(
+        &mut s,
+        &fid,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(200.0, 200.0),
+    );
+
+    // A generator (empty recipe) is skipped but is NOT a warning.
+    s.edit(vec![Command::AddGroup {
+        factory: fid.clone(),
+        machine: "Build_GeneratorBiomass_Automated_C".into(),
+        recipe: "".into(),
+        count: 1,
+        clock: 1.0,
+        graph_pos: gp(200.0, 300.0),
+        floor: 0,
+    }])
+    .unwrap();
+    let d = s.solve_all_readonly();
+    assert!(
+        d.factories[&fid].warnings.is_empty(),
+        "a generator's empty recipe must not warn: {:?}",
+        d.factories[&fid].warnings
+    );
+
+    // A non-empty recipe absent from the catalog IS surfaced.
+    let resp = s
+        .edit(vec![Command::AddGroup {
+            factory: fid.clone(),
+            machine: "Build_SmelterMk1_C".into(),
+            recipe: "Recipe_Totally_Unknown_C".into(),
+            count: 2,
+            clock: 1.0,
+            graph_pos: gp(200.0, 400.0),
+            floor: 0,
+        }])
+        .unwrap();
+    let df = &resp.derived.factories[&fid];
+    assert!(
+        df.solve_error.is_none(),
+        "an unknown recipe must not error the whole factory"
+    );
+    assert_eq!(
+        df.warnings.len(),
+        1,
+        "one unknown-recipe production group is surfaced: {:?}",
+        df.warnings
+    );
+    assert!(
+        df.warnings[0].contains("catalog"),
+        "the warning points at the catalog: {}",
+        df.warnings[0]
+    );
+}

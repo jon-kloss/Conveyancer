@@ -81,6 +81,10 @@ pub struct DerivedFactory {
     pub solve_on_release: bool,
     /// Set when the factory couldn't be solved (cycle, missing recipe).
     pub solve_error: Option<String>,
+    /// Non-fatal notices about this factory's solve — e.g. a machine group whose
+    /// recipe isn't in the loaded catalog was skipped (its throughput is absent,
+    /// but the rest of the factory still solved). Empty in the common case.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1963,9 +1967,9 @@ impl Session {
             self.feed_downstream(fid, &result.ports, &mut supplies, &mut route_supply);
 
             derived.total_power_mw += result.total_power_mw;
-            derived
-                .factories
-                .insert(fid.clone(), to_derived(&result, solve_on_release));
+            let mut df = to_derived(&result, solve_on_release);
+            df.warnings = self.unknown_recipe_warnings(fid);
+            derived.factories.insert(fid.clone(), df);
         }
 
         // Route flows (= downstream intake), deficits, manifests.
@@ -2347,7 +2351,34 @@ impl Session {
             solve_us: 0,
             solve_on_release: false,
             solve_error: Some(message.into()),
+            warnings: Vec::new(),
         }
+    }
+
+    /// Non-fatal notices for a factory whose material-flow solve silently
+    /// dropped a machine group. A group with an EMPTY recipe is a power
+    /// generator (accounted by the power derivation, not this solve) — never a
+    /// warning. A group with a NON-EMPTY recipe that isn't in the loaded catalog
+    /// is a genuine unknown (a modded machine, or a Docs.json missing a recipe
+    /// the save uses): its throughput is absent from the solve, so surface it
+    /// rather than let the factory quietly under-count.
+    fn unknown_recipe_warnings(&self, fid: &Id) -> Vec<String> {
+        let Some(factory) = self.state.factories.get(fid) else {
+            return Vec::new();
+        };
+        let skipped = factory
+            .groups
+            .iter()
+            .filter_map(|gid| self.state.groups.get(gid))
+            .filter(|g| !g.recipe.is_empty() && !self.gamedata.recipes.contains_key(&g.recipe))
+            .count();
+        if skipped == 0 {
+            return Vec::new();
+        }
+        vec![format!(
+            "{skipped} machine group{} skipped — recipe not in the loaded catalog; upload the matching Docs.json to include its throughput",
+            if skipped == 1 { "" } else { "s" }
+        )]
     }
 
     /// Recompute derived state for everything, without touching canonical state.
@@ -2472,6 +2503,7 @@ fn to_derived(r: &SolveResult, solve_on_release: bool) -> DerivedFactory {
         solve_us: r.solve_us,
         solve_on_release,
         solve_error: None,
+        warnings: Vec::new(),
     }
 }
 
