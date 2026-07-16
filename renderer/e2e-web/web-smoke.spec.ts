@@ -342,3 +342,38 @@ test("Phase 4a: corrupt stored docs boot fresh on the fixture, not bricked", asy
   expect(await hasKey(page, DOCS_CORRUPT_KEY), "the bad docs were backed up").toBe(true);
   expect(await hasKey(page, DOCS_KEY), "the bad docs key was cleared off the boot path").toBe(false);
 });
+
+// Phase 4a durability — the OTHER cascade branch (PR #17 review): a corrupt PLAN
+// blob when a real catalog IS uploaded must drop ONLY the plan and KEEP the
+// catalog. A regression that discarded the docs here would silently throw away
+// the player's uploaded game data on any plan corruption — the branch worth a
+// guard.
+test("Phase 4a: a corrupt plan with uploaded docs keeps the catalog, drops only the plan", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await waitReady(page);
+
+  // Upload a real catalog, then make a plan edit so there IS a plan to corrupt.
+  await page.getByTestId("docs-file-input").setInputFiles(DOCS_FIXTURE);
+  await expect.poll(() => buildVersion(page), { timeout: 30_000 }).toBe("uploaded");
+  await page.evaluate(async () => {
+    await (window as unknown as StoreWin).__ficsitStore.getState().dispatch([
+      { type: "create_factory", name: "DOOMED", position: { x: 1, y: 2, z: 0 }, region: "GRASS FIELDS" },
+    ]);
+  });
+  expect(await factoryCount(page)).toBe(1);
+
+  // Corrupt ONLY the plan blob; leave the docs key intact.
+  await seedKey(page, KEY, [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+
+  // Reload — the cascade should keep the uploaded catalog and boot a fresh plan.
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "the uploaded catalog is KEPT when only the plan is corrupt").toBe(
+    "uploaded",
+  );
+  expect(await factoryCount(page), "the corrupt plan was dropped to a fresh one").toBe(0);
+  expect(await hasKey(page, CORRUPT_KEY), "the corrupt plan blob was backed up").toBe(true);
+  expect(await hasKey(page, DOCS_KEY), "the uploaded docs were NOT discarded").toBe(true);
+});
