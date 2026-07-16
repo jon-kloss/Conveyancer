@@ -1627,7 +1627,18 @@ impl Session {
         let mut groups = Vec::new();
         for gid in &factory.groups {
             let g = self.state.groups.get(gid)?;
-            let recipe = self.gamedata.recipes.get(&g.recipe)?;
+            // A group whose recipe can't be resolved must NOT fail the whole
+            // factory's solve — skip it and keep solving the rest. This is a
+            // power generator (no production recipe; imported with an empty
+            // `recipe`) or an unknown/modded recipe class. Generators are
+            // accounted by the power derivation, not the material-flow solve.
+            // Before this, one such group made `snapshot` return None, so the
+            // entire factory reported "missing recipe or machine data" and every
+            // machine rendered 0/min — real imported saves with a biomass/coal
+            // generator inside a production factory hit exactly this.
+            let Some(recipe) = self.gamedata.recipes.get(&g.recipe) else {
+                continue;
+            };
             let power = gamedata::db::recipe_power(&self.gamedata, recipe, &g.machine);
             groups.push(GroupSpec {
                 id: g.id.clone(),
