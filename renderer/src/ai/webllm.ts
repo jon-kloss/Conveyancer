@@ -50,8 +50,10 @@ export async function loadEngine(model: string, onProgress: (fraction: number, t
 }
 
 /** Run one system+user turn and return the raw assistant text (validated Rust
- *  side). Low temperature — we want the structured reorder, not creativity. */
-export async function runRank(system: string, user: string): Promise<string> {
+ *  side). Low temperature — we want the structured reorder, not creativity.
+ *  `maxTokens` comes from the prepared job (it scales with candidate count, so
+ *  the reply JSON never truncates mid-string on a large empire). */
+export async function runRank(system: string, user: string, maxTokens: number): Promise<string> {
   if (!engine) throw new Error("on-device model is not loaded");
   const res = await engine.chat.completions.create({
     messages: [
@@ -59,7 +61,7 @@ export async function runRank(system: string, user: string): Promise<string> {
       { role: "user", content: user },
     ],
     temperature: 0.2,
-    max_tokens: 512,
+    max_tokens: maxTokens,
   });
   return res.choices[0]?.message?.content ?? "";
 }

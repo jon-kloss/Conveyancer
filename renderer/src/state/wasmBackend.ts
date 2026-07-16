@@ -161,8 +161,8 @@ export class WasmBackend implements Backend {
   rankPrepare(model: string) {
     return this.call<RankPrepare>("next_rank_prepare", model);
   }
-  rankApply(content: string) {
-    return this.call<RankResponse>("next_rank_apply", content);
+  rankApply(jobId: number, content: string) {
+    return this.call<RankResponse>("next_rank_apply", { jobId, content });
   }
   setPreferences(prefs: NextPreferences) {
     return this.call<PreferencesView>("set_next_preferences", prefs);

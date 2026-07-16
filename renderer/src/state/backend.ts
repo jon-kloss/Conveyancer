@@ -71,8 +71,10 @@ export interface Backend {
   rankPrepare?(model: string): Promise<RankPrepare>;
   /** On-device split, PHASE 2 (web only). Validates the browser model's raw
    *  reply through the same firewall the native provider uses; a blank/invalid
-   *  reply degrades to the heuristic list, never an error. */
-  rankApply?(content: string): Promise<RankResponse>;
+   *  reply degrades to the heuristic list, never an error. `jobId` is the token
+   *  from the matching `rankPrepare` — a mismatch (a newer rank replaced the
+   *  parked job) degrades to a clean heuristic instead of cross-applying. */
+  rankApply?(jobId: number, content: string): Promise<RankResponse>;
   /** PR 3: persist plan-scoped NEXT preferences (not undoable, outside
    *  plan_hash). Returns the updated view. */
   setPreferences(prefs: NextPreferences): Promise<PreferencesView>;

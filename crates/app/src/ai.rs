@@ -607,14 +607,27 @@ impl RankJob {
     pub fn model_id(&self) -> &str {
         &self.model
     }
+    /// Generation token budget for a HOST-run model, mirroring the native
+    /// provider path (`request_body`): it scales with candidate count so the
+    /// reply JSON never truncates mid-string at megabase scale — a flat cap
+    /// would MANUFACTURE the very parse failure the firewall exists to prevent.
+    pub fn max_tokens(&self) -> usize {
+        256 + 48 * self.candidates.len()
+    }
 }
 
 /// Apply a raw model reply — text produced by a model the HOST ran (a browser
 /// WebGPU/WASM model, say) — to the job through the exact same validation
 /// firewall the native provider path uses. Pure: no HTTP, safe in wasm. A reply
-/// that isn't parseable JSON, or that carries no usable content, degrades to the
-/// heuristic list with a surfaced error — identical to a failed provider call.
+/// that isn't parseable JSON degrades to the heuristic list with a surfaced
+/// error — identical to a failed provider call. EMPTY content is a QUIET degrade
+/// (no error): it means the model produced nothing — an aborted or torn-down
+/// generation (e.g. the user disabled on-device AI mid-rank) — not a parse
+/// failure worth flagging on the status chip.
 pub fn apply_rank_reply(job: RankJob, content: &str) -> RankResponse {
+    if content.trim().is_empty() {
+        return heuristic(job.candidates, None);
+    }
     match extract_reply(content) {
         Some(reply) => ranked_response(job, &reply),
         None => heuristic(

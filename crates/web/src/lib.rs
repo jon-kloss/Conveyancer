@@ -70,9 +70,15 @@ pub struct WebSession {
     jobs: BTreeMap<String, JobProgress>,
     /// A rank job parked between `next_rank_prepare` (which handed its messages to
     /// the host so a browser-run model — WebLLM — could produce a reply) and
-    /// `next_rank_apply` (which validates that reply through the firewall). Single
-    /// -flight: a fresh prepare replaces any stale pending job.
-    pending_rank: Option<ai::RankJob>,
+    /// `next_rank_apply` (which validates that reply through the firewall). Tagged
+    /// with a monotonic id so two overlapping ranks (an epoch bump lands a second
+    /// prepare while the first's model call is still running) can't cross-consume:
+    /// `apply` only takes the job whose id it was handed by its OWN prepare; a
+    /// non-matching apply degrades to a clean heuristic. A fresh prepare replaces
+    /// any stale pending job.
+    pending_rank: Option<(u64, ai::RankJob)>,
+    /// Monotonic tag source for `pending_rank` (see above).
+    rank_seq: u64,
 }
 
 #[wasm_bindgen]
@@ -107,6 +113,7 @@ impl WebSession {
             inner,
             jobs: BTreeMap::new(),
             pending_rank: None,
+            rank_seq: 0,
         })
     }
 
@@ -336,30 +343,47 @@ impl WebSession {
                         serde_json::json!({ "mode": "done", "response": r })
                     }
                     RankPrep::Call(job) => {
+                        self.rank_seq += 1;
+                        let id = self.rank_seq;
                         let out = serde_json::json!({
                             "mode": "call",
+                            "jobId": id,
                             "system": job.system_prompt(),
                             "user": job.user_message(),
                             "model": job.model_id(),
+                            "maxTokens": job.max_tokens(),
                         });
-                        self.pending_rank = Some(job);
+                        self.pending_rank = Some((id, job));
                         out
                     }
                 };
                 Ok((false, to_js(&msg)?))
             }
-            // `next_rank_apply` takes the host-run model's raw reply text and
-            // validates it through the exact same firewall the native provider
-            // path uses (apply_rank_reply). No pending job (e.g. a stale double
-            // call) degrades to the heuristic list, never an error to the UI.
+            // `next_rank_apply` takes `{ jobId, content }`: the host-run model's
+            // raw reply plus the id its OWN prepare handed it. It validates the
+            // reply through the exact same firewall the native provider path uses
+            // (apply_rank_reply), but ONLY when the pending job's id matches —
+            // otherwise a second, overlapping rank has replaced it, so this apply
+            // degrades to a clean heuristic rather than validating its content
+            // against the wrong job. No/mismatched pending job → clean heuristic,
+            // never an error to the UI.
             "next_rank_apply" => {
-                let content: String = from_js(args)?;
-                let resp = match self.pending_rank.take() {
-                    Some(job) => ai::apply_rank_reply(job, &content),
-                    None => match ai::prepare_rank(&mut self.inner) {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Args {
+                    job_id: u64,
+                    content: String,
+                }
+                let arg: Args = from_js(args)?;
+                let matched = matches!(&self.pending_rank, Some((id, _)) if *id == arg.job_id);
+                let resp = if matched {
+                    let (_, job) = self.pending_rank.take().expect("just matched");
+                    ai::apply_rank_reply(job, &arg.content)
+                } else {
+                    match ai::prepare_rank(&mut self.inner) {
                         RankPrep::Done(r) => r,
                         RankPrep::Call(job) => ai::execute_rank(job),
-                    },
+                    }
                 };
                 Ok((false, to_js(&resp)?))
             }

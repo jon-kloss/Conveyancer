@@ -440,14 +440,16 @@ async function rankOnDevice(model: string): Promise<RankResponse> {
   if (prep.mode === "done") return prep.response;
   let content = "";
   try {
-    content = await runRank(prep.system, prep.user);
+    content = await runRank(prep.system, prep.user, prep.maxTokens);
   } catch {
-    // generation failed — fall through with empty content so the firewall
-    // (apply_rank_reply) returns the heuristic list rather than surfacing raw
-    // WebGPU/engine errors to the user.
+    // generation failed — fall through with empty content. The firewall treats
+    // empty as a QUIET degrade (heuristic, no error), so a torn-down engine (the
+    // user hit DISABLE mid-rank) never chips a spurious "invalid JSON" notice.
     content = "";
   }
-  return backend.rankApply!(content);
+  // `jobId` guards against a second, overlapping rank having replaced the parked
+  // job while the model ran: a non-matching apply degrades to a clean heuristic.
+  return backend.rankApply!(prep.jobId, content);
 }
 
 export const useStore = create<AppStore>((set, get) => ({

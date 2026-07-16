@@ -137,13 +137,16 @@ export default function AiSettings({
     }
   };
 
-  // The chip reflects whichever engine is live: a configured hosted model wins
-  // (explicitly chosen), else a ready on-device model, else OFF.
-  const chipLabel = aiConfig?.configured
-    ? `AI: ${aiConfig.model}`
-    : webllm.phase === "ready"
+  // The chip names whichever engine actually RANKS, matching rankMoves'
+  // precedence: a ready on-device model wins (it's the free, keyless, working
+  // path — and on the web build the hosted form can't run at all), else a
+  // configured hosted model, else OFF.
+  const chipLabel =
+    webllm.phase === "ready"
       ? "AI: on-device"
-      : "AI: OFF";
+      : aiConfig?.configured
+        ? `AI: ${aiConfig.model}`
+        : "AI: OFF";
   const pct = Math.round(webllm.progress * 100);
 
   return (

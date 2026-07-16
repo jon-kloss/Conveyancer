@@ -606,7 +606,7 @@ export interface RankResponse {
  *  browser, whose reply goes back through `next_rank_apply` (the firewall). */
 export type RankPrepare =
   | { mode: "done"; response: RankResponse }
-  | { mode: "call"; system: string; user: string; model: string };
+  | { mode: "call"; jobId: number; system: string; user: string; model: string; maxTokens: number };
 
 /** PR 3 — a validated wildcard idea BEYOND the derived candidate list: the one
  *  labeled, wizard-gated firewall exception. It carries no engine action and no
