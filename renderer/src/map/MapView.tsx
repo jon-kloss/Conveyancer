@@ -20,6 +20,14 @@ import RoutePopover from "./RoutePopover";
 import Legend from "./Legend";
 import SearchBox from "./SearchBox";
 import ImportModal from "../import/ImportModal";
+import {
+  fsAccessSupported,
+  pickSaveForSync,
+  getSyncMeta,
+  setSyncMeta,
+  relTime,
+  type SyncMeta,
+} from "../import/saveHandle";
 import { fmtPower, itemLabel, routeBottleneck } from "../lib/format";
 import "./map.css";
 
@@ -164,6 +172,42 @@ export default function MapView() {
     },
     [loadDocsFile],
   );
+  // Sync Phase 2: "Sync from save" re-reads the retained save handle and
+  // reconciles in one click. Gated on a real Docs.json (a fixture catalog would
+  // quarantine most recipes → junk diffs); grayed with a how-to-enable tooltip
+  // otherwise. Chrome/Edge get the no-re-pick handle path; elsewhere it falls
+  // back to the classic file input (re-pick each time, no retention).
+  const syncImport = useStore((s) => s.syncImport);
+  const catalogLoaded = useStore((s) => {
+    const bv = s.gamedata.buildVersion;
+    return !!bv && bv !== "fixture";
+  });
+  const [syncMeta, setSyncMetaState] = useState<SyncMeta | undefined>();
+  const [syncing, setSyncing] = useState(false);
+  useEffect(() => {
+    if (__WASM_BACKEND__) void getSyncMeta().then(setSyncMetaState);
+  }, []);
+  const onSync = useCallback(async () => {
+    if (!catalogLoaded || syncing) return; // defensive; the button is disabled too
+    if (!fsAccessSupported()) {
+      // No File System Access here — reuse the classic picker + ImportModal.
+      fileRef.current?.click();
+      return;
+    }
+    setSyncing(true);
+    try {
+      const file = await pickSaveForSync();
+      if (!file) return; // user cancelled the picker / denied permission
+      const outcome = await syncImport(file);
+      if (outcome) {
+        const meta = { name: file.name, lastSyncedAt: Date.now() };
+        await setSyncMeta(meta);
+        setSyncMetaState(meta);
+      }
+    } finally {
+      setSyncing(false);
+    }
+  }, [catalogLoaded, syncing, syncImport]);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
   // one-shot: swallow the contextmenu that follows a route-drag release
@@ -758,6 +802,39 @@ export default function MapView() {
                     <span className="data-menu-item-label">Import save</span>
                     <span className="data-menu-item-sub">.sav — your factories as a Built layer</span>
                   </button>
+                  {__WASM_BACKEND__ && (
+                    // aria-disabled (not the native attribute) so the how-to-enable
+                    // tooltip still shows on hover — browsers suppress title on a
+                    // natively-disabled button. The click is guarded instead.
+                    <button
+                      className="data-menu-item"
+                      onClick={() => {
+                        if (!catalogLoaded || syncing) return;
+                        setDataMenu(false);
+                        void onSync();
+                      }}
+                      aria-disabled={!catalogLoaded || syncing}
+                      title={
+                        catalogLoaded
+                          ? undefined
+                          : "Upload your Docs.json first (DATA ▸ Upload Docs.json) to enable save sync"
+                      }
+                      data-testid="btn-sync-save"
+                    >
+                      <span className="data-menu-item-label">
+                        {syncing ? "Syncing…" : "Sync from save"}
+                      </span>
+                      <span className="data-menu-item-sub">
+                        {!catalogLoaded
+                          ? "needs your Docs.json — upload it below to enable"
+                          : syncMeta
+                            ? `re-read ${syncMeta.name} · synced ${relTime(syncMeta.lastSyncedAt)}`
+                            : fsAccessSupported()
+                              ? "re-read your save & reconcile — no re-pick next time"
+                              : "re-read your save & reconcile"}
+                      </span>
+                    </button>
+                  )}
                   {__WASM_BACKEND__ && (
                     <button
                       className="data-menu-item"
