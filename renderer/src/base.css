@@ -152,6 +152,7 @@ button {
   font-size: 12px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+  white-space: nowrap;
   transition: background var(--dur-hover) var(--ease), border-color var(--dur-hover) var(--ease);
 }
 .btn-primary {
