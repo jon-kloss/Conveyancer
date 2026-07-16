@@ -111,6 +111,12 @@ pub struct ClusterExtractor {
     pub clock: f64,
     #[serde(default)]
     pub node_actor_id: Option<String>,
+    /// Purity read from the save's `mPurityOverride` for the node this extractor
+    /// sits on (`pure` | `normal` | `impure`); `None` when the save didn't
+    /// carry it. Authoritative over the bundled catalog — handles randomized /
+    /// modded purities.
+    #[serde(default)]
+    pub purity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -206,10 +212,18 @@ fn bind_extractors(
             Some(ni) => {
                 let n = &world.nodes[ni];
                 let d = (n.x - e.position.x).hypot(n.y - e.position.y);
-                let node_override = (d > NODE_DRIFT_M).then(|| NodeOverride {
+                let pos = (d > NODE_DRIFT_M).then_some(e.position);
+                // The save's purity (mPurityOverride) is authoritative — record
+                // it when it disagrees with the bundled catalog (a randomized or
+                // modded node the community dump can't know), even if the
+                // position matches. That corrects the node's purity + its
+                // extraction rate throughout the app.
+                let purity = e.purity.clone().filter(|p| *p != n.purity);
+                let node_override = (pos.is_some() || purity.is_some()).then(|| NodeOverride {
                     id: n.id.clone(),
-                    pos: Some(e.position),
+                    pos,
                     save_actor: e.node_actor_id.clone(),
+                    purity,
                 });
                 out.push(BoundNode {
                     node: n.id.clone(),
@@ -233,12 +247,29 @@ fn bind_extractors(
                         id: key,
                         pos: Some(e.position),
                         save_actor: e.node_actor_id.clone(),
+                        purity: e.purity.clone(),
                     }),
                 });
             }
         }
     }
     out
+}
+
+/// Bake save-derived purity corrections into a world snapshot: for every node
+/// carrying a purity override, overwrite the catalog purity with the save's.
+/// Applied to the SESSION's in-memory world copy (never the ambient asset), so
+/// all downstream reads (`claim_rate`, opportunities, wizard, the map overlay)
+/// use the authoritative save purity. Idempotent.
+pub fn apply_purity_overrides(
+    world: &mut WorldSnapshot,
+    overrides: &BTreeMap<String, NodeOverride>,
+) {
+    for node in world.nodes.iter_mut() {
+        if let Some(purity) = overrides.get(&node.id).and_then(|o| o.purity.as_ref()) {
+            node.purity = purity.clone();
+        }
+    }
 }
 
 /// Resolved world position of a node id under the plan-local overlay: the
@@ -403,6 +434,7 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
                 },
                 clock: e.clock,
                 node_actor_id: e.node_actor_id.clone(),
+                purity: e.purity.clone(),
             });
         }
     }
@@ -1002,9 +1034,14 @@ pub fn dissolve_stale_node_overrides(
             if !claimed.contains(&ov.id) {
                 return true;
             }
-            // redundant: the catalog node exists and the correction now agrees
+            // redundant: the catalog node exists and the POSITION correction now
+            // agrees — but only drop when there is no purity correction to keep
+            // (the catalog purity is permanently wrong for a randomized/modded
+            // node; it never "catches up").
             match (ov.pos, world.nodes.iter().find(|n| n.id == ov.id)) {
-                (Some(pos), Some(n)) => (n.x - pos.x).hypot(n.y - pos.y) <= NODE_DRIFT_M,
+                (Some(pos), Some(n)) => {
+                    ov.purity.is_none() && (n.x - pos.x).hypot(n.y - pos.y) <= NODE_DRIFT_M
+                }
                 _ => false,
             }
         })
@@ -1067,6 +1104,12 @@ pub fn apply_sync(
                         .find(|c| &c.node == node)
                         .and_then(|c| c.save_node_id.clone())
                 });
+            // Preserve any purity override this node already carries — a
+            // position correction must not drop the save-derived purity.
+            let purity = state
+                .node_overrides
+                .get(node)
+                .and_then(|o| o.purity.clone());
             tx.record(state.upsert(Entity::NodeOverride(NodeOverride {
                 id: node.clone(),
                 pos: Some(MapPos {
@@ -1075,6 +1118,7 @@ pub fn apply_sync(
                     z: *z,
                 }),
                 save_actor,
+                purity,
             })));
         }
         SyncOp::UpdateGroup {

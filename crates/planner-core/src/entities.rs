@@ -300,6 +300,12 @@ pub struct NodeOverride {
     /// The save's stable node actor id this correction was reconciled from.
     #[serde(default)]
     pub save_actor: Option<String>,
+    /// Corrected purity (`pure` | `normal` | `impure`) read from the save's
+    /// `mPurityOverride`; `None` leaves the catalog purity intact. The save is
+    /// authoritative — it captures randomized/modded purities the bundled
+    /// community catalog cannot know.
+    #[serde(default)]
+    pub purity: Option<String>,
 }
 
 // ---- Later-phase entities: full data-model shape from day one (HANDOFF mandate).

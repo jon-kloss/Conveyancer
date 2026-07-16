@@ -93,6 +93,56 @@ fn claim_binding_snapshot_and_save_local() {
     assert_eq!(claimed, 2);
 }
 
+/// The save's `mPurityOverride` is authoritative: importing a miner whose save
+/// purity disagrees with the bundled catalog records a purity override and bakes
+/// it into the session's world, so the map + claim rate read the real purity
+/// (this is what makes randomized / modded purities correct).
+#[test]
+fn save_purity_overrides_the_catalog() {
+    let mut s = Session::in_memory(None).unwrap();
+    let node = s.world.nodes[0].clone();
+    // A save purity that differs from the catalog's for this node.
+    let save_purity = if node.purity == "impure" {
+        "pure"
+    } else {
+        "impure"
+    };
+    let mut m = miner(node.x, node.y, "actor");
+    m.purity = Some(save_purity.into());
+    let outcome = s
+        .import_save(ImportSnapshot {
+            save_name: "PURITY".into(),
+            machines: vec![smelter(node.x, node.y)],
+            extractors: vec![m],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(matches!(outcome, ImportOutcome::Imported { .. }));
+
+    // A purity override is recorded …
+    let ov = s
+        .state
+        .node_overrides
+        .get(&node.id)
+        .expect("a purity override is written");
+    assert_eq!(ov.purity.as_deref(), Some(save_purity));
+
+    // … and baked into this session's world (a solve re-syncs it), so every
+    // downstream read sees the save purity, not the catalog's.
+    let _ = s.solve_all_readonly();
+    let corrected = s.world.nodes.iter().find(|n| n.id == node.id).unwrap();
+    assert_eq!(
+        corrected.purity, save_purity,
+        "save purity wins over the catalog"
+    );
+    // The bundled asset on disk is untouched.
+    assert_eq!(
+        gamedata::worldnodes::bundled().nodes[0].purity,
+        node.purity,
+        "the ambient catalog is never mutated"
+    );
+}
+
 /// A node override corrects the resolved position; the bundled asset is unchanged.
 #[test]
 fn node_override_resolution_never_mutates_bundled() {
@@ -116,6 +166,7 @@ fn node_override_resolution_never_mutates_bundled() {
             id: node.id.clone(),
             pos: Some(corrected),
             save_actor: Some("actor".into()),
+            purity: None,
         },
     );
     let resolved = resolved_node_pos(&world, &overrides, &node.id).unwrap();
@@ -225,6 +276,7 @@ fn set_node_override_is_one_undo_entry() {
                 z: 0.0,
             }),
             save_actor: None,
+            purity: None,
         }),
     }])
     .unwrap();

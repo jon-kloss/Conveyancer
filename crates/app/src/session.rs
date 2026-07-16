@@ -379,8 +379,13 @@ impl Session {
         };
         let gd = gamedata::docs::parse_docs(&text, game_build)
             .map_err(|e| SessionError::Internal(format!("Docs.json parse failed: {e}")))?;
-        let world = gamedata::worldnodes::load();
+        let mut world = gamedata::worldnodes::load();
         let (state, entries, cursor) = store.load()?;
+        // Bake save-derived purity corrections into this session's world copy so
+        // every downstream read (claim rate, opportunities, wizard, the map
+        // overlay) sees the authoritative purity. The ambient asset on disk is
+        // never mutated — corrections live in the plan's node_overrides.
+        crate::import::apply_purity_overrides(&mut world, &state.node_overrides);
         let undo = UndoLog::hydrate_with_cursor(entries, cursor);
         let mut advisor = AdvisorState::default();
         for json in store.load_advisor_cards().unwrap_or_default() {
@@ -2339,6 +2344,12 @@ impl Session {
 
     /// Recompute derived state for everything, without touching canonical state.
     pub fn solve_all_readonly(&mut self) -> Derived {
+        // Keep this session's world purity in sync with the save-derived
+        // overrides before every solve, so claim rates, the map overlay, and the
+        // opportunity/wizard passes all read the authoritative purity (handles
+        // randomized/modded nodes). Cheap + idempotent; the ambient asset on
+        // disk is never touched.
+        crate::import::apply_purity_overrides(&mut self.world, &self.state.node_overrides);
         self.empire_solve(&T0Edit::Recompute, None)
     }
 

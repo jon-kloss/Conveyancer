@@ -61,6 +61,10 @@ export const MANUFACTURERS = new Set([
 
 export interface RawObject {
   typePath?: string;
+  /** The actor's level instance path (e.g. "…:PersistentLevel.BP_ResourceNode442").
+   *  Resource-node actors are identified by this; miners reference it via
+   *  `mExtractableResource`. */
+  instanceName?: string;
   transform?: { translation?: { x: number; y: number; z: number } };
   properties?: Record<string, unknown>;
 }
@@ -102,6 +106,41 @@ function nodeActorIdOf(obj: RawObject): string | undefined {
     | undefined;
   const path = prop?.value?.pathName;
   return typeof path === "string" && path.length > 0 ? path : undefined;
+}
+
+/** Match a node actor to a miner's reference regardless of level-path prefix:
+ *  the trailing `.BP_ResourceNodeNNN`, lowercased. */
+const nodeKey = (s: string): string => (s.split(".").pop() ?? s).toLowerCase();
+
+/** The save's authoritative purity for a resource-node actor, read from
+ *  `mPurityOverride` (`RP_Pure` | `RP_Normal` | `RP_Inpure` — note the game's
+ *  "Inpure" spelling). This is ground truth even for RANDOMIZED or modded
+ *  purities the bundled community catalog can't know. `undefined` when absent. */
+function purityOf(obj: RawObject): string | undefined {
+  const prop = obj.properties?.mPurityOverride as { value?: { value?: string } } | undefined;
+  switch (prop?.value?.value) {
+    case "RP_Pure":
+      return "pure";
+    case "RP_Normal":
+      return "normal";
+    case "RP_Inpure":
+      return "impure";
+    default:
+      return undefined;
+  }
+}
+
+/** Build `nodeKey → purity` over every resource-node actor in the save, so an
+ *  extractor's node reference resolves to the save's real purity. */
+function nodePurityMap(levels: Record<string, { objects?: RawObject[] }>): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const lvl of Object.values(levels ?? {})) {
+    for (const obj of lvl.objects ?? []) {
+      const p = purityOf(obj);
+      if (p && obj.instanceName) map.set(nodeKey(obj.instanceName), p);
+    }
+  }
+  return map;
 }
 
 // The purchased/unlocked schematics live on the single BP_SchematicManager
@@ -159,6 +198,10 @@ export function buildSnapshot(
     trainStations: 0,
     quarantined: {},
   };
+  // The save's authoritative per-node purity (mPurityOverride), keyed so an
+  // extractor's node reference resolves it. Handles randomized/modded purities
+  // the bundled catalog can't know.
+  const nodePurity = nodePurityMap(levels);
   for (const lvl of Object.values(levels ?? {})) {
     for (const obj of lvl.objects ?? []) {
       const typePath = obj.typePath ?? "";
@@ -169,12 +212,13 @@ export function buildSnapshot(
       } else if (EXTRACTORS.has(cls)) {
         const m = toMachine(obj, cls);
         if (m) {
-          // Node context for W2b node reconciliation. Only the stable node
-          // ref is in the save; purity/resource/rate are not — emit null and
-          // let the world catalog supply purity downstream (honest absence).
+          // Node context for W2b node reconciliation. The stable node ref +
+          // the save's authoritative purity (mPurityOverride) come from the
+          // save; resource/rate do not. Purity falls back to null (→ catalog)
+          // only when the save didn't carry it.
           m.nodeActorId = nodeActorIdOf(obj);
           m.resource = null;
-          m.purity = null;
+          m.purity = m.nodeActorId ? (nodePurity.get(nodeKey(m.nodeActorId)) ?? null) : null;
           snapshot.extractors!.push(m);
         }
       } else if (cls === "BP_SchematicManager_C") {
