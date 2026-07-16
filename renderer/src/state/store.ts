@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { backend } from "./backend";
 import { parseSaveFile } from "../import/parseSave";
+import { driftConflictCount } from "../import/saveHandle";
 import { applyPatches } from "./patch";
 import {
   DEFAULT_WEBLLM_MODEL,
@@ -82,6 +83,36 @@ function persistWebllm(enabled: boolean, model: string): void {
     /* storage blocked (private window) — the in-memory choice still works this session */
   }
 }
+// Auto-sync opt-in + interval persist in localStorage — a device/browser
+// capability choice (it re-reads a retained File System Access handle, which
+// lives in this origin's IndexedDB), NOT plan data. Guarded reads default off.
+const AUTOSYNC_ENABLED_KEY = "ficsit.autosync.enabled";
+const AUTOSYNC_INTERVAL_KEY = "ficsit.autosync.intervalMin";
+const DEFAULT_AUTOSYNC_MIN = 5;
+function readAutoSyncEnabled(): boolean {
+  try {
+    return localStorage.getItem(AUTOSYNC_ENABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function readAutoSyncInterval(): number {
+  try {
+    const n = Number(localStorage.getItem(AUTOSYNC_INTERVAL_KEY));
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_AUTOSYNC_MIN;
+  } catch {
+    return DEFAULT_AUTOSYNC_MIN;
+  }
+}
+function persistAutoSync(enabled: boolean, intervalMin: number): void {
+  try {
+    localStorage.setItem(AUTOSYNC_ENABLED_KEY, enabled ? "1" : "0");
+    localStorage.setItem(AUTOSYNC_INTERVAL_KEY, String(intervalMin));
+  } catch {
+    /* storage blocked (private window) — the in-memory choice still works this session */
+  }
+}
+
 function persistWebllmDownloaded(downloaded: boolean): void {
   try {
     localStorage.setItem(WEBLLM_DOWNLOADED_KEY, downloaded ? "1" : "0");
@@ -272,6 +303,15 @@ export interface AppStore {
       Drift opens the review surface; every branch fires a toast. Resolves with
       the outcome, or null when the parse/import failed (surfaced as a toast). */
   syncImport(file: File): Promise<ImportOutcome | null>;
+  /** Sync Phase 3: auto-pull opt-in (persisted, device-scoped) + its interval. */
+  autoSync: { enabled: boolean; intervalMin: number };
+  /** Toggle auto-sync and/or change its interval (persists both). */
+  setAutoSync(enabled: boolean, intervalMin?: number): void;
+  /** Sync Phase 3 (Option B): headless auto-pull — conflict-free drift applies
+      silently; a drift with real conflicts opens review instead; an in-sync
+      save is a quiet no-op (no toast). Resolves with the outcome, or null on a
+      read/parse failure. */
+  autoPull(file: File): Promise<ImportOutcome | null>;
   /** Resolves with the created ids, or null when the backend refused the
       commands (the refusal is recorded in `cmdError` — never a rejection). */
   dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[] | null>;
@@ -503,6 +543,7 @@ export const useStore = create<AppStore>((set, get) => ({
   error: null,
   cmdError: null,
   toasts: [],
+  autoSync: { enabled: readAutoSyncEnabled(), intervalMin: readAutoSyncInterval() },
   plan: emptyPlan,
   derived: emptyDerived,
   gamedata: { items: {}, recipes: {}, machines: {}, belts: {}, buildables: {}, buildVersion: "" },
@@ -775,6 +816,47 @@ export const useStore = create<AppStore>((set, get) => ({
     } else {
       get().pushToast("Synced — plan already matches this save", "info");
     }
+    return outcome;
+  },
+
+  setAutoSync(enabled, intervalMin) {
+    const next = { enabled, intervalMin: intervalMin ?? get().autoSync.intervalMin };
+    persistAutoSync(next.enabled, next.intervalMin);
+    set({ autoSync: next });
+  },
+
+  async autoPull(file) {
+    let outcome: ImportOutcome;
+    try {
+      const snapshot = await parseSaveFile(file);
+      outcome = await backend.importRun(snapshot);
+    } catch (e) {
+      get().pushToast(`Auto-sync couldn't read the save — ${errText(e)}`, "error");
+      return null;
+    }
+    await get().hydrate();
+    if (outcome.outcome === "drift") {
+      const items = get().plan.proposals[outcome.proposal]?.items ?? [];
+      const conflicts = driftConflictCount(items);
+      if (conflicts === 0) {
+        // Option B: a conflict-free drift applies silently.
+        await get().acceptProposal(outcome.proposal);
+        get().pushToast(
+          `Auto-synced — ${items.length} change${items.length === 1 ? "" : "s"} applied`,
+          "success",
+        );
+      } else {
+        // Real mine/theirs conflicts need a human — open review, never auto-apply.
+        get().setReviewing(outcome.proposal);
+        get().pushToast(
+          `Auto-sync paused — ${conflicts} conflict${conflicts === 1 ? "" : "s"} to resolve`,
+          "info",
+        );
+      }
+    } else if (outcome.outcome === "imported") {
+      get().pushToast(`Auto-synced — ${outcome.factories} factories imported as ◆ built`, "success");
+    }
+    // in_sync → quiet no-op (no toast on a tick where nothing changed)
     return outcome;
   },
 

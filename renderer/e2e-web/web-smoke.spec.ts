@@ -300,6 +300,10 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   const syncBtn = page.getByTestId("btn-sync-save");
   await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
   await expect(syncBtn).toHaveAttribute("title", /Docs\.json/);
+  // Phase 3: the auto-sync toggle shares the same Docs.json gate.
+  const autoBtn = page.getByTestId("btn-auto-sync");
+  await expect(autoBtn).toHaveAttribute("aria-disabled", "true");
+  await expect(autoBtn).toHaveAttribute("title", /Docs\.json/);
 
   // Upload through the real input the button drives (setInputFiles fires its
   // onChange → store.uploadDocs → worker rebuild → hydrate). The button is

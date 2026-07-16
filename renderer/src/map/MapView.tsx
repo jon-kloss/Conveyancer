@@ -23,6 +23,7 @@ import ImportModal from "../import/ImportModal";
 import {
   fsAccessSupported,
   pickSaveForSync,
+  readStoredHandleSilently,
   getSyncMeta,
   setSyncMeta,
   relTime,
@@ -215,6 +216,69 @@ export default function MapView() {
       setSyncing(false);
     }
   }, [catalogLoaded, syncing, syncImport, pushToast]);
+
+  // Sync Phase 3: auto-pull. Needs both the Docs.json gate AND File System
+  // Access (the timer re-reads the retained handle with no user gesture, so it
+  // is Chrome/Edge-only). Option B (in store.autoPull): conflict-free drift
+  // applies silently; real conflicts open review.
+  const autoSync = useStore((s) => s.autoSync);
+  const setAutoSync = useStore((s) => s.setAutoSync);
+  const autoPull = useStore((s) => s.autoPull);
+  const autoSyncReady = catalogLoaded && fsAccessSupported();
+  const autoPullBusy = useRef(false);
+  const recordSync = useCallback(async (name: string) => {
+    const meta = { name, lastSyncedAt: Date.now() };
+    await setSyncMeta(meta);
+    setSyncMetaState(meta);
+  }, []);
+  const onToggleAutoSync = useCallback(async () => {
+    if (!autoSyncReady) return; // defensive; the row is aria-disabled too
+    if (autoSync.enabled) {
+      setAutoSync(false);
+      return;
+    }
+    try {
+      // Establish a granted handle up front (this click is the user gesture the
+      // silent timer can't provide later); bail if the user cancels the pick.
+      let file = await readStoredHandleSilently();
+      if (!file) file = await pickSaveForSync();
+      if (!file) return;
+      setAutoSync(true);
+      pushToast(
+        `Auto-sync on — every ${autoSync.intervalMin} min while this tab is open (Chrome/Edge)`,
+        "info",
+      );
+      const outcome = await autoPull(file); // one immediate pull so it visibly works
+      if (outcome) await recordSync(file.name);
+    } catch (e) {
+      pushToast(`Couldn't start auto-sync — ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }, [autoSyncReady, autoSync, setAutoSync, pushToast, autoPull, recordSync]);
+  useEffect(() => {
+    if (!__WASM_BACKEND__ || !autoSync.enabled || !autoSyncReady) return;
+    let cancelled = false;
+    const tick = async () => {
+      // Skip a tick that would collide: another pull running, or an open review
+      // (never clobber a proposal the user is mid-decision on).
+      if (cancelled || autoPullBusy.current || useStore.getState().reviewing) return;
+      autoPullBusy.current = true;
+      try {
+        const file = await readStoredHandleSilently();
+        if (!file) return; // permission lapsed / no handle — skip quietly
+        const outcome = await autoPull(file);
+        if (outcome && !cancelled) await recordSync(file.name);
+      } catch {
+        /* transient read failure — the next tick retries */
+      } finally {
+        autoPullBusy.current = false;
+      }
+    };
+    const id = window.setInterval(() => void tick(), autoSync.intervalMin * 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [autoSync.enabled, autoSync.intervalMin, autoSyncReady, autoPull, recordSync]);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
   // one-shot: swallow the contextmenu that follows a route-drag release
@@ -841,6 +905,54 @@ export default function MapView() {
                               : "re-read your save & reconcile"}
                       </span>
                     </button>
+                  )}
+                  {__WASM_BACKEND__ && (
+                    <div className="data-menu-block">
+                      <button
+                        className="data-menu-item"
+                        onClick={() => void onToggleAutoSync()}
+                        aria-disabled={!autoSyncReady}
+                        title={
+                          !catalogLoaded
+                            ? "Upload your Docs.json first (DATA ▸ Upload Docs.json) to enable save sync"
+                            : !fsAccessSupported()
+                              ? "Auto-sync needs the File System Access API — use Chrome or Edge"
+                              : undefined
+                        }
+                        data-testid="btn-auto-sync"
+                        aria-pressed={autoSync.enabled}
+                      >
+                        <span className="data-menu-item-label">
+                          Auto-sync{autoSync.enabled ? " · ON" : ""}
+                          <span className={`autosync-dot ${autoSync.enabled ? "on" : ""}`} aria-hidden />
+                        </span>
+                        <span className="data-menu-item-sub">
+                          {!catalogLoaded
+                            ? "needs your Docs.json — upload it below to enable"
+                            : !fsAccessSupported()
+                              ? "needs Chrome or Edge (File System Access)"
+                              : autoSync.enabled
+                                ? `re-reads every ${autoSync.intervalMin} min · applies safe changes, asks on conflicts`
+                                : "re-read on a timer · applies safe changes, asks on conflicts"}
+                        </span>
+                      </button>
+                      {autoSync.enabled && autoSyncReady && (
+                        <div className="autosync-intervals" data-testid="autosync-intervals">
+                          <span className="autosync-label mono">every</span>
+                          {[5, 10, 15].map((n) => (
+                            <button
+                              key={n}
+                              type="button"
+                              className={`autosync-chip ${n === autoSync.intervalMin ? "active" : ""}`}
+                              onClick={() => setAutoSync(true, n)}
+                              data-testid={`autosync-${n}`}
+                            >
+                              {n}m
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
                   {__WASM_BACKEND__ && (
                     <button

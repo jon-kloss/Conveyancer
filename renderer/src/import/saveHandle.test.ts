@@ -1,5 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { relTime } from "./saveHandle";
+import { relTime, driftConflictCount } from "./saveHandle";
+
+describe("driftConflictCount (Option B gate)", () => {
+  it("is zero when no item carries a conflict → auto-apply", () => {
+    expect(driftConflictCount([{}, { conflict: undefined }, {}])).toBe(0);
+  });
+  it("counts only the conflicting items → any >0 means review", () => {
+    expect(driftConflictCount([{ conflict: { mine: "a", theirs: "b" } }, {}, { conflict: {} }])).toBe(2);
+  });
+  it("handles an empty drift", () => {
+    expect(driftConflictCount([])).toBe(0);
+  });
+});
 
 describe("relTime", () => {
   const now = 1_000_000_000_000;
