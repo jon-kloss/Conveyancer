@@ -27,7 +27,11 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  z-index: 20;
+  /* Above the right-docked drawers (z22): a selected factory/node/route must
+     never bury the toolbar actions or trap the DATA dropdown behind it. The
+     drawers start below the toolbar (see .drawer top) so the two don't collide;
+     only the DATA menu overlaps a drawer, and it correctly renders on top. */
+  z-index: 23;
   pointer-events: none;
 }
 .map-chrome-top > * {
@@ -329,7 +333,9 @@
 }
 .drawer {
   position: absolute;
-  top: 10px;
+  /* Clear the toolbar row (top:10 + 30px control + gap) so the map actions stay
+     visible and clickable while a drawer is open. */
+  top: 52px;
   right: 10px;
   bottom: 10px;
   width: var(--panel-summary);

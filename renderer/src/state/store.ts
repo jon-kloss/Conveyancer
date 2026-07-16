@@ -30,6 +30,14 @@ import type {
 /** Human text for a rejected backend call (DomainError string or Error). */
 export const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Transient action-feedback notice. */
+export type ToastKind = "success" | "error" | "info";
+export interface Toast {
+  id: number;
+  message: string;
+  kind: ToastKind;
+}
+
 /** Backend errors cite entity ids; users know names. Swap any ULID we can
  *  resolve for its display name (quoted), leave the rest untouched. */
 const nameIds = (msg: string): string =>
@@ -96,6 +104,8 @@ export interface AppStore {
   /** last refused backend command — status-bar chip, NOT the full-screen
       BACKEND UNREACHABLE card (that is `error`, set only by hydrate). */
   cmdError: { message: string; at: number } | null;
+  /** transient action-feedback toasts (auto-dismiss); newest last */
+  toasts: Toast[];
   plan: Plan;
   derived: Derived;
   gamedata: GameData;
@@ -181,6 +191,12 @@ export interface AppStore {
   /** `at` must match the current error — a stale auto-clear timer armed for
       an older error must not dismiss a newer one. */
   clearCmdError(at: number): void;
+  /** Push a transient toast (auto-dismisses). For action feedback the UI
+      otherwise swallows — uploads, clipboard copies, background successes. */
+  pushToast(message: string, kind?: ToastKind): void;
+  dismissToast(id: number): void;
+  /** Clear all toasts (e.g. a file drag starts, so they can't block the drop). */
+  clearToasts(): void;
   undo(): Promise<void>;
   redo(): Promise<void>;
   setSelection(sel: Selection): void;
@@ -312,12 +328,16 @@ let rankSeq = 0;
 let rankedKey: string | null = null;
 let mountedFeeds = 0;
 let lastMergedHash = "";
+// Monotonic toast id — avoids duplicate React keys when two toasts fire in the
+// same millisecond (Date.now would collide).
+let nextToastId = 1;
 const rankKey = (): string => `${useStore.getState().planHash}:${useStore.getState().rankEpoch}`;
 
 export const useStore = create<AppStore>((set, get) => ({
   ready: false,
   error: null,
   cmdError: null,
+  toasts: [],
   plan: emptyPlan,
   derived: emptyDerived,
   gamedata: { items: {}, recipes: {}, machines: {}, belts: {}, buildables: {}, buildVersion: "" },
@@ -466,11 +486,34 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   reportCmdError(message) {
-    set({ cmdError: { message: nameIds(message), at: Date.now() } });
+    const msg = nameIds(message);
+    // The status-bar chip is easy to miss; a toast makes every refused action
+    // visibly acknowledged (the app was too quiet about what did/didn't happen).
+    set({ cmdError: { message: msg, at: Date.now() } });
+    get().pushToast(msg, "error");
   },
 
   clearCmdError(at) {
     set((s) => (s.cmdError?.at === at ? { cmdError: null } : {}));
+  },
+
+  pushToast(message, kind = "info") {
+    const id = nextToastId++;
+    set((s) => {
+      // Coalesce an identical trailing toast (a burst of the same refusal
+      // shouldn't stack), and cap the visible column so it can't run away.
+      const last = s.toasts[s.toasts.length - 1];
+      if (last && last.message === message && last.kind === kind) return {};
+      return { toasts: [...s.toasts, { id, message, kind }].slice(-4) };
+    });
+    // Errors linger a little longer than successes; both auto-dismiss.
+    setTimeout(() => get().dismissToast(id), kind === "error" ? 6000 : 4200);
+  },
+  dismissToast(id) {
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  },
+  clearToasts() {
+    set({ toasts: [] });
   },
 
   setSelection: (selection) => set({ selection }),
@@ -526,10 +569,13 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       await backend.uploadDocs(bytes);
     } catch (e) {
-      get().reportCmdError(errText(e));
+      // reportCmdError already raises an error toast; make it Docs-specific.
+      get().reportCmdError(`Couldn't load Docs.json — ${errText(e)}`);
       return false;
     }
     await get().hydrate();
+    const recipes = Object.keys(get().gamedata.recipes).length;
+    get().pushToast(`Catalog loaded — ${recipes.toLocaleString()} recipes`, "success");
     return true;
   },
 
@@ -744,7 +790,9 @@ export const useStore = create<AppStore>((set, get) => ({
     await get().hydrate();
     const first = outcome.proposals[0] ?? null;
     set({ reviewing: first, selection: null });
-    if (outcome.note) get().reportCmdError(outcome.note);
+    // The adopt succeeded (proposals opened); its note is informational, not a
+    // refusal — surface it as a neutral toast, not the red error path.
+    if (outcome.note) get().pushToast(outcome.note, "info");
     return outcome;
   },
 

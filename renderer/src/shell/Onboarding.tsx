@@ -66,7 +66,10 @@ export default function Onboarding() {
           className="onboard-door"
           onClick={() => {
             done();
-            document.querySelector<HTMLButtonElement>('[data-testid="btn-import"]')?.click();
+            // Click the always-present hidden file input, not the toolbar button
+            // — the button now lives inside the DATA menu and isn't in the DOM
+            // while that menu is closed.
+            document.querySelector<HTMLInputElement>('[data-testid="import-file-input"]')?.click();
           }}
           data-testid="door-import"
         >
@@ -78,7 +81,7 @@ export default function Onboarding() {
             className="onboard-door"
             onClick={() => {
               done();
-              document.querySelector<HTMLButtonElement>('[data-testid="btn-upload-docs"]')?.click();
+              document.querySelector<HTMLInputElement>('[data-testid="docs-file-input"]')?.click();
             }}
             data-testid="door-docs"
           >
