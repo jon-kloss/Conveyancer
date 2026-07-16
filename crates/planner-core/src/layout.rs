@@ -3,8 +3,15 @@
 //! depth in the flow, Out ports in the last column. Within each column, rows
 //! are ordered by neighbor barycenter (a few alternating sweeps) so edges
 //! cross as little as possible. Deterministic: same graph → same positions.
+//!
+//! Independent production chains (a factory usually has several — an iron line,
+//! a copper line, a concrete line…) are laid out as SEPARATE HORIZONTAL BANDS:
+//! the graph is split into weakly-connected components, each is laid out on its
+//! own, and the bands stack top-to-bottom. Two chains that share no material can
+//! never interleave or cross, so the result reads as clean lanes instead of one
+//! tangled column stack.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::entities::{GraphPos, Id};
 
@@ -26,6 +33,9 @@ const COL_X0: f64 = 40.0;
 const COL_W: f64 = 340.0;
 const ROW_Y0: f64 = 60.0;
 const ROW_GAP: f64 = 36.0;
+/// Vertical gap between independent chains' bands — deliberately larger than
+/// `ROW_GAP` so separate production lines read as distinct lanes.
+const BAND_GAP: f64 = 120.0;
 
 fn height(kind: LKind) -> f64 {
     match kind {
@@ -35,9 +45,83 @@ fn height(kind: LKind) -> f64 {
     }
 }
 
+/// Weakly-connected components (edges treated as undirected), each a `Vec` of
+/// node indices. Components are ordered by their smallest member index so the
+/// banding is deterministic and stable across re-tidies. Isolated nodes (an
+/// unwired group) each form their own component.
+fn weak_components(nodes: &[LNode], edges: &[(Id, Id)]) -> Vec<Vec<usize>> {
+    let index: BTreeMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+    let n = nodes.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (from, to) in edges {
+        if let (Some(&a), Some(&b)) = (index.get(from.as_str()), index.get(to.as_str())) {
+            adj[a].push(b);
+            adj[b].push(a);
+        }
+    }
+    let mut seen = vec![false; n];
+    let mut comps: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut q = VecDeque::from([start]);
+        seen[start] = true;
+        while let Some(i) = q.pop_front() {
+            comp.push(i);
+            for &j in &adj[i] {
+                if !seen[j] {
+                    seen[j] = true;
+                    q.push_back(j);
+                }
+            }
+        }
+        comp.sort_unstable();
+        comps.push(comp);
+    }
+    comps
+}
+
 /// Compute positions for every node. `edges` are (from, to) node-id pairs;
-/// edges referencing unknown ids are ignored.
+/// edges referencing unknown ids are ignored. Independent chains are stacked as
+/// separate horizontal bands (see the module docs); each band is laid out by
+/// [`layout_component`].
 pub fn layered_layout(nodes: &[LNode], edges: &[(Id, Id)]) -> BTreeMap<Id, GraphPos> {
+    let mut positions = BTreeMap::new();
+    let mut band_top = ROW_Y0;
+    for comp in weak_components(nodes, edges) {
+        let sub_nodes: Vec<LNode> = comp.iter().map(|&i| nodes[i].clone()).collect();
+        let ids: BTreeSet<&str> = sub_nodes.iter().map(|n| n.id.as_str()).collect();
+        let sub_edges: Vec<(Id, Id)> = edges
+            .iter()
+            .filter(|(a, b)| ids.contains(a.as_str()) && ids.contains(b.as_str()))
+            .cloned()
+            .collect();
+        let local = layout_component(&sub_nodes, &sub_edges);
+        // Shift this component so its highest node sits at `band_top`, then
+        // advance the cursor past its lowest node plus the band gap.
+        let top = local.values().map(|p| p.y).fold(f64::INFINITY, f64::min);
+        let dy = band_top - top;
+        let mut band_bottom = band_top;
+        for nd in &sub_nodes {
+            let p = &local[&nd.id];
+            let y = p.y + dy;
+            band_bottom = band_bottom.max(y + height(nd.kind));
+            positions.insert(nd.id.clone(), GraphPos { x: p.x, y });
+        }
+        band_top = band_bottom + BAND_GAP;
+    }
+    positions
+}
+
+/// Lay out ONE connected component (the original Sugiyama-lite pass). y starts
+/// at `ROW_Y0`; the caller re-bands it vertically.
+fn layout_component(nodes: &[LNode], edges: &[(Id, Id)]) -> BTreeMap<Id, GraphPos> {
     let index: BTreeMap<&str, usize> = nodes
         .iter()
         .enumerate()
@@ -222,6 +306,50 @@ mod tests {
             pos["a1"].y < pos["a2"].y,
             pos["b1"].y < pos["b2"].y,
             "chains must not cross"
+        );
+    }
+
+    #[test]
+    fn independent_chains_get_separate_non_overlapping_bands() {
+        // Two chains that share no material — an iron line and a copper line —
+        // must occupy disjoint vertical bands (no interleaving), each reading
+        // left→right, so the graph is clean lanes rather than one tangled stack.
+        let nodes = vec![
+            node("ore_fe", LKind::InPort),
+            node("smelt_fe", LKind::Group),
+            node("plate", LKind::OutPort),
+            node("ore_cu", LKind::InPort),
+            node("smelt_cu", LKind::Group),
+            node("wire", LKind::OutPort),
+        ];
+        let edges = vec![
+            ("ore_fe".into(), "smelt_fe".into()),
+            ("smelt_fe".into(), "plate".into()),
+            ("ore_cu".into(), "smelt_cu".into()),
+            ("smelt_cu".into(), "wire".into()),
+        ];
+        let pos = layered_layout(&nodes, &edges);
+        // Each chain reads left→right.
+        for chain in [
+            ["ore_fe", "smelt_fe", "plate"],
+            ["ore_cu", "smelt_cu", "wire"],
+        ] {
+            assert!(pos[chain[0]].x < pos[chain[1]].x && pos[chain[1]].x < pos[chain[2]].x);
+        }
+        // The two bands do not overlap vertically: the lower chain's TOP sits
+        // below the upper chain's BOTTOM (band 1 is the iron line, index-first).
+        let fe_bottom = [pos["ore_fe"].y, pos["smelt_fe"].y, pos["plate"].y]
+            .iter()
+            .cloned()
+            .fold(0.0_f64, f64::max)
+            + height(LKind::Group);
+        let cu_top = [pos["ore_cu"].y, pos["smelt_cu"].y, pos["wire"].y]
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            cu_top > fe_bottom,
+            "the copper band ({cu_top}) must start below the iron band bottom ({fe_bottom})"
         );
     }
 }
