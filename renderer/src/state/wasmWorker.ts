@@ -97,13 +97,21 @@ async function loadDocs(): Promise<Uint8Array | undefined> {
   });
 }
 
-async function saveDocs(bytes: Uint8Array): Promise<void> {
+/** Persist the uploaded docs AND the (preserved) plan in ONE IndexedDB
+ *  transaction. An upload swaps the catalog and rewrites the plan snapshot from
+ *  the new session, and those two keys must never end up inconsistent — a single
+ *  atomic tx means either both land or neither does (IndexedDB aborts the tx on
+ *  any failure), so uploadDocs can persist-before-swap without a partial-write
+ *  window. Both byte arrays are copied off the wasm heap by `new Uint8Array`. */
+async function saveDocsAndPlan(docs: Uint8Array, plan: Uint8Array): Promise<void> {
   const db = await openDb();
   return new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(new Uint8Array(bytes), DOCS_KEY);
+    const os = tx.objectStore(STORE);
+    os.put(new Uint8Array(docs), DOCS_KEY);
+    os.put(new Uint8Array(plan), KEY);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error("indexedDB docs put failed"));
+    tx.onerror = () => reject(tx.error ?? new Error("indexedDB docs+plan put failed"));
   });
 }
 
@@ -214,19 +222,26 @@ function ensureReady(): Promise<void> {
 
 /** Phase 4a: swap in an uploaded Docs.json without losing the current plan.
  *  gamedata is set only at construction, so this REBUILDS the WebSession from
- *  the uploaded catalog bytes plus the current plan's exported snapshot, then
- *  persists both (docs under DOCS_KEY, the re-exported plan under KEY). If no
- *  session exists yet (upload before first hydrate), construct fresh over the
- *  saved plan blob. Throws are surfaced to the caller's rejected promise. */
+ *  the uploaded catalog bytes plus the current plan's exported snapshot.
+ *
+ *  Ordering is deliberate: build the new session, PERSIST docs + plan atomically,
+ *  and only THEN swap the live `session`. If persistence throws (e.g. a
+ *  QuotaExceededError on a multi-MB real Docs.json), the OLD session stays live
+ *  and IndexedDB is unchanged — the failure surfaces on the status chip and a
+ *  reload sees the un-swapped state, with no silent divergence between the worker,
+ *  the (un-hydrated) UI, and storage. `next` is built from the preserved plan, so
+ *  reaching the write proves newDocs+plan reconstructs — KEY stays compatible with
+ *  DOCS_KEY. `ensureReady` always leaves `session` non-null (the boot cascade's
+ *  fixture fallback can't fail), so no pre-session branch is needed. */
 async function uploadDocs(bytes: Uint8Array): Promise<void> {
   await ensureReady();
-  const planBlob = session ? session.export_blob() : await loadBlob();
-  // Copy off the wasm heap before the old session is dropped/replaced.
-  const planCopy = planBlob && planBlob.length > 0 ? new Uint8Array(planBlob) : undefined;
+  // Copy the preserved plan off the wasm heap before constructing the new
+  // session (whose allocation could otherwise detach the view).
+  const planBlob = session!.export_blob();
+  const planCopy = planBlob.length > 0 ? new Uint8Array(planBlob) : undefined;
   const next = new WebSession(bytes, planCopy);
+  await saveDocsAndPlan(bytes, next.export_blob());
   session = next;
-  await saveDocs(bytes);
-  await saveBlob(session.export_blob());
 }
 
 interface Req {

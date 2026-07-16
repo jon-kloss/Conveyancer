@@ -11,15 +11,13 @@
 
 # ---- build ----
 FROM node:22-alpine AS build
-# Let corepack fetch the pinned pnpm non-interactively (no TTY in a build).
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-# Use the pnpm version pinned in renderer/package.json (packageManager field),
-# so the image, CI, and local dev all build on the SAME pnpm — corepack reads
-# that field once the package.json is copied. Pinning matters: pnpm's default
-# blocking of dependency build scripts is a hard error outside a CI/interactive
-# shell, and renderer/pnpm-workspace.yaml's `allowBuilds` (the pnpm-11 format)
-# is what approves esbuild's build here.
-RUN corepack enable
+# Install the pinned pnpm DIRECTLY via npm rather than through corepack: corepack
+# fetches + signature-verifies pnpm at build time, and a floating base tag can
+# drift to a corepack whose keys predate pnpm@11.13.0's publish key ("Cannot find
+# matching keyid") — a latent future-rebuild failure. `npm i -g` sidesteps that
+# entirely and pins the exact version CI uses (renderer/package.json's
+# packageManager field still drives corepack for local dev + the CI runner).
+RUN npm install -g pnpm@11.13.0
 WORKDIR /app/renderer
 
 # Install deps against the lockfile first (cached until the lockfile changes).

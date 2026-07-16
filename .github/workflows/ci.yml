@@ -245,9 +245,10 @@ jobs:
             sleep 1
           done
           echo "== index ==" && curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:8080/
-          # Pick a fingerprinted wasm asset from the served bundle and assert its
-          # MIME — a wrong Content-Type makes the browser refuse to instantiate it.
-          wasm=$(docker exec web sh -c 'ls /srv/assets/*.wasm' | head -1 | sed 's#/srv/##')
+          # Assert the MIME of the MAIN app wasm specifically (web_bg-*.wasm, the
+          # 3.4MB module the worker instantiates) — not just any .wasm — since a
+          # wrong Content-Type makes the browser refuse to instantiate it.
+          wasm=$(docker exec web sh -c 'ls /srv/assets/web_bg-*.wasm' | head -1 | sed 's#/srv/##')
           echo "== wasm asset: $wasm =="
           ctype=$(curl -fsS -o /dev/null -D - "http://localhost:8080/$wasm" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}')
           echo "content-type: $ctype"
