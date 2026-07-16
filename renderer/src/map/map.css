@@ -639,10 +639,11 @@
   cursor: pointer;
   color: var(--ink-100);
 }
-.data-menu-item:hover:not(:disabled) {
+.data-menu-item:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--steel-700);
 }
-.data-menu-item:disabled {
+.data-menu-item:disabled,
+.data-menu-item[aria-disabled="true"] {
   opacity: 0.5;
   cursor: default;
 }

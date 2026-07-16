@@ -6,6 +6,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { backend } from "../state/backend";
+import { parseSaveFile } from "./parseSave";
 import type { ImportSnapshot } from "../state/types";
 
 type Phase =
@@ -34,18 +35,13 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
 
   const start = useCallback(async () => {
     setPhase({ step: "parsing", name: file.name });
-    const bytes = await file.arrayBuffer();
-    const worker = new Worker(new URL("./parseWorker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (e: MessageEvent<{ snapshot?: ImportSnapshot; error?: string }>) => {
-      worker.terminate();
-      if (e.data.error || !e.data.snapshot) {
-        // no dead ends: parse failure degrades to manual entry
-        setPhase({ step: "error", message: e.data.error ?? "empty parse" });
-        return;
-      }
-      setPhase({ step: "preview", snapshot: e.data.snapshot });
-    };
-    worker.postMessage({ name: file.name, bytes }, [bytes]);
+    try {
+      const snapshot = await parseSaveFile(file);
+      setPhase({ step: "preview", snapshot });
+    } catch (e) {
+      // no dead ends: parse failure degrades to manual entry
+      setPhase({ step: "error", message: e instanceof Error ? e.message : String(e) });
+    }
   }, [file]);
 
   if (!started.current) {

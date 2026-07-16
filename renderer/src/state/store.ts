@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { backend } from "./backend";
+import { parseSaveFile } from "../import/parseSave";
 import { applyPatches } from "./patch";
 import {
   DEFAULT_WEBLLM_MODEL,
@@ -27,6 +28,7 @@ import type {
   EditResponse,
   GameData,
   Id,
+  ImportOutcome,
   LastImport,
   NextPreferences,
   Opportunity,
@@ -265,6 +267,11 @@ export interface AppStore {
       false when the backend refused (recorded in `cmdError`, never a rejection).
       Web-only — non-wasm backends reject and this surfaces the refusal. */
   uploadDocs(bytes: Uint8Array): Promise<boolean>;
+  /** Sync Phase 2: parse a re-read `.sav` and run it through import — headless
+      (no preview modal), the one-click counterpart to the ImportModal flow.
+      Drift opens the review surface; every branch fires a toast. Resolves with
+      the outcome, or null when the parse/import failed (surfaced as a toast). */
+  syncImport(file: File): Promise<ImportOutcome | null>;
   /** Resolves with the created ids, or null when the backend refused the
       commands (the refusal is recorded in `cmdError` — never a rejection). */
   dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[] | null>;
@@ -745,6 +752,30 @@ export const useStore = create<AppStore>((set, get) => ({
     const recipes = Object.keys(get().gamedata.recipes).length;
     get().pushToast(`Catalog loaded — ${recipes.toLocaleString()} recipes`, "success");
     return true;
+  },
+
+  async syncImport(file) {
+    let outcome: ImportOutcome;
+    try {
+      const snapshot = await parseSaveFile(file);
+      outcome = await backend.importRun(snapshot);
+    } catch (e) {
+      // No dead ends: a bad read/parse is a toast, never a crash — the manual
+      // Import save flow (with its preview) remains available as a fallback.
+      get().pushToast(`Couldn't sync that save — ${errText(e)}`, "error");
+      return null;
+    }
+    await get().hydrate(); // the backend layer/proposal landed; re-project
+    if (outcome.outcome === "drift") {
+      const n = get().plan.proposals[outcome.proposal]?.items.length ?? 0;
+      get().setReviewing(outcome.proposal);
+      get().pushToast(`Synced — ${n} change${n === 1 ? "" : "s"} to review`, "success");
+    } else if (outcome.outcome === "imported") {
+      get().pushToast(`Synced — ${outcome.factories} factories imported as ◆ built`, "success");
+    } else {
+      get().pushToast("Synced — plan already matches this save", "info");
+    }
+    return outcome;
   },
 
   // Plan a replacement = one backend call that stores a Draft Refactor

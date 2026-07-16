@@ -291,6 +291,16 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   await waitReady(page);
   expect(await buildVersion(page), "boots on the bundled fixture catalog").toBe("fixture");
 
+  // Sync Phase 2: "Sync from save" is gated on a real catalog — syncing against
+  // the fixture would quarantine most recipes into junk diffs. On the fixture it
+  // is aria-disabled and its title says how to enable it. (The menu stays open
+  // across the upload below — setInputFiles is programmatic — so we watch the
+  // same button's gate flip in place, no click through the onboarding overlay.)
+  await page.getByTestId("btn-data-menu").click();
+  const syncBtn = page.getByTestId("btn-sync-save");
+  await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
+  await expect(syncBtn).toHaveAttribute("title", /Docs\.json/);
+
   // Upload through the real input the button drives (setInputFiles fires its
   // onChange → store.uploadDocs → worker rebuild → hydrate). The button is
   // web-only; the input is present in the built web app (__WASM_BACKEND__).
@@ -308,6 +318,9 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
       ).length,
   );
   expect(recipeCount, "the uploaded catalog has recipes").toBeGreaterThan(0);
+
+  // The gate lifts now that a real catalog is loaded: Sync from save is live.
+  await expect(syncBtn).toHaveAttribute("aria-disabled", "false");
 
   // RELOAD + PERSIST — the worker reads the docs bytes back out of IndexedDB and
   // reconstructs the session on the real catalog. If docs were not persisted,
