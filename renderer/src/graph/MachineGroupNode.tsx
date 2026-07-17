@@ -9,6 +9,7 @@ import { fmtClock, fmtPower, fmtRate } from "../lib/format";
 import { footprintFor, FOOTPRINT_MAX_PX, FOOTPRINT_SCALE } from "./footprints";
 import { POWER_ITEM, type GameData, type MachineGroup } from "../state/types";
 import ItemIcon, { ICONS } from "../lib/ItemIcon";
+import { groupLogistics, SPLITTER_CLASS, MERGER_CLASS } from "./logistics";
 
 export interface GroupNodeData {
   group: MachineGroup;
@@ -86,6 +87,20 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
 
   const outRate = recipe?.products?.[0] ? dg?.outRates[recipe.products[0][0]] ?? 0 : 0;
 
+  // Belt logistics for a multi-machine bank: the splitters that fan each input
+  // belt to the N machines and the mergers that recombine the outputs — the
+  // parts the "×N" hides. Rates come from the solver (fallback: recipe×N×clock).
+  // Power is carried on wires, not belts, so it never needs a splitter/merger.
+  const effCount = deltaCount ?? group.count;
+  const effClk = deltaClock ?? group.clock;
+  const inRates =
+    dg?.inRates ?? Object.fromEntries((recipe?.ingredients ?? []).map(([it, r]) => [it, r * effCount * effClk]));
+  const outRatesAll =
+    dg?.outRates ?? Object.fromEntries((recipe?.products ?? []).map(([it, r]) => [it, r * effCount * effClk]));
+  const outRates = Object.fromEntries(Object.entries(outRatesAll).filter(([it]) => it !== POWER_ITEM));
+  const logi = groupLogistics(effCount, inRates, outRates);
+  const showLogi = effCount > 1 && (logi.splitters.balanced > 0 || logi.mergers.balanced > 0);
+
   return (
     <div className={`group-card frame-${group.status} ${selected ? "selected" : ""}`} data-testid={`group-${group.recipe}`}>
       <Handle type="target" position={Position.Left} className="belt-handle" />
@@ -117,6 +132,39 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
           )}
         </span>
       </div>
+      {showLogi && (
+        // Physical belt build for the bank: splitter(s) → the N machines →
+        // merger(s), the parts the ×N hides. Balanced-tree counts; the inspector
+        // has the manifold alternative + belt tiers + tips.
+        <div
+          className="group-logi"
+          data-testid={`group-logi-${group.id}`}
+          title={`Belt logistics — ${logi.splitters.balanced} splitter${logi.splitters.balanced === 1 ? "" : "s"} · ${logi.mergers.balanced} merger${logi.mergers.balanced === 1 ? "" : "s"} (balanced)`}
+        >
+          {logi.splitters.balanced > 0 && (
+            <span className="group-logi-part">
+              <ItemIcon item={SPLITTER_CLASS} displayName="Splitter" size={20} />
+              <span className="mono">×{logi.splitters.balanced}</span>
+            </span>
+          )}
+          <span className="group-logi-arrow mono">→</span>
+          <span className="group-logi-machines">
+            {Array.from({ length: Math.min(effCount, 5) }).map((_, i) => (
+              <ItemIcon key={i} item={group.machine} displayName={machine} size={20} />
+            ))}
+            {effCount > 5 && <span className="mono group-logi-more">+{effCount - 5}</span>}
+          </span>
+          {logi.mergers.balanced > 0 && (
+            <>
+              <span className="group-logi-arrow mono">→</span>
+              <span className="group-logi-part">
+                <ItemIcon item={MERGER_CLASS} displayName="Merger" size={20} />
+                <span className="mono">×{logi.mergers.balanced}</span>
+              </span>
+            </>
+          )}
+        </div>
+      )}
       <FootprintStrip gamedata={gamedata} machine={group.machine} count={deltaCount ?? group.count} />
       <footer className="group-card-foot mono">
         <span>IN {recipe?.ingredients.length ?? 0}</span>

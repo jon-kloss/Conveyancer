@@ -118,6 +118,40 @@
   padding: 8px 10px;
   color: var(--ink-100);
 }
+/* Belt-logistics strip: splitter → machines → merger, the physical build the
+   ×N hides. Sits between the recipe row and the footprint outlines. */
+.group-logi {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-top: 1px dashed var(--steel-700);
+  background: color-mix(in srgb, var(--steel-800) 55%, transparent);
+}
+.group-logi-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--ink-300);
+}
+.group-logi-machines {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
+}
+.group-logi-arrow {
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.group-logi-more {
+  font-size: 10px;
+  color: var(--ink-500);
+  margin-left: 2px;
+}
 .group-card-foot {
   display: flex;
   gap: 12px;
@@ -577,6 +611,16 @@
 }
 .insp-bp-chip.ceil {
   border-style: dashed;
+}
+.insp-logi-alt {
+  color: var(--ink-500);
+  font-size: 10px;
+}
+.insp-logi-tip {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--ink-300);
+  padding: 3px 0 0 2px;
 }
 .insp-slider-wrap {
   position: relative;

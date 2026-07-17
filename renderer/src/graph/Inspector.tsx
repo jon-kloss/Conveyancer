@@ -7,10 +7,14 @@ import { useStore, solveChip } from "../state/store";
 import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
 import { footprintFor, footprintArea } from "./footprints";
 import { fmtClock, fmtPower, fmtRate, flowBand, bottleneckEdges, itemLabel } from "../lib/format";
-import { beltCapacity, effClock, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
+import { beltCapacity, effClock, effCount, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
+import { groupLogistics, balancedJunctions, SPLITTER_CLASS, MERGER_CLASS } from "./logistics";
 
 const CLOCK_STEPS = [0.5, 0.75, 1.0, 1.5, 2.5];
+// Satisfactory overclock power exponent (power ∝ clock^k) — for the
+// consolidation tip's estimated MW delta.
+const POWER_EXP = 1.321928;
 
 export default function Inspector({
   factoryId,
@@ -163,6 +167,45 @@ export default function Inspector({
   // Solver-named capacity bindings — the honest bottleneck red (efficiency
   // grammar: a full feed belt that keeps its machines fed is optimal).
   const bottlenecks = useMemo(() => bottleneckEdges(df), [df]);
+
+  // Belt-logistics detail for the selected bank: splitter/merger counts (both
+  // layouts), per-line belt tiers, and efficiency tips.
+  const groupLogi = useMemo(() => {
+    if (!selectedGroup) return null;
+    const n = effCount(selectedGroup);
+    if (n <= 1) return null;
+    const inR = dgSel?.inRates ?? {};
+    const outR = Object.fromEntries(Object.entries(dgSel?.outRates ?? {}).filter(([it]) => it !== POWER_ITEM));
+    const logi = groupLogistics(n, inR, outR);
+    if (logi.splitters.balanced === 0 && logi.mergers.balanced === 0) return null;
+    const clk = effClock(selectedGroup);
+    const tips: string[] = [];
+    for (const l of [...logi.inputs, ...logi.outputs]) {
+      const name = itemLabel(gamedata.items, l.item);
+      if (l.lines > 1) tips.push(`${name}: ${fmtRate(l.rate)}/min needs ${l.lines} parallel Mk.6 belts.`);
+      else if (l.tier > 1) tips.push(`${name}: ${fmtRate(l.rate)}/min needs a Mk.${l.tier} belt.`);
+    }
+    // Consolidation: same output from fewer machines at higher clock (≤250%) —
+    // fewer junctions, but more power (power ∝ clock^k).
+    const work = n * clk;
+    const minM = Math.max(1, Math.ceil(work / 2.5));
+    if (minM < n) {
+      const newClk = work / minM;
+      const curP = dgSel?.powerMw ?? 0;
+      const base = curP > 0 ? curP / (n * Math.pow(clk, POWER_EXP)) : 0;
+      const dMW = base > 0 ? base * minM * Math.pow(newClk, POWER_EXP) - curP : 0;
+      const savedJ =
+        logi.splitters.balanced +
+        logi.mergers.balanced -
+        (logi.inputs.length + logi.outputs.length) * balancedJunctions(minM);
+      tips.push(
+        `${n} @ ${Math.round(clk * 100)}% → ${minM} @ ${Math.round(newClk * 100)}%: ` +
+          `−${n - minM} machine${n - minM === 1 ? "" : "s"}, −${savedJ} junction${savedJ === 1 ? "" : "s"}` +
+          (base > 0 ? ` · ≈ +${fmtPower(dMW)} power` : ""),
+      );
+    }
+    return { logi, tips };
+  }, [selectedGroup, dgSel, gamedata.items]);
 
   return (
     <aside className="inspector" data-testid="inspector">
@@ -399,6 +442,37 @@ export default function Inspector({
               </div>
             ))}
           </section>
+
+          {groupLogi && (
+            <section className="insp-section" data-testid="insp-logistics">
+              <h3 className="t-label">LOGISTICS</h3>
+              <div className="drawer-row">
+                <ItemIcon item={SPLITTER_CLASS} displayName="Splitter" size={20} />
+                <span className="drawer-row-name">Splitters</span>
+                <span className="t-data-12">
+                  {groupLogi.logi.splitters.balanced}
+                  <span className="insp-logi-alt mono"> · {groupLogi.logi.splitters.manifold} manifold</span>
+                </span>
+              </div>
+              <div className="drawer-row">
+                <ItemIcon item={MERGER_CLASS} displayName="Merger" size={20} />
+                <span className="drawer-row-name">Mergers</span>
+                <span className="t-data-12">
+                  {groupLogi.logi.mergers.balanced}
+                  <span className="insp-logi-alt mono"> · {groupLogi.logi.mergers.manifold} manifold</span>
+                </span>
+              </div>
+              <div className="insp-note">
+                Balanced 1→3 tree shown (even feed); manifold (one tap per machine) is the simpler
+                alternative.
+              </div>
+              {groupLogi.tips.map((t, i) => (
+                <div className="insp-logi-tip mono" key={i}>
+                  ▸ {t}
+                </div>
+              ))}
+            </section>
+          )}
 
           <section className="insp-section">
             <h3 className="t-label">FEED BELTS</h3>
