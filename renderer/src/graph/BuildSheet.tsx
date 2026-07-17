@@ -1,8 +1,8 @@
 // BUILD SHEET panel (read-only export): the plan→game bridge. Renders one
 // factory's derived spec — machines & clocks, inputs + honest source targets,
 // outputs, routes + tiers, power — in the design language, with a COPY button
-// (plain-text/markdown to the clipboard) and print-friendly CSS. Never mutates
-// the plan; every number comes from the derived projection.
+// (plain-text/markdown to the clipboard). Never mutates the plan; every number
+// comes from the derived projection.
 
 import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
@@ -52,13 +52,6 @@ export default function BuildSheet({ factoryId, onClose }: { factoryId: Id; onCl
               data-testid="btn-build-sheet-copy"
             >
               {copied ? "COPIED ✓" : "COPY"}
-            </button>
-            <button
-              className="btn btn-ghost bs-print"
-              onClick={() => window.print()}
-              data-testid="btn-build-sheet-print"
-            >
-              PRINT
             </button>
             <button className="drawer-close" onClick={onClose} aria-label="Close">
               ×

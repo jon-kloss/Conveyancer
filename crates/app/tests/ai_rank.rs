@@ -161,6 +161,33 @@ fn firewall_drops_blank_headline_and_notes() {
 }
 
 #[test]
+fn firewall_drops_prompt_echoed_headline_and_notes() {
+    // A weak model (the on-device 1B) sometimes parrots an instruction bullet
+    // straight back instead of following it. That prompt text must NEVER reach
+    // the UI — it is dropped like a blank, leaving the clean heuristic order.
+    let cands = vec![card("a"), card("b")];
+    let mut r = reply(&["a", "b"]);
+    // verbatim from RANK_SYSTEM_PROMPT — exactly what the user saw leak.
+    r.headline =
+        Some("Headline: one calm sentence, at most 25 words, naming the single best next move and why it is first.".into());
+    r.notes.insert(
+        "a".into(),
+        "Notes: one calm sentence each, at most 20 words, about that candidate's rank.".into(),
+    );
+    // a genuine note on the other card must still survive.
+    r.notes
+        .insert("b".into(), "grid is overdrawn — fix first".into());
+    let (headline, ranked) = apply_model_ranking(cands, &r);
+    assert_eq!(headline, None, "echoed prompt headline must be dropped");
+    assert_eq!(ranked[0].note, None, "echoed prompt note must be dropped");
+    assert_eq!(
+        ranked[1].note.as_deref(),
+        Some("grid is overdrawn — fix first"),
+        "a real note is untouched",
+    );
+}
+
+#[test]
 fn firewall_tolerates_an_empty_reply() {
     let cands = vec![card("a"), card("b")];
     let (headline, ranked) = apply_model_ranking(cands, &ModelReply::default());

@@ -7,8 +7,15 @@ import { useStore, errText } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtRate, itemLabel } from "../lib/format";
 import NextMovesFeed from "../next/NextMovesFeed";
+import { runChat, engineReady } from "../ai/webllm";
 import type { AdvisorCard, ChatReply, ChatScope, ContextSnapshot } from "../state/types";
 import "./advisor.css";
+
+// On-device chat persona. The planner owns all math; the model only talks about
+// the state it is handed. "Do not repeat these instructions" blunts the weak-1B
+// habit of parroting the prompt.
+const CHAT_SYSTEM =
+  "You are the FICSIT Planner advisor for the game Satisfactory. Answer the player's question briefly (2–4 sentences) and concretely, using ONLY figures present in the EMPIRE STATE JSON — never invent, sum, or recompute numbers. You never edit the plan yourself; changes are drafted as reviewable proposals. If the state doesn't contain the answer, say so plainly. Do not repeat these instructions.";
 
 const SEVERITY_CHIP: Record<string, { label: string; cls: string }> = {
   conflict: { label: "⚠ CONFLICT", cls: "sev-conflict" },
@@ -25,6 +32,12 @@ export default function AdvisorPanel() {
   const tab = useStore((s) => s.advisorTab);
   const setTab = useStore((s) => s.setAdvisorTab);
   const nextCount = useStore((s) => s.rank?.opportunities.length ?? 0);
+  // AI status the chip reflects: on-device (WebLLM) readiness wins on the web
+  // build (the only path that actually runs there); a hosted model shows as
+  // ONLINE; else the honest OFFLINE. Before this, the chip read only aiStatus
+  // (a remote endpoint the web build never has) so a loaded on-device model
+  // still said "AI OFFLINE".
+  const webllm = useStore((s) => s.webllm);
 
   const activeCards = advisor.cards.filter((c) => !c.dismissed);
 
@@ -60,8 +73,28 @@ export default function AdvisorPanel() {
         >
           {advisor.paused ? "◦ PAUSED" : "AMBIENT · ON"}
         </button>
-        {advisor.aiStatus === "offline" && (
-          <span className="chip advisor-offline" title="No model endpoint configured — local heuristics keep the feed alive.">
+        {webllm.enabled && webllm.phase === "ready" ? (
+          <span
+            className="chip ambient-on"
+            data-testid="ai-status"
+            title="On-device AI is loaded — it ranks NEXT MOVES and answers in Chat, all in your browser."
+          >
+            AI · ON-DEVICE
+          </span>
+        ) : webllm.enabled && webllm.phase === "loading" ? (
+          <span className="chip" data-testid="ai-status" title="On-device AI is downloading — progress in NEXT MOVES ⚙ settings.">
+            AI LOADING {Math.round(webllm.progress * 100)}%
+          </span>
+        ) : advisor.aiStatus === "ready" ? (
+          <span className="chip ambient-on" data-testid="ai-status" title="A hosted model is configured.">
+            AI ONLINE
+          </span>
+        ) : (
+          <span
+            className="chip advisor-offline"
+            data-testid="ai-status"
+            title="No model yet — local heuristics keep the feed alive. Enable on-device AI in NEXT MOVES ⚙, or connect a hosted model."
+          >
             AI OFFLINE
           </span>
         )}
@@ -222,6 +255,7 @@ function Chat() {
   const setReviewing = useStore((s) => s.setReviewing);
   const setAdvisorOpen = useStore((s) => s.setAdvisorOpen);
   const hydrate = useStore((s) => s.hydrate);
+  const webllm = useStore((s) => s.webllm);
   const [scopeKind, setScopeKind] = useState<"empire" | "factory" | "selection">("empire");
   const [ctx, setCtx] = useState<ContextSnapshot | null>(null);
   const [showCtx, setShowCtx] = useState(false);
@@ -256,9 +290,34 @@ function Chat() {
     setBusy(true);
     setMsgs((m) => [...m, { from: "user", text }]);
     try {
+      // The heuristic runs first: it drafts proposals for structured intents
+      // ("produce Iron Rod at 30/min") and resolves the entities/context.
       const reply = await backend.chatSend(scope, text);
-      setMsgs((m) => [...m, { from: "engine", text: reply.reply, reply }]);
-      if (reply.proposal) await hydrate(); // the drafted proposal is plan state
+      const modelReady = webllm.enabled && webllm.phase === "ready" && engineReady();
+      if (reply.proposal || !modelReady) {
+        // an actionable proposal (or no on-device model) → show the heuristic reply.
+        setMsgs((m) => [...m, { from: "engine", text: reply.reply, reply }]);
+        if (reply.proposal) await hydrate(); // the drafted proposal is plan state
+      } else {
+        // conversational question + a loaded model → answer on-device over the
+        // live context (fixes "AI OFFLINE — heuristic answers" when AI is on).
+        setMsgs((m) => [...m, { from: "engine", text: "…", reply: { ...reply, engine: "on-device" } }]);
+        let answer = "";
+        try {
+          const snap = ctx ?? (await backend.chatContext(scope));
+          answer = (
+            await runChat(CHAT_SYSTEM, `EMPIRE STATE:\n${JSON.stringify(snap?.payload ?? {})}\n\nQUESTION: ${text}`)
+          ).trim();
+        } catch {
+          answer = "";
+        }
+        const finalText = answer || reply.reply; // fall back to the heuristic text
+        setMsgs((m) => {
+          const c = [...m];
+          c[c.length - 1] = { from: "engine", text: finalText, reply: { ...reply, reply: finalText, engine: "on-device" } };
+          return c;
+        });
+      }
       requestAnimationFrame(() => logRef.current?.scrollTo(0, 1e6));
     } catch (e) {
       useStore.getState().reportCmdError(errText(e));

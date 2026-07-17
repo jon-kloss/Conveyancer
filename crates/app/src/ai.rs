@@ -301,6 +301,39 @@ fn clamp(text: &str) -> String {
     out
 }
 
+/// Distinctive fragments lifted from [`RANK_SYSTEM_PROMPT`]. A small/weak model
+/// (e.g. the on-device 1B) sometimes parrots an instruction bullet back as its
+/// "headline" or a note instead of following it — we must never render the
+/// prompt to the user, so any prose containing one of these is treated as an
+/// echo and dropped (the heuristic order + titles still stand). Kept lowercase;
+/// the check lowercases the candidate. Fragments are chosen to be phrases no
+/// genuine one-sentence advisor headline would contain.
+const PROMPT_ECHO_MARKERS: &[&str] = &[
+    "at most 25 words",
+    "at most 20 words",
+    "one calm sentence",
+    "single best next move",
+    "why it is first",
+    "candidate id",
+    "strict json",
+    "the planner already did",
+    "you never calculate",
+    "reply with",
+    "one sentence each",
+    "about that candidate",
+];
+
+/// True when `text` looks like leaked prompt instructions rather than advisor
+/// prose: it opens with a bulleted field label ("Headline:" / "Notes:") or
+/// contains any [`PROMPT_ECHO_MARKERS`] fragment. Case-insensitive.
+fn looks_like_prompt_echo(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.starts_with("headline:") || lower.starts_with("notes:") {
+        return true;
+    }
+    PROMPT_ECHO_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 /// THE VALIDATION FIREWALL — pure, unit-tested directly. Maps the model reply
 /// onto the fixed candidate list:
 ///
@@ -347,7 +380,9 @@ pub fn apply_model_ranking(
                 .notes
                 .get(id)
                 .map(|n| clamp(n))
-                .filter(|n| !n.is_empty()),
+                // a weak model can parrot an instruction bullet as a "note" —
+                // drop it rather than leak the prompt (card still renders).
+                .filter(|n| !n.is_empty() && !looks_like_prompt_echo(n)),
             opportunity: by_id.remove(id).expect("order contains only known ids"),
         })
         .collect();
@@ -355,7 +390,8 @@ pub fn apply_model_ranking(
         .headline
         .as_deref()
         .map(clamp)
-        .filter(|h| !h.is_empty());
+        // never surface a headline that is really the prompt echoed back.
+        .filter(|h| !h.is_empty() && !looks_like_prompt_echo(h));
     (headline, ranked)
 }
 

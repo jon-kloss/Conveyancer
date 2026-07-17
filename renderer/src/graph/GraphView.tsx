@@ -29,6 +29,7 @@ import RecipeStrip from "./RecipeStrip";
 import AddGroupMenu from "./AddGroupMenu";
 import AddPortMenu from "./AddPortMenu";
 import BuildSheet from "./BuildSheet";
+import MakeFromResources from "./MakeFromResources";
 import { fmtPower } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
 import { isEditableTarget } from "../lib/keys";
@@ -243,6 +244,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const [portMenu, setPortMenu] = useState<"in" | "out" | null>(null);
   const [logisticMenu, setLogisticMenu] = useState(false);
   const [buildSheet, setBuildSheet] = useState(false);
+  const [makeOpen, setMakeOpen] = useState(false);
 
   // Display derived: T0 projection during drag, else authoritative T1.
   const df: DerivedFactory | undefined =
@@ -687,7 +689,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         <button
           className="btn btn-ghost overlay-chip"
           onClick={() => setBuildSheet(true)}
-          title="BUILD SHEET — a clean, copy/print-friendly per-factory checklist to build from in-game"
+          title="BUILD SHEET — a clean, copy-friendly per-factory checklist to build from in-game"
           data-testid="btn-build-sheet"
         >
           BUILD SHEET
@@ -827,6 +829,14 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         <button className="btn btn-ghost" onClick={() => setPortMenu("out")}>
           + OUT PORT
         </button>
+        <button
+          className="btn btn-primary"
+          onClick={() => setMakeOpen(true)}
+          title="MAKE FROM RESOURCES — pick an item makeable from this factory's inputs and auto-build the chain"
+          data-testid="btn-make-from-resources"
+        >
+          ✦ MAKE
+        </button>
       </div>
 
       <div
@@ -908,6 +918,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       {selectedGroup && stripOpen && <RecipeStrip group={selectedGroup} />}
 
       {buildSheet && <BuildSheet factoryId={factoryId} onClose={() => setBuildSheet(false)} />}
+      {makeOpen && <MakeFromResources factoryId={factoryId} onClose={() => setMakeOpen(false)} />}
     </div>
   );
 }

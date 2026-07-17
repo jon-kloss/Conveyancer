@@ -65,8 +65,27 @@ export default function Onboarding() {
           <span className="mono onboard-key">P</span>
           <span>Plan a supply chain</span>
         </button>
+        {/* Bring-your-own-data path. On the web build the catalog must load
+            BEFORE a save so the save's classes resolve against real recipes —
+            so when we're still on the fixture, show Docs.json as step ① and
+            the save import as step ②, in that reading order. */}
+        {__WASM_BACKEND__ && onFixture && (
+          <button
+            className="onboard-door door-ordered"
+            onClick={() => {
+              done();
+              document.querySelector<HTMLInputElement>('[data-testid="docs-file-input"]')?.click();
+            }}
+            data-testid="door-docs"
+          >
+            <span className="onboard-door-step mono">STEP 1</span>
+            <span className="mono onboard-key">↑</span>
+            <span>Upload your Docs.json</span>
+            <span className="onboard-door-sub">loads your recipe catalog</span>
+          </button>
+        )}
         <button
-          className="onboard-door"
+          className={`onboard-door ${__WASM_BACKEND__ && onFixture ? "door-ordered" : ""}`}
           onClick={() => {
             done();
             // Click the always-present hidden file input, not the toolbar button
@@ -76,22 +95,11 @@ export default function Onboarding() {
           }}
           data-testid="door-import"
         >
+          {__WASM_BACKEND__ && onFixture && <span className="onboard-door-step mono">STEP 2</span>}
           <span className="mono onboard-key">S</span>
           <span>Import a save as ◆ built</span>
+          {__WASM_BACKEND__ && onFixture && <span className="onboard-door-sub">upload your Docs.json first</span>}
         </button>
-        {__WASM_BACKEND__ && onFixture && (
-          <button
-            className="onboard-door"
-            onClick={() => {
-              done();
-              document.querySelector<HTMLInputElement>('[data-testid="docs-file-input"]')?.click();
-            }}
-            data-testid="door-docs"
-          >
-            <span className="mono onboard-key">↑</span>
-            <span>Upload your Docs.json</span>
-          </button>
-        )}
         {__WASM_BACKEND__ && webllm.supported && !webllm.enabled && (
           <button
             className="onboard-door"
