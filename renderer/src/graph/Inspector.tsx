@@ -11,6 +11,7 @@ import { beltCapacity, effClock, effCount, POWER_ITEM, type DerivedFactory, type
 import ItemIcon from "../lib/ItemIcon";
 import { groupLogistics, balancedJunctions, SPLITTER_CLASS, MERGER_CLASS } from "./logistics";
 import SendToFactory from "./SendToFactory";
+import ReceiveFromFactory from "./ReceiveFromFactory";
 
 const CLOCK_STEPS = [0.5, 0.75, 1.0, 1.5, 2.5];
 // Satisfactory overclock power exponent (power ∝ clock^k) — for the
@@ -47,8 +48,10 @@ export default function Inspector({
   const dragging = dragValue !== null;
   const rate = dragging ? dragValue : outPort?.rate ?? 0;
   const wasmReady = useRef(false);
-  // "Send to another factory" modal, launched from a selected OUT port.
+  // Inter-factory supply modals, launched from a selected boundary port:
+  // send (from an OUT port) and its mirror, receive (from an IN port).
   const [sendingFrom, setSendingFrom] = useState<Id | null>(null);
+  const [receivingInto, setReceivingInto] = useState<Id | null>(null);
 
   useEffect(() => {
     void ensureT0().then(() => {
@@ -622,6 +625,26 @@ export default function Inspector({
               <span className="unit">/min</span>
             </span>
           </div>
+          {selectedPort.boundRoute ? (
+            <button
+              className="btn btn-ghost insp-send-btn"
+              onClick={() => setSelection({ kind: "route", id: selectedPort.boundRoute! })}
+              data-testid="btn-view-route"
+            >
+              VIEW ROUTE →
+            </button>
+          ) : (
+            <>
+              <button
+                className="btn btn-primary insp-send-btn"
+                onClick={() => setReceivingInto(selectedPort.id)}
+                data-testid="btn-receive-from-factory"
+              >
+                ← RECEIVE FROM ANOTHER FACTORY
+              </button>
+              <div className="insp-note">Currently supply-assumed. Pull it from a factory that produces it.</div>
+            </>
+          )}
         </section>
       )}
 
@@ -660,6 +683,9 @@ export default function Inspector({
 
       {sendingFrom && (
         <SendToFactory sourceFactory={factoryId} initialOutPort={sendingFrom} onClose={() => setSendingFrom(null)} />
+      )}
+      {receivingInto && (
+        <ReceiveFromFactory targetFactory={factoryId} initialInPort={receivingInto} onClose={() => setReceivingInto(null)} />
       )}
 
       <footer className="insp-footer">

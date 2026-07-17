@@ -15,11 +15,11 @@ import {
   DEFAULT_RAIL_SPEC,
   DEFAULT_TRUCK_SPEC,
   POWER_ITEM,
-  type Command,
   type Id,
   type RouteKind,
 } from "../state/types";
 import { fmtRate, itemLabel } from "../lib/format";
+import { wireSupply } from "./interFactorySupply";
 
 export default function SendToFactory({
   sourceFactory,
@@ -86,47 +86,14 @@ export default function SendToFactory({
     if (!src || !dst) return;
     busyRef.current = true;
     try {
-      // Match each output to a free IN port on the target by item; remember what
-      // we consumed so two outputs of the same item don't grab one port twice.
-      const usedIn = new Set<Id>();
-      const specs = chosen.map((p) => {
-        const match = dst.ports
-          .map((id) => plan.ports[id])
-          .find((q) => q && q.direction === "in" && !q.boundRoute && q.item === p.item && !usedIn.has(q.id));
-        if (match) usedIn.add(match.id);
-        return { from: p.id, item: p.item, inPort: match?.id ?? null };
-      });
-
-      // Create the missing IN ports first (homogeneous batch → created ids come
-      // back in order), then bind every route. Two commits at most, regardless
-      // of how many outputs are sent.
-      const existingIn = dst.ports.filter((id) => plan.ports[id]?.direction === "in").length;
-      const toCreate = specs.filter((s) => !s.inPort);
-      const createCmds: Command[] = toCreate.map((s, i) => ({
-        type: "add_port",
-        factory: target,
-        direction: "in",
-        item: s.item,
-        rate: 0,
-        rateCeiling: null,
-        graphPos: { x: 0, y: 80 + (existingIn + i) * 128 },
-      }));
-      let createdIds: Id[] = [];
-      if (createCmds.length) {
-        createdIds = (await dispatch(createCmds)) ?? [];
-        if (createdIds.length !== createCmds.length) return; // a refusal — bail before routing
-      }
-
-      let ci = 0;
-      const path = [src.position, dst.position];
-      const routeCmds: Command[] = specs.map((s) => ({
-        type: "add_route",
-        kind: kindFor(),
-        from: s.from,
-        to: s.inPort ?? createdIds[ci++],
-        path,
-      }));
-      const routeIds = (await dispatch(routeCmds)) ?? [];
+      const routeIds = await wireSupply(
+        plan,
+        dispatch,
+        src,
+        dst,
+        chosen.map((p) => p.id),
+        kindFor(),
+      );
       if (routeIds[0]) setSelection({ kind: "route", id: routeIds[0] });
     } finally {
       busyRef.current = false;
