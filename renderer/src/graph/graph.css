@@ -577,6 +577,76 @@
   margin-top: 8px;
   font-size: 11px;
 }
+.insp-send-btn {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+/* ---- "Send to another factory" modal ---- */
+.send-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+.send-modal {
+  width: 320px;
+  max-width: 92vw;
+  max-height: 84vh;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--steel-800);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.send-modal-title {
+  margin-bottom: 12px;
+  color: var(--ink-300);
+}
+.send-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+.send-row select {
+  height: 26px;
+  min-width: 150px;
+}
+.send-outputs {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--steel-700);
+}
+.send-cand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.send-cand.disabled {
+  opacity: 0.5;
+}
+.send-cand-rate {
+  margin-left: auto;
+  color: var(--ink-500);
+  font-size: 11px;
+}
+.send-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.send-actions .btn {
+  flex: 1;
+}
 .insp-slider-wrap {
   position: relative;
   height: 24px;

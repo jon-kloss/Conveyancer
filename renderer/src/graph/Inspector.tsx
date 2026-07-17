@@ -10,6 +10,7 @@ import { fmtClock, fmtPower, fmtRate, flowBand, bottleneckEdges, itemLabel } fro
 import { beltCapacity, effClock, effCount, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
 import { groupLogistics, balancedJunctions, SPLITTER_CLASS, MERGER_CLASS } from "./logistics";
+import SendToFactory from "./SendToFactory";
 
 const CLOCK_STEPS = [0.5, 0.75, 1.0, 1.5, 2.5];
 // Satisfactory overclock power exponent (power ∝ clock^k) — for the
@@ -46,6 +47,8 @@ export default function Inspector({
   const dragging = dragValue !== null;
   const rate = dragging ? dragValue : outPort?.rate ?? 0;
   const wasmReady = useRef(false);
+  // "Send to another factory" modal, launched from a selected OUT port.
+  const [sendingFrom, setSendingFrom] = useState<Id | null>(null);
 
   useEffect(() => {
     void ensureT0().then(() => {
@@ -620,6 +623,43 @@ export default function Inspector({
             </span>
           </div>
         </section>
+      )}
+
+      {/* An OUT port can supply another factory's input. This is the in-graph
+          entry to inter-factory routing (previously map-right-drag only). */}
+      {selectedPort && selectedPort.direction === "out" && (
+        <section className="insp-section">
+          <h3 className="t-label">OUTPUT — {itemLabel(gamedata.items, selectedPort.item).toUpperCase()}</h3>
+          <div className="drawer-row">
+            <span className="drawer-row-name">Rate</span>
+            <span className="t-data-12">
+              {fmtRate(selectedPort.rate)}
+              <span className="unit">/min</span>
+            </span>
+          </div>
+          {selectedPort.boundRoute ? (
+            <button
+              className="btn btn-ghost insp-send-btn"
+              onClick={() => setSelection({ kind: "route", id: selectedPort.boundRoute! })}
+              data-testid="btn-view-route"
+            >
+              VIEW ROUTE →
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary insp-send-btn"
+              onClick={() => setSendingFrom(selectedPort.id)}
+              data-testid="btn-send-to-factory"
+            >
+              SEND TO ANOTHER FACTORY →
+            </button>
+          )}
+          <div className="insp-note">Feeds this output into another factory's input. That factory can take several inputs.</div>
+        </section>
+      )}
+
+      {sendingFrom && (
+        <SendToFactory sourceFactory={factoryId} initialOutPort={sendingFrom} onClose={() => setSendingFrom(null)} />
       )}
 
       <footer className="insp-footer">
