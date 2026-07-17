@@ -286,17 +286,18 @@
   background: var(--signal-500);
 }
 
-/* ---- junction cards (compact; square = infrastructure) ---- */
+/* ---- junction cards: a small SQUARE (routes belts, produces nothing) so it
+   never reads as a machine card. Name/ports/item are in the hover tooltip. ---- */
 .junction-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 168px;
-  padding: 8px 10px;
+  justify-content: center;
+  width: 84px;
+  height: 84px;
   background: var(--steel-900);
   border: 1px solid var(--steel-500);
   border-radius: var(--radius);
-  font-size: 11px;
 }
 .junction-card.frame-planned {
   border-style: dashed;
@@ -306,41 +307,24 @@
 .junction-card.selected {
   border: 2px solid var(--signal-500);
 }
-.junction-glyph {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex: none;
-  background: var(--steel-800);
-  border: 1px solid var(--steel-600);
-  border-radius: 2px;
-  font-size: 14px;
-  color: var(--ink-300);
+.junction-sprite {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  image-rendering: auto;
+  pointer-events: none;
 }
-.junction-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.junction-name {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.junction-meta {
+.junction-floor {
+  position: absolute;
+  bottom: 3px;
+  right: 4px;
   font-size: 9px;
   color: var(--ink-500);
 }
-.junction-item {
-  font-size: 9px;
-  color: var(--ink-300);
+.junction-glyph {
+  font-size: 40px;
+  line-height: 1;
+  color: var(--ink-200);
 }
 .logistic-menu {
   position: absolute;
@@ -577,6 +561,21 @@
 }
 .insp-bp-chip.ceil {
   border-style: dashed;
+}
+.insp-logi-alt {
+  color: var(--ink-500);
+  font-size: 10px;
+}
+.insp-logi-tip {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--ink-300);
+  padding: 3px 0 0 2px;
+}
+.insp-expand-btn {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 11px;
 }
 .insp-slider-wrap {
   position: relative;

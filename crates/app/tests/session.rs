@@ -2896,3 +2896,135 @@ fn all_unknown_recipe_factory_still_surfaces_the_catalog_warning() {
     );
     assert!(df.warnings[0].contains("catalog"));
 }
+
+// ExpandGroup: a ×N bank materializes into N individual machines wired through
+// real splitter/merger junction trees, and undo restores the exact ×N bank.
+#[test]
+fn expand_bank_materializes_machines_and_junctions_and_undoes() {
+    let mut s = Session::in_memory(None).unwrap();
+    let r = s
+        .edit(vec![Command::CreateFactory {
+            name: "IRON".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap();
+    let fid = r.created[0].clone();
+    let in_port = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::In,
+            item: "Desc_OreIron_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(240.0),
+            graph_pos: gp(0.0, 0.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let out_port = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(600.0, 0.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    // a ×2 smelter bank, wired ore in / ingot out
+    let bank = s
+        .edit(vec![Command::AddGroup {
+            factory: fid.clone(),
+            machine: "Build_SmelterMk1_C".into(),
+            recipe: "Recipe_IngotIron_C".into(),
+            count: 2,
+            clock: 1.0,
+            graph_pos: gp(300.0, 0.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Port(in_port.clone()),
+        EdgeEnd::Group(bank.clone()),
+        "Desc_OreIron_C",
+        1,
+    );
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Group(bank.clone()),
+        EdgeEnd::Port(out_port.clone()),
+        "Desc_IronIngot_C",
+        1,
+    );
+
+    assert_eq!(s.state.groups.len(), 1);
+    assert_eq!(s.state.junctions.len(), 0);
+    assert_eq!(s.state.edges.len(), 2);
+
+    s.edit(vec![Command::ExpandGroup { id: bank.clone() }])
+        .unwrap();
+
+    // the ×2 bank is gone, replaced by 2 count-1 machines
+    assert!(!s.state.groups.contains_key(&bank), "bank removed");
+    assert_eq!(s.state.groups.len(), 2, "two individual machines");
+    assert!(s.state.groups.values().all(|g| g.count == 1));
+    // 1 splitter + 1 merger (balanced tree for N=2)
+    assert_eq!(s.state.junctions.len(), 2, "one splitter + one merger");
+    // in→splitter, splitter→m1, splitter→m2, m1→merger, m2→merger, merger→out
+    assert_eq!(s.state.edges.len(), 6, "rewired belt topology");
+    // the port belts survived, now landing on junctions (not the deleted bank)
+    let in_edge = s
+        .state
+        .edges
+        .values()
+        .find(|e| e.from == EdgeEnd::Port(in_port.clone()))
+        .unwrap();
+    assert!(
+        matches!(in_edge.to, EdgeEnd::Junction(_)),
+        "input belt feeds a splitter"
+    );
+    let out_edge = s
+        .state
+        .edges
+        .values()
+        .find(|e| e.to == EdgeEnd::Port(out_port.clone()))
+        .unwrap();
+    assert!(
+        matches!(out_edge.from, EdgeEnd::Junction(_)),
+        "output belt leaves a merger"
+    );
+    // the factory's group list tracks exactly the 2 machines
+    let f = s.state.factories.get(&fid).unwrap();
+    assert_eq!(f.groups.len(), 2);
+
+    // undo restores the exact pre-expand state
+    s.undo().unwrap().unwrap();
+    assert!(s.state.groups.contains_key(&bank), "bank restored");
+    assert_eq!(s.state.groups.len(), 1);
+    assert_eq!(s.state.groups[&bank].count, 2);
+    assert_eq!(s.state.junctions.len(), 0, "junctions gone");
+    assert_eq!(s.state.edges.len(), 2, "original belts restored");
+    let in_edge = s
+        .state
+        .edges
+        .values()
+        .find(|e| e.from == EdgeEnd::Port(in_port.clone()))
+        .unwrap();
+    assert_eq!(
+        in_edge.to,
+        EdgeEnd::Group(bank.clone()),
+        "input belt back on the bank"
+    );
+}
