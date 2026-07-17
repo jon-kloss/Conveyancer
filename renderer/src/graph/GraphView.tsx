@@ -32,7 +32,7 @@ import BuildSheet from "./BuildSheet";
 import { fmtPower } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
 import { isEditableTarget } from "../lib/keys";
-import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
+import { computeEdgeLayout, type JunctionShape, type LabelSize, type NodeGeom } from "./edgeLayout";
 import FloorPlates from "./FloorPlates";
 import { fmtRate, fmtPercent, bottleneckEdges } from "../lib/format";
 import { beltCapacity } from "../state/types";
@@ -438,8 +438,8 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       geoms[n.id] = {
         x: n.position.x,
         y: n.position.y,
-        w: m?.width ?? (n.type === "group" ? 248 : n.type === "junction" ? 168 : 96),
-        h: m?.height ?? (n.type === "group" ? 150 : n.type === "junction" ? 52 : 96),
+        w: m?.width ?? (n.type === "group" ? 248 : n.type === "junction" ? 84 : 96),
+        h: m?.height ?? (n.type === "group" ? 150 : n.type === "junction" ? 84 : 96),
       };
     }
     // Chip footprint from the real text (mono ≈ 6.4px/char at 10px + padding).
@@ -449,10 +449,18 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       const text = `${fmtRate(d?.flow ?? 0)}/${fmtRate(beltCapacity(e.tier))} · ${fmtPercent(d?.saturation ?? 0)} MK.${e.tier}`;
       labelSizes[e.id] = { w: text.length * 6.4 + 16, h: 20 };
     }
+    // Splitters/mergers route belts to distinct faces like the real building.
+    const shapes: Record<string, JunctionShape> = {};
+    for (const j of Object.values(plan.junctions)) {
+      if (j.factory !== factoryId) continue;
+      if (j.kind === "merger") shapes[j.id] = "merger";
+      else if (j.kind !== "storage") shapes[j.id] = "splitter";
+    }
     const layout = computeEdgeLayout(
       geoms,
       beltEdges.map((e) => ({ id: e.id, source: e.from.id, target: e.to.id })),
       labelSizes,
+      shapes,
     );
     // Portal stubs: on a filtered floor, a cross-floor belt runs from its
     // on-floor card to a lift portal instead of dimming into noise. Stubs on
@@ -526,7 +534,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
-  }, [factory, plan.edges, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet]);
+  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet]);
 
   // Card geometry for the floor plates (same source as the edge layout).
   const plateGeoms = useMemo(() => {

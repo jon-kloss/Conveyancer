@@ -45,17 +45,42 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
   const outUsed = edges.filter((e) => e.from.kind === "junction" && e.from.id === junction.id).length;
   const item = edges[0] ? itemLabel(gamedata.items, edges[0].item) : null;
   const hasSprite = ICONS.has(junction.buildable) && failedIcon !== junction.buildable;
+  const isMerger = junction.kind === "merger";
+  const isStorage = junction.kind === "storage";
 
   return (
     // A junction just routes belts — it produces nothing, so it reads as a
     // square (infrastructure grammar), NOT a machine card. The real buildable
     // sprite sits inside; name / port budget / item live in the hover tooltip.
+    // Handle faces mirror the game building: a splitter feeds in on the left and
+    // splits out the other three sides; a merger is the exact opposite. Belts
+    // are drawn from edgeLayout anchors, so these handles are the connection
+    // affordance + side nubs that agree with where the belts run.
     <div
       className={`junction-card frame-${junction.status} ${selected ? "selected" : ""}`}
       data-testid={`junction-${junction.kind}-${junction.id}`}
       title={`${name} — in ${inUsed}/${inCap} · out ${outUsed}/${outCap}${item ? ` · ${item.toUpperCase()}` : ""}`}
     >
-      <Handle type="target" position={Position.Left} className="belt-handle" />
+      {isStorage ? (
+        <>
+          <Handle type="target" position={Position.Left} className="belt-handle" />
+          <Handle type="source" position={Position.Right} className="belt-handle" />
+        </>
+      ) : isMerger ? (
+        <>
+          <Handle id="in-t" type="target" position={Position.Top} className="belt-handle" />
+          <Handle id="in-l" type="target" position={Position.Left} className="belt-handle" />
+          <Handle id="in-b" type="target" position={Position.Bottom} className="belt-handle" />
+          <Handle id="out" type="source" position={Position.Right} className="belt-handle" />
+        </>
+      ) : (
+        <>
+          <Handle id="in" type="target" position={Position.Left} className="belt-handle" />
+          <Handle id="out-t" type="source" position={Position.Top} className="belt-handle" />
+          <Handle id="out-r" type="source" position={Position.Right} className="belt-handle" />
+          <Handle id="out-b" type="source" position={Position.Bottom} className="belt-handle" />
+        </>
+      )}
       {hasSprite ? (
         <img
           className="junction-sprite"
@@ -70,7 +95,6 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
         </span>
       )}
       {data.showFloorBadge && <span className="junction-floor mono">F{junction.floor}</span>}
-      <Handle type="source" position={Position.Right} className="belt-handle" />
     </div>
   );
 }

@@ -22,6 +22,18 @@ interface Pt {
   y: number;
 }
 
+/** Which face a belt leaves/enters, so junctions can route to distinct sides
+ *  the way the in-game splitter/merger do (splitter: 1 in ← left, 3 out →
+ *  top/right/bottom; merger mirrors it). Non-junction cards always use L→out,
+ *  R→in as before. */
+type Dir = "L" | "R" | "T" | "B";
+interface Anchor extends Pt {
+  dir: Dir;
+}
+/** Junction shapes that get game-accurate side orientation. Storage and any
+ *  other kind fall through to the default right-out / left-in behaviour. */
+export type JunctionShape = "splitter" | "merger";
+
 interface Hop {
   /** index of the segment (between points[i] and points[i+1]) */
   seg: number;
@@ -48,14 +60,36 @@ const STUB = 24; // straight run leaving/entering a card
 const CORNER_R = 8; // belt curve radius
 const HOP_R = 6; // crossing bridge radius
 
+/** Point on a node face `dir` at fractional offset `frac` along that face. */
+function faceAnchor(n: NodeGeom, dir: Dir, frac = 0.5): Anchor {
+  switch (dir) {
+    case "L":
+      return { x: n.x, y: n.y + n.h * frac, dir };
+    case "R":
+      return { x: n.x + n.w, y: n.y + n.h * frac, dir };
+    case "T":
+      return { x: n.x + n.w * frac, y: n.y, dir };
+    case "B":
+      return { x: n.x + n.w * frac, y: n.y + n.h, dir };
+  }
+}
+
+// Which faces the "many" side of a splitter/merger uses, by count — one belt
+// per side, mirroring the real building (opposite side + the two perpendicular
+// sides). Sorted by counterpart Y so the topmost belt takes the top face.
+const OUT_FACES: Record<number, Dir[]> = { 1: ["R"], 2: ["T", "B"], 3: ["T", "R", "B"] };
+const IN_FACES: Record<number, Dir[]> = { 1: ["L"], 2: ["T", "B"], 3: ["T", "L", "B"] };
+
 /** Deterministic anchors: edges sorted by counterpart center-Y (ties by id),
- *  spread evenly along the node face. */
+ *  spread evenly along the node face. Splitters/mergers instead fan their
+ *  many-side belts across distinct faces (game orientation). */
 function anchorPositions(
   nodes: Record<string, NodeGeom>,
   edges: EdgeIn[],
-): { src: Record<string, Pt>; dst: Record<string, Pt> } {
-  const src: Record<string, Pt> = {};
-  const dst: Record<string, Pt> = {};
+  shapes: Record<string, JunctionShape>,
+): { src: Record<string, Anchor>; dst: Record<string, Anchor> } {
+  const src: Record<string, Anchor> = {};
+  const dst: Record<string, Anchor> = {};
   const bySource = new Map<string, EdgeIn[]>();
   const byTarget = new Map<string, EdgeIn[]>();
   for (const e of edges) {
@@ -66,19 +100,81 @@ function anchorPositions(
   const centerY = (id: string) => nodes[id].y + nodes[id].h / 2;
   for (const [nodeId, list] of bySource) {
     const n = nodes[nodeId];
+    const shape = shapes[nodeId];
     list.sort((a, b) => centerY(a.target) - centerY(b.target) || a.id.localeCompare(b.id));
-    list.forEach((e, i) => {
-      src[e.id] = { x: n.x + n.w, y: n.y + (n.h * (i + 1)) / (list.length + 1) };
-    });
+    if (shape === "splitter" && OUT_FACES[list.length]) {
+      // outputs fan across distinct faces
+      const faces = OUT_FACES[list.length];
+      list.forEach((e, i) => (src[e.id] = faceAnchor(n, faces[i])));
+    } else if (shape === "merger" && list.length === 1) {
+      // the single merged output leaves the right face
+      src[list[0].id] = faceAnchor(n, "R");
+    } else {
+      list.forEach((e, i) => {
+        src[e.id] = { x: n.x + n.w, y: n.y + (n.h * (i + 1)) / (list.length + 1), dir: "R" };
+      });
+    }
   }
   for (const [nodeId, list] of byTarget) {
     const n = nodes[nodeId];
+    const shape = shapes[nodeId];
     list.sort((a, b) => centerY(a.source) - centerY(b.source) || a.id.localeCompare(b.id));
-    list.forEach((e, i) => {
-      dst[e.id] = { x: n.x, y: n.y + (n.h * (i + 1)) / (list.length + 1) };
-    });
+    if (shape === "merger" && IN_FACES[list.length]) {
+      // inputs fan across distinct faces
+      const faces = IN_FACES[list.length];
+      list.forEach((e, i) => (dst[e.id] = faceAnchor(n, faces[i])));
+    } else if (shape === "splitter" && list.length === 1) {
+      // the single feed enters the left face
+      dst[list[0].id] = faceAnchor(n, "L");
+    } else {
+      list.forEach((e, i) => {
+        dst[e.id] = { x: n.x, y: n.y + (n.h * (i + 1)) / (list.length + 1), dir: "L" };
+      });
+    }
   }
   return { src, dst };
+}
+
+const isH = (d: Dir) => d === "L" || d === "R";
+function step(a: Anchor, d: number): Pt {
+  switch (a.dir) {
+    case "L":
+      return { x: a.x - d, y: a.y };
+    case "R":
+      return { x: a.x + d, y: a.y };
+    case "T":
+      return { x: a.x, y: a.y - d };
+    case "B":
+      return { x: a.x, y: a.y + d };
+  }
+}
+
+/** Orthogonal belt honouring each anchor's face direction: leave along the
+ *  face normal (a STUB), then turn once or twice to reach the other stub. Used
+ *  for any belt touching an oriented junction — the extra faces mean the plain
+ *  right→left router can't express a top/bottom departure. */
+function orthoRoute(s: Anchor, t: Anchor): Pt[] {
+  const s1 = step(s, STUB);
+  const t1 = step(t, STUB);
+  const mids: Pt[] = [];
+  const sH = isH(s.dir);
+  const tH = isH(t.dir);
+  if (sH && tH) {
+    if (Math.abs(s1.y - t1.y) >= 1) {
+      const midX = Math.round((s1.x + t1.x) / 2);
+      mids.push({ x: midX, y: s1.y }, { x: midX, y: t1.y });
+    }
+  } else if (!sH && !tH) {
+    if (Math.abs(s1.x - t1.x) >= 1) {
+      const midY = Math.round((s1.y + t1.y) / 2);
+      mids.push({ x: s1.x, y: midY }, { x: t1.x, y: midY });
+    }
+  } else if (sH && !tH) {
+    mids.push({ x: t1.x, y: s1.y });
+  } else {
+    mids.push({ x: s1.x, y: t1.y });
+  }
+  return [{ x: s.x, y: s.y }, s1, ...mids, t1, { x: t.x, y: t.y }];
 }
 
 /** Axis-aligned polyline from source anchor to target anchor. */
@@ -265,13 +361,20 @@ export function computeEdgeLayout(
   nodes: Record<string, NodeGeom>,
   edges: EdgeIn[],
   labelSizes: Record<string, LabelSize> = {},
+  shapes: Record<string, JunctionShape> = {},
 ): Record<string, EdgeGeom> {
   const usable = edges.filter((e) => nodes[e.source] && nodes[e.target]);
-  const { src, dst } = anchorPositions(nodes, usable);
-  const polylines = usable.map((e) => ({
-    id: e.id,
-    points: dedupe(route(src[e.id], dst[e.id], nodes[e.source], nodes[e.target])),
-  }));
+  const { src, dst } = anchorPositions(nodes, usable, shapes);
+  const polylines = usable.map((e) => {
+    // Any belt touching an oriented junction uses the face-aware router so a
+    // top/bottom departure reads correctly; everything else keeps the plain
+    // right→left belt run.
+    const oriented = !!shapes[e.source] || !!shapes[e.target];
+    const points = oriented
+      ? orthoRoute(src[e.id], dst[e.id])
+      : route(src[e.id], dst[e.id], nodes[e.source], nodes[e.target]);
+    return { id: e.id, points: dedupe(points) };
+  });
   const hops = findHops(polylines);
 
   // Cards (slightly inflated) are obstacles; chips also avoid one another.
