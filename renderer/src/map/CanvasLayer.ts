@@ -59,6 +59,9 @@ export interface CanvasLayerData {
   hoveredNode: string | null;
   selectedNode: string | null;
   showNodes: boolean;
+  /** Live search filter: when active, only nodes in `visible` are drawn and
+   *  hit-tested — the rest are toggled OFF so typing narrows the map. */
+  nodeFilter: { active: boolean; visible: Set<string> } | null;
   /** real-world terrain underlay (drawn at the bottom of this canvas) */
   showTerrain: boolean;
   routes: RouteRender[];
@@ -296,7 +299,9 @@ export class MapCanvasLayer extends L.Layer {
       }
       return best;
     }
+    const filter = this.data.nodeFilter;
     for (const node of this.data.world.nodes) {
+      if (filter?.active && !filter.visible.has(node.id)) continue;
       const p = map.latLngToContainerPoint(toLatLng(node));
       const dx = p.x - point.x;
       const dy = p.y - point.y;
@@ -997,8 +1002,11 @@ export class MapCanvasLayer extends L.Layer {
     const zoom = map.getZoom();
     const rBase = zoom <= 2 ? 3.5 : zoom <= 3 ? 5 : 7;
 
+    const filter = this.data.nodeFilter;
     this.nodeScreen = [];
     for (const node of this.data.world.nodes) {
+      // Search filter: hide (skip drawing AND hit-testing) non-matching nodes.
+      if (filter?.active && !filter.visible.has(node.id)) continue;
       const state = this.data.nodeStates[node.id] ?? { claims: 0, conflict: false, claimed: false };
       const p = map.latLngToContainerPoint(toLatLng(node));
       this.nodeScreen.push({ node, x: p.x, y: p.y });
