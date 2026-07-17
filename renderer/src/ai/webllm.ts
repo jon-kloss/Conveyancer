@@ -66,6 +66,23 @@ export async function runRank(system: string, user: string, maxTokens: number): 
   return res.choices[0]?.message?.content ?? "";
 }
 
+/** One conversational system+user turn for the advisor Chat — a plain-text
+ *  answer, not the structured rank JSON. Warmer than runRank (a little
+ *  personality) but still capped so a weak model can't ramble. Returns "" if
+ *  the engine isn't loaded — the caller falls back to the heuristic reply. */
+export async function runChat(system: string, user: string, maxTokens = 400): Promise<string> {
+  if (!engine) return "";
+  const res = await engine.chat.completions.create({
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    temperature: 0.5,
+    max_tokens: maxTokens,
+  });
+  return res.choices[0]?.message?.content ?? "";
+}
+
 /** Free the engine + GPU memory and drop the worker (on disable). Best-effort. */
 export async function unloadEngine(): Promise<void> {
   try {
