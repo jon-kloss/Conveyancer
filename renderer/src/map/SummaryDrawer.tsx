@@ -281,7 +281,7 @@ export default function SummaryDrawer({ factory }: { factory: Factory }) {
           className="btn btn-ghost"
           style={{ height: 34 }}
           onClick={() => setBuildSheet(true)}
-          title="BUILD SHEET — copy/print-friendly per-factory build checklist"
+          title="BUILD SHEET — copy-friendly per-factory build checklist"
           data-testid="btn-build-sheet"
         >
           BUILD SHEET

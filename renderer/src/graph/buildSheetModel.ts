@@ -1,5 +1,5 @@
 // BUILD SHEET composition (read-only): fold EXISTING derived + plan state for
-// one factory into a clean, ordered, copy/print-friendly spec — machines &
+// one factory into a clean, ordered, copy-friendly spec — machines &
 // clocks, inputs + their honest source, outputs, the routes touching the
 // factory (belt/pipe/rail tiers + item + rate + length), and total power. No
 // solver math lives here; every number is read from the derived projection.

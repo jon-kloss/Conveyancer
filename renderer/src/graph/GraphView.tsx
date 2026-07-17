@@ -687,7 +687,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         <button
           className="btn btn-ghost overlay-chip"
           onClick={() => setBuildSheet(true)}
-          title="BUILD SHEET — a clean, copy/print-friendly per-factory checklist to build from in-game"
+          title="BUILD SHEET — a clean, copy-friendly per-factory checklist to build from in-game"
           data-testid="btn-build-sheet"
         >
           BUILD SHEET
