@@ -21,17 +21,25 @@ export async function wireSupply(
   target: Factory,
   outPortIds: Id[],
   kind: RouteKind,
+  /** The IN port the flow was launched from (RECEIVE) — bound first for its
+   *  item so we wire the port the user actually clicked, not a same-item sibling. */
+  preferInPort?: Id,
 ): Promise<Id[]> {
   // Match each output to a free IN port by item; remember what we consumed so
   // two outputs of the same item can't grab the same port twice.
   const usedIn = new Set<Id>();
+  const prefer = preferInPort ? plan.ports[preferInPort] : undefined;
   const specs = outPortIds
     .map((pid) => plan.ports[pid])
     .filter((p): p is NonNullable<typeof p> => !!p)
     .map((p) => {
-      const match = target.ports
-        .map((id) => plan.ports[id])
-        .find((q) => q && q.direction === "in" && !q.boundRoute && q.item === p.item && !usedIn.has(q.id));
+      const canUse = (q: (typeof plan.ports)[string] | undefined) =>
+        !!q && q.direction === "in" && !q.boundRoute && q.item === p.item && !usedIn.has(q.id);
+      // Prefer the launch IN port for the first output that matches its item.
+      const match =
+        prefer && canUse(prefer)
+          ? prefer
+          : target.ports.map((id) => plan.ports[id]).find(canUse);
       if (match) usedIn.add(match.id);
       return { from: p.id, item: p.item, inPort: match?.id ?? null };
     });

@@ -105,6 +105,7 @@ export default function ReceiveFromFactory({
         target,
         chosen.map((p) => p.id),
         kindFor(),
+        initialInPort, // bind the port the user launched from, not a sibling
       );
       if (routeIds[0]) setSelection({ kind: "route", id: routeIds[0] });
     } finally {

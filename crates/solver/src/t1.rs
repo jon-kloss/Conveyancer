@@ -28,13 +28,17 @@ const EPS: f64 = 1e-6;
 /// shortfall is never taken to save machines).
 const SHORTFALL_PENALTY: f64 = 1e6;
 
-/// Penalty per machine-equivalent a generator runs below its nameplate. An
-/// order UNDER [`SHORTFALL_PENALTY`] so a real output target always wins a tie
-/// for shared fuel (the generator takes only leftovers), but far above the
-/// machines term so a generator with free fuel still runs fully. This slack is
-/// its own variable, never an output port, so it never enters `shortfalls`,
-/// `ports`, or the ceiling precompute.
-const GEN_PENALTY: f64 = 1e5;
+/// Penalty per machine-equivalent a generator runs below its nameplate. THREE
+/// orders UNDER [`SHORTFALL_PENALTY`] so a real output target wins the fuel even
+/// when its line burns far more fuel per unit of output than the generator burns
+/// per machine-equivalent (the penalties are per-output vs per-machine, so the
+/// margin must cover the fuel-intensity ratio; 1000× covers every real recipe),
+/// yet still THREE orders above the machines term (coefficient 1.0 per
+/// machine-equivalent) so a generator with free fuel runs fully. This slack is
+/// its own variable, never an output port — it never enters `shortfalls`,
+/// `ports`, and (see the objective) is excluded from the ceiling pass so it
+/// cannot cannibalize the edited target's achievable ceiling.
+const GEN_PENALTY: f64 = 1e3;
 
 struct Lp {
     group_vars: Vec<Variable>,
@@ -141,7 +145,12 @@ fn run_lp(
         .map(|&v| v * GEN_PENALTY)
         .sum();
     let objective: Expression = match target_var {
-        Some(t) => shortfall_penalty + gen_penalty - 1000.0 * t + machines.clone() + power_tiebreak,
+        // Ceiling pass: maximize the edited port WITHOUT gen_penalty. Including it
+        // let a driven generator sharing capped fuel outbid the -1000·t maximize
+        // term (GEN_PENALTY ≫ 1000), starving the edited port so its ceiling read
+        // ~0. The driven constraint (m + s == n) still holds, but with s free the
+        // generator simply yields all contested fuel to the port being measured.
+        Some(t) => shortfall_penalty - 1000.0 * t + machines.clone() + power_tiebreak,
         None => shortfall_penalty + gen_penalty + machines.clone() + power_tiebreak,
     };
 

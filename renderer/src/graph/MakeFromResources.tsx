@@ -10,7 +10,7 @@
 //     (e.g. rods when you ask for screws), reuse & scale that group instead of
 //     duplicating it (opt-in checkbox, on by default).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtRate, itemLabel } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
@@ -161,6 +161,11 @@ export default function MakeFromResources({
 
   const blocked = shortfalls.length > 0;
 
+  // The free-up confirm is a two-click latch. Reset it whenever the context
+  // changes (different target/rate, or no longer blocked) so a stale "confirm"
+  // can never fire a destructive delete on a single click in a new situation.
+  useEffect(() => setConfirmFree(false), [target, rate, blocked]);
+
   const freeUp = async () => {
     if (!freeable.length) return;
     if (!confirmFree) {
@@ -227,7 +232,10 @@ export default function MakeFromResources({
       // Scale reused groups only when their spare capacity can't absorb the new
       // draw: committed output (what they already feed) + the new demand vs the
       // group's current machine capacity. Reuses slack first, scales up if short.
-      const scaleCmds: Command[] = [];
+      // Accumulate the MAX required count per group id, so a single group that
+      // produces two reused items gets ONE set_group_count that satisfies both
+      // (two commands in one dispatch would otherwise clobber each other).
+      const needCountByGid = new Map<Id, number>();
       for (const [item, gid] of reuseGroupOf) {
         const prod = existingProducers.get(item)!;
         const newDemand = buildCp.belts
@@ -238,9 +246,14 @@ export default function MakeFromResources({
         const needed = committed + newDemand;
         if (needed > capacityNow + 1e-6) {
           const needCount = Math.ceil(needed / (prod.per * (prod.clock || 1)));
-          if (needCount > prod.count) scaleCmds.push({ type: "set_group_count", id: gid, count: needCount });
+          needCountByGid.set(gid, Math.max(needCountByGid.get(gid) ?? 0, needCount));
         }
       }
+      const scaleCmds: Command[] = [...needCountByGid].map(([id, count]) => ({
+        type: "set_group_count",
+        id,
+        count,
+      }));
 
       const edgeCmds: Command[] = buildCp.belts.map((b) => {
         const from: EdgeEnd = b.fromRaw

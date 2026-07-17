@@ -58,15 +58,25 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
     const claimRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock);
     const cmds: Parameters<typeof dispatch>[0] = [{ type: "release_node", id: c.id }];
     // Best-effort: retire the boundary input port this claim fed on the old
-    // factory (same item + extraction ceiling, not wired to a route). A
-    // route-bound port is left in place — deleting it would sever the route.
+    // factory. The port isn't linked to the claim, so match conservatively —
+    // same item + extraction ceiling, not route-bound, AND not wired into the
+    // graph. The unwired guard matters when two indistinguishable claims share
+    // this factory: without it we could delete the sibling port that IS belted
+    // to a machine and cascade-remove its belts. When only wired/ambiguous
+    // matches remain, delete nothing — the claim still moves; the port just
+    // becomes an unfed input (honest, non-destructive) the user can prune.
+    const portWired = (pid: string) =>
+      Object.values(plan.edges).some(
+        (e) => (e.from.kind === "port" && e.from.id === pid) || (e.to.kind === "port" && e.to.id === pid),
+      );
     const oldPort = Object.values(plan.ports).find(
       (p) =>
         p.factory === c.factory &&
         p.direction === "in" &&
         p.item === node.item &&
         p.boundRoute === null &&
-        Math.abs((p.rateCeiling ?? -1) - claimRate) < 0.5,
+        Math.abs((p.rateCeiling ?? -1) - claimRate) < 0.5 &&
+        !portWired(p.id),
     );
     if (oldPort) cmds.push({ type: "delete_port", id: oldPort.id });
     const portCount = Object.values(plan.ports).filter((p) => p.factory === toFactory && p.direction === "in").length;

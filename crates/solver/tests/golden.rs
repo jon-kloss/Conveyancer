@@ -1014,3 +1014,58 @@ fn real_target_wins_the_fuel_fight_against_a_generator() {
         "generator took only leftover coal",
     );
 }
+
+#[test]
+fn driven_generator_does_not_clobber_an_edited_targets_ceiling() {
+    // Same shared-fuel topology, but the user DRAGS the coke target (the ceiling
+    // pass). The generator must yield the contested coal so the edited port's
+    // achievable ceiling reads 60 — not ~0 from the generator winning the
+    // maximize pass (regression: gen_penalty used to leak into the ceiling pass).
+    let coke = {
+        let mut gs = group(
+            "coke",
+            recipe(
+                "Recipe_Coke",
+                "refinery",
+                60.0,
+                &[("coal", 60.0)],
+                &[("coke", 60.0)],
+                0.0,
+            ),
+        );
+        gs.count = 1;
+        gs
+    };
+    let snap = FactorySnapshot {
+        groups: vec![coal_gen(Some(4.0)), coke],
+        edges: vec![
+            edge("e-coal-gen", NodeRef::Input("in-coal".into()), g("gen"), "coal", 780.0),
+            edge("e-coal-coke", NodeRef::Input("in-coal".into()), g("coke"), "coal", 780.0),
+            edge("e-coke-out", g("coke"), NodeRef::Output("out-coke".into()), "coke", 780.0),
+        ],
+        inputs: vec![InputPortSpec {
+            id: "in-coal".into(),
+            item: "coal".into(),
+            ceiling: Some(60.0),
+        }],
+        junctions: vec![],
+        outputs: vec![OutputPortSpec {
+            id: "out-coke".into(),
+            item: "coke".into(),
+            rate: 0.0,
+        }],
+    };
+    let r = solver::t1::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-coke".into(),
+            rate: 60.0,
+        },
+    )
+    .unwrap();
+    assert_close(r.ports["out-coke"], 60.0, "edited target reaches its true ceiling");
+    assert!(!r.clamped, "60/min is feasible — must not be clamped to the generator");
+    if let Some(tc) = &r.target_ceiling {
+        assert_close(tc.max_rate, 60.0, "ceiling is the full coal-limited rate");
+    }
+}
