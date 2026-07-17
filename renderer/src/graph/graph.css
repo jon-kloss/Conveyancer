@@ -999,6 +999,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.mfr-reuse {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--signal-500);
+  border-radius: var(--radius);
+  background: rgba(247, 139, 35, 0.1);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-200);
+  cursor: pointer;
+  flex: none;
+}
+.mfr-reuse input {
+  margin-top: 2px;
+  accent-color: var(--signal-500);
+}
 .mfr-warn {
   margin: 0 14px;
   padding: 10px 12px;
@@ -1006,6 +1025,11 @@
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--flow-crit) 12%, transparent);
   flex: none;
+}
+.mfr-freeup {
+  margin-top: 10px;
+  height: 28px;
+  font-size: 11px;
 }
 .mfr-warn-head {
   font-size: 11px;
