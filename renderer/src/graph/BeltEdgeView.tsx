@@ -9,6 +9,8 @@ import { flowBand, flowSpeed, type FlowBand } from "../lib/format";
 import { fmtRate, fmtPercent } from "../lib/format";
 import { beltCapacity, type BeltEdge } from "../state/types";
 import type { EdgeGeom } from "./edgeLayout";
+import ItemIcon from "../lib/ItemIcon";
+import { SPLITTER_CLASS, MERGER_CLASS } from "./logistics";
 
 export interface LiftPortal {
   x: number;
@@ -35,6 +37,11 @@ export interface BeltEdgeData {
   portal: LiftPortal | null;
   onJumpFloor?: (floor: number, edgeId: string) => void;
   dimmed: boolean;
+  /** #94 belt logistics: balanced merger junctions on the SOURCE bank's output
+   *  (0 if the source is a single machine / port / junction) */
+  srcMerge: number;
+  /** balanced splitter junctions on the TARGET bank's input (0 if none) */
+  dstSplit: number;
   [key: string]: unknown;
 }
 
@@ -136,6 +143,25 @@ export default function BeltEdgeView(props: EdgeProps) {
       ? [data.geom.points[0], data.geom.points[data.geom.points.length - 1]]
       : [];
 
+  // #94: place a junction badge `inward` px from one end of the belt, along the
+  // path direction (geom points if available, else the RF anchors). Splitter
+  // sits just off the target bank's input; merger just off the source's output.
+  const endPoint = (which: "src" | "dst", inward: number) => {
+    const pts = data.geom?.points ?? [];
+    if (pts.length >= 2) {
+      const [a, next] = which === "dst" ? [pts[pts.length - 1], pts[pts.length - 2]] : [pts[0], pts[1]];
+      const dx = next.x - a.x;
+      const dy = next.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      return { x: a.x + (dx / len) * inward, y: a.y + (dy / len) * inward };
+    }
+    return which === "dst"
+      ? { x: props.targetX - inward, y: props.targetY }
+      : { x: props.sourceX + inward, y: props.sourceY };
+  };
+  const splitPt = data.dstSplit > 0 ? endPoint("dst", 48) : null;
+  const mergePt = data.srcMerge > 0 ? endPoint("src", 48) : null;
+
   return (
     <>
       <BaseEdge
@@ -200,6 +226,36 @@ export default function BeltEdgeView(props: EdgeProps) {
           )}
         </div>
       </EdgeLabelRenderer>
+      {/* #94: the physical junctions this belt needs — a merger where a multi-
+          machine bank's outputs combine onto it, a splitter where it fans into
+          the next bank. Decorative (computed, balanced-tree count); the
+          inspector LOGISTICS section has the manifold alternative + tips. */}
+      {mergePt && (
+        <EdgeLabelRenderer>
+          <div
+            className={`belt-junction ${data.dimmed ? "dimmed" : ""}`}
+            style={{ transform: `translate(-50%, -50%) translate(${mergePt.x}px, ${mergePt.y}px)` }}
+            title={`Merger — combine the bank's ${data.srcMerge + 1} output belts onto this line (${data.srcMerge} balanced)`}
+            data-testid={`belt-merger-${data.edge.id}`}
+          >
+            <ItemIcon item={MERGER_CLASS} displayName="Merger" size={20} />
+            <span className="mono belt-junction-n">×{data.srcMerge}</span>
+          </div>
+        </EdgeLabelRenderer>
+      )}
+      {splitPt && (
+        <EdgeLabelRenderer>
+          <div
+            className={`belt-junction ${data.dimmed ? "dimmed" : ""}`}
+            style={{ transform: `translate(-50%, -50%) translate(${splitPt.x}px, ${splitPt.y}px)` }}
+            title={`Splitter — fan this belt to the bank's machines (${data.dstSplit} balanced)`}
+            data-testid={`belt-splitter-${data.edge.id}`}
+          >
+            <ItemIcon item={SPLITTER_CLASS} displayName="Splitter" size={20} />
+            <span className="mono belt-junction-n">×{data.dstSplit}</span>
+          </div>
+        </EdgeLabelRenderer>
+      )}
     </>
   );
 }

@@ -118,40 +118,6 @@
   padding: 8px 10px;
   color: var(--ink-100);
 }
-/* Belt-logistics strip: splitter → machines → merger, the physical build the
-   ×N hides. Sits between the recipe row and the footprint outlines. */
-.group-logi {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-top: 1px dashed var(--steel-700);
-  background: color-mix(in srgb, var(--steel-800) 55%, transparent);
-}
-.group-logi-part {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 10px;
-  color: var(--ink-300);
-}
-.group-logi-machines {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: 1;
-  justify-content: center;
-  min-width: 0;
-}
-.group-logi-arrow {
-  font-size: 10px;
-  color: var(--ink-faint);
-}
-.group-logi-more {
-  font-size: 10px;
-  color: var(--ink-500);
-  margin-left: 2px;
-}
 .group-card-foot {
   display: flex;
   gap: 12px;
@@ -504,6 +470,27 @@
 .belt-label.compact {
   padding: 0 4px;
   font-size: 9px;
+}
+/* #94: splitter/merger junction card sitting on the belt line. */
+.belt-junction {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  background: var(--steel-900);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  pointer-events: all;
+  white-space: nowrap;
+  box-shadow: 0 0 0 3px rgba(13, 16, 19, 0.6);
+}
+.belt-junction.dimmed {
+  opacity: 0.2;
+}
+.belt-junction-n {
+  font-size: 10px;
+  color: var(--ink-300);
 }
 /* efficiency grammar: the alarm chip is the BOTTLENECK (solver-named), not a
    merely full belt; .under is a hook class (the stroke carries the amber) */

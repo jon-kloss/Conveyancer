@@ -35,7 +35,8 @@ import { isEditableTarget } from "../lib/keys";
 import { computeEdgeLayout, type LabelSize, type NodeGeom } from "./edgeLayout";
 import FloorPlates from "./FloorPlates";
 import { fmtRate, fmtPercent, bottleneckEdges } from "../lib/format";
-import { beltCapacity } from "../state/types";
+import { beltCapacity, effCount } from "../state/types";
+import { balancedJunctions } from "./logistics";
 import "./graph.css";
 
 const nodeTypes = { group: MachineGroupNode, boundaryPort: BoundaryPortNode, junction: JunctionNode };
@@ -523,6 +524,18 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           portal,
           onJumpFloor: jumpFloor,
           dimmed,
+          // Belt logistics (#94): a bank of N machines needs a merger tree on
+          // each output belt (at the source) and a splitter tree on each input
+          // belt (at the target). Balanced 1→3 counts; 0 when the endpoint is a
+          // single machine, a port, or a junction.
+          srcMerge:
+            e.from.kind === "group" && plan.groups[e.from.id]
+              ? balancedJunctions(effCount(plan.groups[e.from.id]))
+              : 0,
+          dstSplit:
+            e.to.kind === "group" && plan.groups[e.to.id]
+              ? balancedJunctions(effCount(plan.groups[e.to.id]))
+              : 0,
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
