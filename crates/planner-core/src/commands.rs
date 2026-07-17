@@ -111,6 +111,12 @@ pub enum Command {
     DeleteGroup {
         id: Id,
     },
+    /// Materialize a ×N bank into N individual machines wired through real
+    /// splitter/merger junction trees — the physical build the count hides.
+    /// Reversible via undo (every mutation is recorded).
+    ExpandGroup {
+        id: Id,
+    },
     AddPort {
         factory: Id,
         direction: PortDirection,
@@ -298,6 +304,7 @@ impl Command {
             Command::MoveGroupCard { .. } => "move card",
             Command::TidyLayout { .. } => "tidy layout",
             Command::DeleteGroup { .. } => "delete group",
+            Command::ExpandGroup { .. } => "expand bank",
             Command::AddPort { .. } => "add port",
             Command::SetPortRate { .. } => "set target rate",
             Command::SetPortCeiling { .. } => "set input ceiling",
@@ -415,6 +422,246 @@ fn prune_build_override(state: &mut PlanState, tx: &mut Transaction, id: &Id) {
     if let Some(ops) = state.remove(COLL_BUILD_OVERRIDES, id) {
         tx.record(ops);
     }
+}
+
+/// Largest bank we'll expand — beyond this the individual-machine graph (N
+/// machines + ~N junctions + ~3N belts, re-solved on every edit) hurts more
+/// than it helps; keep those banks compact.
+const EXPAND_MAX: u32 = 24;
+
+/// Materialize a ×N machine bank into N individual count-1 machines wired
+/// through real splitter/merger junction trees, rewiring the bank's existing
+/// belts through them. Works purely from the bank's current edges (no gamedata
+/// needed): every wired input belt gets a splitter tree to the N machines, every
+/// wired output belt a merger tree from them. Every mutation is recorded, so the
+/// command's inverse (undo) restores the exact ×N bank + original belts.
+fn expand_group(state: &mut PlanState, tx: &mut Transaction, id: &Id) -> Result<(), DomainError> {
+    let g = state
+        .groups
+        .get(id)
+        .cloned()
+        .ok_or(DomainError::NotFound { id: id.clone() })?;
+    require_planned(g.status, id, "expand")?;
+    let n = g.effective_count();
+    if n <= 1 {
+        return Err(DomainError::Invalid {
+            message: "a single machine has nothing to expand".into(),
+        });
+    }
+    if n > EXPAND_MAX {
+        return Err(DomainError::Invalid {
+            message: format!("a bank of ×{n} is too large to expand (max ×{EXPAND_MAX})"),
+        });
+    }
+    let factory_id = g.factory.clone();
+    let clock = g.effective_clock();
+    let base = g.graph_pos;
+    let mut f = state
+        .factories
+        .get(&factory_id)
+        .cloned()
+        .ok_or(DomainError::NotFound {
+            id: factory_id.clone(),
+        })?;
+
+    // 1. N individual count-1 machines, stacked vertically where the bank sat.
+    let mut machines: Vec<Id> = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let m = MachineGroup {
+            id: new_id(),
+            factory: factory_id.clone(),
+            machine: g.machine.clone(),
+            recipe: g.recipe.clone(),
+            count: 1,
+            clock,
+            somersloops: 0,
+            planned_delta: None,
+            graph_pos: GraphPos {
+                x: base.x,
+                y: base.y + (i as f64 - (n as f64 - 1.0) / 2.0) * 64.0,
+            },
+            floor: g.floor,
+            status: Status::Planned,
+            created_by: CreatedBy::Manual,
+        };
+        machines.push(m.id.clone());
+        f.groups.push(m.id.clone());
+        tx.created.push(m.id.clone());
+        tx.record(state.upsert(Entity::Group(m)));
+    }
+
+    // 2. Each wired input belt → a splitter tree feeding the N machines. Rewire
+    //    the belt's target from the bank to the tree root.
+    let incoming: Vec<BeltEdge> = state
+        .edges
+        .values()
+        .filter(|e| e.to == EdgeEnd::Group(id.clone()))
+        .cloned()
+        .collect();
+    for (k, e) in incoming.iter().enumerate() {
+        let anchor = GraphPos {
+            x: base.x - 200.0,
+            y: base.y + k as f64 * 40.0,
+        };
+        let root = fan_tree(
+            state,
+            tx,
+            &factory_id,
+            true,
+            &e.item,
+            e.tier,
+            g.floor,
+            anchor,
+            &machines,
+        );
+        let mut e2 = e.clone();
+        e2.to = EdgeEnd::Junction(root);
+        tx.record(state.upsert(Entity::Edge(e2)));
+    }
+
+    // 3. Each wired output belt → a merger tree combining the N machines. Rewire
+    //    the belt's source from the bank to the tree root.
+    let outgoing: Vec<BeltEdge> = state
+        .edges
+        .values()
+        .filter(|e| e.from == EdgeEnd::Group(id.clone()))
+        .cloned()
+        .collect();
+    for (k, e) in outgoing.iter().enumerate() {
+        let anchor = GraphPos {
+            x: base.x + 200.0,
+            y: base.y + k as f64 * 40.0,
+        };
+        let root = fan_tree(
+            state,
+            tx,
+            &factory_id,
+            false,
+            &e.item,
+            e.tier,
+            g.floor,
+            anchor,
+            &machines,
+        );
+        let mut e2 = e.clone();
+        e2.from = EdgeEnd::Junction(root);
+        tx.record(state.upsert(Entity::Edge(e2)));
+    }
+
+    // 4. Drop the original bank. Its belts were rewired onto the junction trees
+    //    (step 2/3), so they no longer touch it and won't cascade-delete.
+    f.groups.retain(|gid| gid != id);
+    tx.record(state.upsert(Entity::Factory(f)));
+    if let Some(ops) = state.remove(COLL_GROUPS, id) {
+        tx.record(ops);
+    }
+    prune_build_override(state, tx, id);
+    Ok(())
+}
+
+/// Build a splitter (`is_split`) or merger junction tree between one belt end and
+/// the N machines, honoring the 1→3 / 3→1 port budget, and return the tree ROOT
+/// junction id (the end that the bank's rewired belt attaches to). Junction count
+/// matches the balanced `⌈(N-1)/2⌉`. All entities recorded into `tx`.
+#[allow(clippy::too_many_arguments)]
+fn fan_tree(
+    state: &mut PlanState,
+    tx: &mut Transaction,
+    factory: &Id,
+    is_split: bool,
+    item: &str,
+    tier: u8,
+    floor: u32,
+    anchor: GraphPos,
+    machines: &[Id],
+) -> Id {
+    let kind = if is_split {
+        JunctionKind::Splitter
+    } else {
+        JunctionKind::Merger
+    };
+    let mut jcount = 0u32;
+    let mut new_junction = |state: &mut PlanState, tx: &mut Transaction| -> Id {
+        let j = Junction {
+            id: new_id(),
+            factory: factory.clone(),
+            kind,
+            buildable: kind.buildable_class().to_string(),
+            graph_pos: GraphPos {
+                x: anchor.x,
+                y: anchor.y + jcount as f64 * 44.0,
+            },
+            floor,
+            status: Status::Planned,
+            created_by: CreatedBy::Manual,
+        };
+        jcount += 1;
+        let jid = j.id.clone();
+        tx.created.push(jid.clone());
+        tx.record(state.upsert(Entity::Junction(j)));
+        jid
+    };
+    let add_belt = |state: &mut PlanState, tx: &mut Transaction, from: EdgeEnd, to: EdgeEnd| {
+        let e = BeltEdge {
+            id: new_id(),
+            factory: factory.clone(),
+            from,
+            to,
+            item: item.to_string(),
+            tier,
+            status: Status::Planned,
+            created_by: CreatedBy::Manual,
+        };
+        tx.created.push(e.id.clone());
+        tx.record(state.upsert(Entity::Edge(e)));
+    };
+
+    let root = new_junction(state, tx);
+    // `slots` holds junction ids by free port (each appearance = one open port on
+    // that junction — 3 per junction). Grow the tree until there are ≥ N slots,
+    // then wire the machines into the first N.
+    let n = machines.len();
+    let mut slots: Vec<Id> = vec![root.clone(), root.clone(), root.clone()];
+    while slots.len() < n {
+        let parent = slots.pop().expect("slots non-empty");
+        let child = new_junction(state, tx);
+        // splitter: parent → child ; merger: child → parent (flow reversed)
+        if is_split {
+            add_belt(
+                state,
+                tx,
+                EdgeEnd::Junction(parent),
+                EdgeEnd::Junction(child.clone()),
+            );
+        } else {
+            add_belt(
+                state,
+                tx,
+                EdgeEnd::Junction(child.clone()),
+                EdgeEnd::Junction(parent),
+            );
+        }
+        slots.extend([child.clone(), child.clone(), child]);
+    }
+    for (i, m) in machines.iter().enumerate() {
+        let j = &slots[i];
+        if is_split {
+            add_belt(
+                state,
+                tx,
+                EdgeEnd::Junction(j.clone()),
+                EdgeEnd::Group(m.clone()),
+            );
+        } else {
+            add_belt(
+                state,
+                tx,
+                EdgeEnd::Group(m.clone()),
+                EdgeEnd::Junction(j.clone()),
+            );
+        }
+    }
+    root
 }
 
 fn remove_route_cascading(state: &mut PlanState, tx: &mut Transaction, route_id: &Id) {
@@ -852,6 +1099,9 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 tx.record(ops);
             }
             prune_build_override(state, &mut tx, id);
+        }
+        Command::ExpandGroup { id } => {
+            expand_group(state, &mut tx, id)?;
         }
         Command::AddPort {
             factory,

@@ -30,6 +30,7 @@ export default function Inspector({
   const selection = useStore((s) => s.selection);
   const derived = useStore((s) => s.derived);
   const dispatch = useStore((s) => s.dispatch);
+  const setSelection = useStore((s) => s.setSelection);
   const setProjected = useStore((s) => s.setProjected);
 
   const factory = plan.factories[factoryId];
@@ -471,6 +472,22 @@ export default function Inspector({
                   ▸ {t}
                 </div>
               ))}
+              {selectedGroup.status === "planned" ? (
+                // Materialize the bank into its real build: N individual machines
+                // wired through actual splitter/merger junctions (undoable).
+                <button
+                  className="btn btn-primary insp-expand-btn"
+                  onClick={() => {
+                    void dispatch([{ type: "expand_group", id: selectedGroup.id }]);
+                    setSelection(null); // the ×N group is replaced by the machines
+                  }}
+                  data-testid="btn-expand-bank"
+                >
+                  EXPAND INTO {effCount(selectedGroup)} MACHINES + SPLITTERS
+                </button>
+              ) : (
+                <div className="insp-note">Expand is available on planned (◇) banks.</div>
+              )}
             </section>
           )}
 

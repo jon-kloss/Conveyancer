@@ -835,6 +835,7 @@ export type Command =
   | { type: "move_group_card"; id: Id; graphPos: GraphPos }
   | { type: "tidy_layout"; factory: Id }
   | { type: "delete_group"; id: Id }
+  | { type: "expand_group"; id: Id }
   | { type: "add_port"; factory: Id; direction: PortDirection; item: string; rate: number; rateCeiling: number | null; graphPos: GraphPos }
   | { type: "set_port_rate"; id: Id; rate: number }
   | { type: "set_port_ceiling"; id: Id; rateCeiling: number | null }
