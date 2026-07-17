@@ -471,27 +471,6 @@
   padding: 0 4px;
   font-size: 9px;
 }
-/* #94: splitter/merger junction card sitting on the belt line. */
-.belt-junction {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 5px;
-  background: var(--steel-900);
-  border: 1px solid var(--steel-600);
-  border-radius: var(--radius);
-  pointer-events: all;
-  white-space: nowrap;
-  box-shadow: 0 0 0 3px rgba(13, 16, 19, 0.6);
-}
-.belt-junction.dimmed {
-  opacity: 0.2;
-}
-.belt-junction-n {
-  font-size: 10px;
-  color: var(--ink-300);
-}
 /* efficiency grammar: the alarm chip is the BOTTLENECK (solver-named), not a
    merely full belt; .under is a hook class (the stroke carries the amber) */
 .belt-label.bottleneck {
