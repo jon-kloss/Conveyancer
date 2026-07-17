@@ -626,6 +626,24 @@
   z-index: 40;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
+/* Order banner (web, pre-catalog): states the required upload sequence. */
+.data-menu-order {
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-300);
+  background: var(--bp-900, var(--steel-900));
+  border-bottom: 1px solid var(--steel-600);
+}
+.data-menu-order b {
+  color: var(--signal-400);
+  font-weight: 700;
+}
+/* The step-① Docs.json action floated to the top gets a left accent so it
+   reads as the starting point. */
+.data-menu-step {
+  border-left: 2px solid var(--signal-500);
+}
 .data-menu-item {
   display: flex;
   flex-direction: column;

@@ -866,6 +866,28 @@ export default function MapView() {
               <>
                 <div className="data-menu-backdrop" onClick={() => setDataMenu(false)} />
                 <div className="data-menu" data-testid="data-menu">
+                  {/* Web + still-on-fixture: the catalog must load BEFORE a save
+                      so classes resolve, so state the order loudly and float the
+                      Docs.json action to the top as step ①. */}
+                  {__WASM_BACKEND__ && !catalogLoaded && (
+                    <div className="data-menu-order" data-testid="data-menu-order">
+                      Load in order: <b>① Upload Docs.json</b> → <b>② Import save</b>
+                    </div>
+                  )}
+                  {__WASM_BACKEND__ && !catalogLoaded && (
+                    <button
+                      className="data-menu-item data-menu-step"
+                      onClick={() => {
+                        setDataMenu(false);
+                        docsRef.current?.click();
+                      }}
+                      disabled={uploadingDocs}
+                      data-testid="btn-upload-docs-first"
+                    >
+                      <span className="data-menu-item-label">① Upload Docs.json</span>
+                      <span className="data-menu-item-sub">start here — the recipe catalog for your game version</span>
+                    </button>
+                  )}
                   <button
                     className="data-menu-item"
                     onClick={() => {
@@ -874,8 +896,14 @@ export default function MapView() {
                     }}
                     data-testid="btn-import"
                   >
-                    <span className="data-menu-item-label">Import save</span>
-                    <span className="data-menu-item-sub">.sav — your factories as a Built layer</span>
+                    <span className="data-menu-item-label">
+                      {__WASM_BACKEND__ && !catalogLoaded ? "② Import save" : "Import save"}
+                    </span>
+                    <span className="data-menu-item-sub">
+                      {__WASM_BACKEND__ && !catalogLoaded
+                        ? "upload your Docs.json above first for full recipe matching"
+                        : ".sav — your factories as a Built layer"}
+                    </span>
                   </button>
                   {__WASM_BACKEND__ && (
                     // One "Sync from save" control with an Auto toggle. aria-disabled
@@ -958,7 +986,9 @@ export default function MapView() {
                       )}
                     </div>
                   )}
-                  {__WASM_BACKEND__ && (
+                  {/* Once a real catalog is loaded the step-① button up top is
+                      gone, so keep an "update" entry here to swap game versions. */}
+                  {__WASM_BACKEND__ && catalogLoaded && (
                     <button
                       className="data-menu-item"
                       onClick={() => {
@@ -968,8 +998,8 @@ export default function MapView() {
                       disabled={uploadingDocs}
                       data-testid="btn-upload-docs"
                     >
-                      <span className="data-menu-item-label">Upload Docs.json</span>
-                      <span className="data-menu-item-sub">the full recipe catalog for your game version</span>
+                      <span className="data-menu-item-label">Update Docs.json</span>
+                      <span className="data-menu-item-sub">swap in a different game version's catalog</span>
                     </button>
                   )}
                   <div className="data-menu-hint">
