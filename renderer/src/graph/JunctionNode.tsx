@@ -39,23 +39,19 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
   const item = edges[0] ? itemLabel(gamedata.items, edges[0].item) : null;
 
   return (
+    // A junction just routes belts — it produces nothing, so it reads as a small
+    // square (infrastructure grammar), NOT a machine card. Name / port budget /
+    // item live in the hover tooltip.
     <div
       className={`junction-card frame-${junction.status} ${selected ? "selected" : ""}`}
       data-testid={`junction-${junction.kind}-${junction.id}`}
-      title={`${name} — in ${inUsed}/${inCap} · out ${outUsed}/${outCap}`}
+      title={`${name} — in ${inUsed}/${inCap} · out ${outUsed}/${outCap}${item ? ` · ${item.toUpperCase()}` : ""}`}
     >
       <Handle type="target" position={Position.Left} className="belt-handle" />
-      <div className="junction-glyph" aria-hidden>
+      <span className="junction-glyph" aria-hidden>
         {KIND_GLYPH[junction.kind]}
-      </div>
-      <div className="junction-body">
-        <span className="junction-name">{name.toUpperCase()}</span>
-        <span className="mono junction-meta">
-          {inUsed}/{inCap} IN · {outUsed}/{outCap} OUT
-          {data.showFloorBadge && <span className="floor-badge-foot"> F{junction.floor}</span>}
-        </span>
-        {item && <span className="mono junction-item">{item.toUpperCase()}</span>}
-      </div>
+      </span>
+      {data.showFloorBadge && <span className="junction-floor mono">F{junction.floor}</span>}
       <Handle type="source" position={Position.Right} className="belt-handle" />
     </div>
   );
