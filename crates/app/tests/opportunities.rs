@@ -2467,7 +2467,13 @@ fn unwired_generator_still_generates_at_nameplate() {
         4,
     );
     // Fuel wired; deliberately NO power output port.
-    belt(&mut s, &fid, EdgeEnd::Port(coal_in), EdgeEnd::Group(gens), "Desc_Coal_C");
+    belt(
+        &mut s,
+        &fid,
+        EdgeEnd::Port(coal_in),
+        EdgeEnd::Group(gens),
+        "Desc_Coal_C",
+    );
     let derived = s.solve_all_readonly();
     // 4 coal generators × 75 MW = 300 MW nameplate; coal ceiling 480 ≥ 60 needed.
     let gen = derived.total_generation_mw;

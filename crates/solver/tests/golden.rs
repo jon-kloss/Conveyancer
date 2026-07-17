@@ -876,9 +876,19 @@ fn coal_gen(driven: Option<f64>) -> GroupSpec {
     gs
 }
 
-fn coal_only_snapshot(driven: Option<f64>, coal_ceiling: Option<f64>, wired: bool) -> FactorySnapshot {
+fn coal_only_snapshot(
+    driven: Option<f64>,
+    coal_ceiling: Option<f64>,
+    wired: bool,
+) -> FactorySnapshot {
     let edges = if wired {
-        vec![edge("e-coal", NodeRef::Input("in-coal".into()), g("gen"), "coal", 780.0)]
+        vec![edge(
+            "e-coal",
+            NodeRef::Input("in-coal".into()),
+            g("gen"),
+            "coal",
+            780.0,
+        )]
     } else {
         vec![]
     };
@@ -899,17 +909,31 @@ fn coal_only_snapshot(driven: Option<f64>, coal_ceiling: Option<f64>, wired: boo
 fn driven_generator_runs_at_nameplate_when_fueled() {
     let snap = coal_only_snapshot(Some(4.0), None, true);
     let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
-    assert_close(r.groups["gen"].out_rates["power"], 300.0, "fueled generation");
+    assert_close(
+        r.groups["gen"].out_rates["power"],
+        300.0,
+        "fueled generation",
+    );
     assert_close(r.groups["gen"].in_rates["coal"], 60.0, "fuel draw");
-    assert!(r.shortfalls.is_empty(), "generator slack must NOT leak into shortfalls");
+    assert!(
+        r.shortfalls.is_empty(),
+        "generator slack must NOT leak into shortfalls"
+    );
 }
 
 #[test]
 fn driven_generator_scales_down_when_fuel_capped() {
     let snap = coal_only_snapshot(Some(4.0), Some(30.0), true); // 30 coal, needs 60
     let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
-    assert_close(r.groups["gen"].out_rates["power"], 150.0, "fuel-limited generation");
-    assert!(r.shortfalls.is_empty(), "fuel-limited generator is not a shortfall");
+    assert_close(
+        r.groups["gen"].out_rates["power"],
+        150.0,
+        "fuel-limited generation",
+    );
+    assert!(
+        r.shortfalls.is_empty(),
+        "fuel-limited generator is not a shortfall"
+    );
 }
 
 #[test]
@@ -917,7 +941,10 @@ fn driven_generator_zero_when_unfueled() {
     let snap = coal_only_snapshot(Some(4.0), None, false);
     let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
     assert_close(r.groups["gen"].out_rates["power"], 0.0, "no false power");
-    assert!(r.shortfalls.is_empty(), "unfueled generator is not a shortfall");
+    assert!(
+        r.shortfalls.is_empty(),
+        "unfueled generator is not a shortfall"
+    );
 }
 
 #[test]
@@ -929,7 +956,14 @@ fn real_target_wins_the_fuel_fight_against_a_generator() {
     let coke = {
         let mut gs = group(
             "coke",
-            recipe("Recipe_Coke", "refinery", 60.0, &[("coal", 60.0)], &[("coke", 60.0)], 0.0),
+            recipe(
+                "Recipe_Coke",
+                "refinery",
+                60.0,
+                &[("coal", 60.0)],
+                &[("coke", 60.0)],
+                0.0,
+            ),
         );
         gs.count = 1;
         gs
@@ -937,16 +971,46 @@ fn real_target_wins_the_fuel_fight_against_a_generator() {
     let snap = FactorySnapshot {
         groups: vec![coal_gen(Some(4.0)), coke],
         edges: vec![
-            edge("e-coal-gen", NodeRef::Input("in-coal".into()), g("gen"), "coal", 780.0),
-            edge("e-coal-coke", NodeRef::Input("in-coal".into()), g("coke"), "coal", 780.0),
-            edge("e-coke-out", g("coke"), NodeRef::Output("out-coke".into()), "coke", 780.0),
+            edge(
+                "e-coal-gen",
+                NodeRef::Input("in-coal".into()),
+                g("gen"),
+                "coal",
+                780.0,
+            ),
+            edge(
+                "e-coal-coke",
+                NodeRef::Input("in-coal".into()),
+                g("coke"),
+                "coal",
+                780.0,
+            ),
+            edge(
+                "e-coke-out",
+                g("coke"),
+                NodeRef::Output("out-coke".into()),
+                "coke",
+                780.0,
+            ),
         ],
-        inputs: vec![InputPortSpec { id: "in-coal".into(), item: "coal".into(), ceiling: Some(60.0) }],
+        inputs: vec![InputPortSpec {
+            id: "in-coal".into(),
+            item: "coal".into(),
+            ceiling: Some(60.0),
+        }],
         junctions: vec![],
-        outputs: vec![OutputPortSpec { id: "out-coke".into(), item: "coke".into(), rate: 60.0 }],
+        outputs: vec![OutputPortSpec {
+            id: "out-coke".into(),
+            item: "coke".into(),
+            rate: 60.0,
+        }],
     };
     let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
     assert_close(r.ports["out-coke"], 60.0, "real coke target met in full");
     assert!(r.shortfalls.is_empty(), "no shortfall on the real target");
-    assert_close(r.groups["gen"].out_rates["power"], 0.0, "generator took only leftover coal");
+    assert_close(
+        r.groups["gen"].out_rates["power"],
+        0.0,
+        "generator took only leftover coal",
+    );
 }
