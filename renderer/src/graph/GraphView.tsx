@@ -727,14 +727,16 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         void dispatch(del).then((r) => {
           if (r) setSelection(null);
         });
-      } else if (e.key === "v" || e.key === "V") {
+      } else if ((e.key === "v" || e.key === "V") && !e.metaKey && !e.ctrlKey) {
         setTool("select");
-      } else if (e.key === "h" || e.key === "H") {
+      } else if ((e.key === "h" || e.key === "H") && !e.metaKey && !e.ctrlKey) {
         setTool("pan");
       } else if (e.key === " ") {
-        // Space-hold = temporary pan (Figma). Skip when a control is focused so
-        // Space still activates buttons; preventDefault stops the page scroll.
-        if ((e.target as HTMLElement)?.closest?.("button, a[href], [role='button']")) return;
+        // Space-hold = temporary pan (Figma). Skip when a focusable control owns
+        // the key: buttons/links activate on Space and native form controls
+        // (checkbox/radio/range/select) toggle on it, so we neither preventDefault
+        // nor pan while one is focused. Otherwise stop the page scroll and pan.
+        if ((e.target as HTMLElement)?.closest?.("button, a[href], [role='button'], input, select, textarea, summary")) return;
         e.preventDefault();
         setSpacePan(true);
       } else if (e.key === "r" || e.key === "R") {
@@ -752,11 +754,23 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === " ") setSpacePan(false);
     };
+    // If the window loses focus while Space is held (Alt/Cmd-Tab, a native
+    // dialog, a focus-stealing overlay), the releasing keyup is delivered
+    // elsewhere and never clears spacePan — leaving the Select tool stuck in
+    // pan mode. Reset on blur / tab-hide so it can't get stuck on.
+    const onBlur = () => setSpacePan(false);
+    const onVisibility = () => {
+      if (document.hidden) setSpacePan(false);
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [selection, addMenu, dispatch, setSelection, setView, fitView, getNodes]);
 
@@ -1029,18 +1043,30 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           <button
             type="button"
             className={`graph-tool ${tool === "pan" ? "active" : ""}`}
-            onClick={() => setTool("pan")}
+            // Blur after switching so keyboard focus returns to the body and a
+            // subsequent Space-hold pans instead of re-activating this button.
+            onClick={(e) => {
+              setTool("pan");
+              e.currentTarget.blur();
+            }}
             aria-pressed={tool === "pan"}
+            aria-label="Pan tool"
             title="Pan (H) — drag to move the view · hold Space anytime"
             data-testid="graph-tool-pan"
           >
-            <span aria-hidden>✋</span>
+            {/* U+FE0E forces text (monochrome) presentation so the glyph takes
+                the active color like the select box, not colored-emoji rendering. */}
+            <span aria-hidden>{"✋︎"}</span>
           </button>
           <button
             type="button"
             className={`graph-tool ${tool === "select" ? "active" : ""}`}
-            onClick={() => setTool("select")}
+            onClick={(e) => {
+              setTool("select");
+              e.currentTarget.blur();
+            }}
             aria-pressed={tool === "select"}
+            aria-label="Select tool"
             title="Select (V) — drag a box to select machines"
             data-testid="graph-tool-select"
           >
