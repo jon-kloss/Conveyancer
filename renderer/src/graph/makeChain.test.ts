@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { GameData } from "../state/types";
-import { makeableItems, planChain } from "./makeChain";
+import { makeableItems, planChain, splitAcrossPorts } from "./makeChain";
 
 // Minimal synthetic catalog: Iron Ore (raw) → Iron Ingot → {Iron Plate, Iron Rod},
 // plus Water (fluid) → Fake item to prove fluids are excluded.
@@ -68,5 +68,63 @@ describe("planChain", () => {
 
   it("rejects an un-makeable target", () => {
     expect(planChain(G, NONE, AVAIL, "Desc_Wet_C", 10)).toBeNull();
+  });
+});
+
+describe("splitAcrossPorts", () => {
+  it("fills one port when its headroom covers the demand", () => {
+    const pool = [
+      { id: "a", left: 60 },
+      { id: "b", left: 60 },
+    ];
+    expect(splitAcrossPorts(pool, 45)).toEqual([{ id: "a", rate: 45 }]);
+    expect(pool[0].left).toBeCloseTo(15);
+    expect(pool[1].left).toBeCloseTo(60);
+  });
+
+  it("overflows onto the sibling port when one node can't feed it (2-node merge)", () => {
+    const pool = [
+      { id: "a", left: 60 },
+      { id: "b", left: 60 },
+    ];
+    const shares = splitAcrossPorts(pool, 100);
+    expect(shares).toEqual([
+      { id: "a", rate: 60 },
+      { id: "b", rate: 40 },
+    ]);
+    expect(pool[1].left).toBeCloseTo(20);
+  });
+
+  it("draws from remaining headroom across successive belts (shared raw, two consumers)", () => {
+    const pool = [
+      { id: "a", left: 60 },
+      { id: "b", left: 60 },
+    ];
+    expect(splitAcrossPorts(pool, 50)).toEqual([{ id: "a", rate: 50 }]);
+    // second consumer of the same raw: 10 left on a, rest from b
+    expect(splitAcrossPorts(pool, 40)).toEqual([
+      { id: "a", rate: 10 },
+      { id: "b", rate: 30 },
+    ]);
+  });
+
+  it("treats a ceiling-less port as unlimited", () => {
+    const pool = [{ id: "free", left: Infinity }];
+    expect(splitAcrossPorts(pool, 500)).toEqual([{ id: "free", rate: 500 }]);
+    expect(pool[0].left).toBe(Infinity);
+  });
+
+  it("piles float dust / overshoot onto the last contributing port instead of dropping it", () => {
+    const pool = [
+      { id: "a", left: 30 },
+      { id: "b", left: 30 },
+    ];
+    const shares = splitAcrossPorts(pool, 70); // guard would block this; wiring must not drop 10
+    expect(shares.reduce((s, x) => s + x.rate, 0)).toBeCloseTo(70);
+    expect(shares[shares.length - 1].id).toBe("b");
+  });
+
+  it("returns empty for an empty pool (no port to wire)", () => {
+    expect(splitAcrossPorts([], 10)).toEqual([]);
   });
 });

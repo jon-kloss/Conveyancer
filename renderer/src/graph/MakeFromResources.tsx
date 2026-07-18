@@ -15,7 +15,8 @@ import { useStore } from "../state/store";
 import { fmtRate, itemLabel } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
 import { POWER_ITEM, effClock, effCount, type Command, type EdgeEnd, type Id } from "../state/types";
-import { makeableItems, planChain, type ChainGroup, type ChainPlan } from "./makeChain";
+import { makeableItems, planChain, splitAcrossPorts, type ChainGroup, type ChainPlan } from "./makeChain";
+import { minBeltTier } from "./logistics";
 
 export default function MakeFromResources({
   factoryId,
@@ -181,9 +182,18 @@ export default function MakeFromResources({
     if (!target || busy || blocked || !buildCp) return;
     setBusy(true);
     try {
-      // first port carrying each raw (a factory may have several of the same).
-      const portForItem = new Map<string, Id>();
-      for (const p of inPorts) if (!portForItem.has(p.item)) portForItem.set(p.item, p.id);
+      // ALL ports carrying each raw, with their remaining headroom — a factory
+      // with two claims of the same resource must draw from BOTH (the guard
+      // sums them; wiring everything to the first port would starve the chain
+      // at one node's ceiling while the second sits idle). splitAcrossPorts
+      // consumes this pool belt by belt.
+      const df = derived.factories[factoryId];
+      const portPool = new Map<string, { id: Id; left: number }[]>();
+      for (const p of inPorts) {
+        const used = df?.ports[p.id] ?? 0;
+        const left = p.rateCeiling == null ? Infinity : Math.max(0, p.rateCeiling - used);
+        portPool.set(p.item, [...(portPool.get(p.item) ?? []), { id: p.id, left }]);
+      }
       // reused intermediates → their existing group id (belts wire here, not a port).
       const reuseGroupOf = new Map<string, Id>();
       for (const item of reuseItems) {
@@ -296,15 +306,24 @@ export default function MakeFromResources({
         ...[...needCountByGid].map((entry): Command => ({ type: "set_group_count", id: entry[0], count: entry[1] })),
       ];
 
-      const edgeCmds: Command[] = buildCp.belts.map((b) => {
-        const from: EdgeEnd = b.fromRaw
-          ? reuseGroupOf.has(b.fromItem)
-            ? { kind: "group", id: reuseGroupOf.get(b.fromItem)! }
-            : { kind: "port", id: portForItem.get(b.fromItem)! }
-          : { kind: "group", id: groupId.get(b.fromItem)! };
+      const edgeCmds: Command[] = buildCp.belts.flatMap((b): Command[] => {
         const to: EdgeEnd =
           b.toItem === "OUT" ? { kind: "port", id: outPortId } : { kind: "group", id: groupId.get(b.toItem)! };
-        return { type: "add_edge", factory: factoryId, from, to, item: b.item, tier: b.tier };
+        if (b.fromRaw && !reuseGroupOf.has(b.fromItem)) {
+          // true raw: split across every port carrying it, by headroom.
+          return splitAcrossPorts(portPool.get(b.fromItem) ?? [], b.rate).map((s) => ({
+            type: "add_edge",
+            factory: factoryId,
+            from: { kind: "port", id: s.id },
+            to,
+            item: b.item,
+            tier: minBeltTier(s.rate),
+          }));
+        }
+        const from: EdgeEnd = b.fromRaw
+          ? { kind: "group", id: reuseGroupOf.get(b.fromItem)! }
+          : { kind: "group", id: groupId.get(b.fromItem)! };
+        return [{ type: "add_edge", factory: factoryId, from, to, item: b.item, tier: b.tier }];
       });
       await dispatch([...scaleCmds, ...edgeCmds]);
       await dispatch([{ type: "tidy_layout", factory: factoryId }]).catch(() => {});

@@ -115,6 +115,37 @@ export interface ChainBelt {
   tier: number;
 }
 
+export interface PortShare {
+  id: string;
+  rate: number;
+}
+
+/** Split one belt's raw demand across same-item source ports, consuming each
+ *  port's remaining headroom in order — the in-graph merge IS the "merger":
+ *  one belt per port that contributes. Mutates `pool[].left` so successive
+ *  calls (several consumers of the same raw) keep drawing from what's left.
+ *  Any remainder beyond total headroom piles onto the last contributing port:
+ *  the capacity guard blocks real overshoot before build, so this only absorbs
+ *  float dust — and a knowingly-overloaded port shows honestly as capped. */
+export function splitAcrossPorts(pool: { id: string; left: number }[], rate: number): PortShare[] {
+  const out: PortShare[] = [];
+  let need = rate;
+  for (const p of pool) {
+    if (need <= 1e-9) break;
+    const take = Math.min(p.left, need);
+    if (take > 1e-9) {
+      out.push({ id: p.id, rate: take });
+      p.left -= take;
+      need -= take;
+    }
+  }
+  if (need > 1e-9) {
+    if (out.length > 0) out[out.length - 1].rate += need;
+    else if (pool.length > 0) out.push({ id: pool[0].id, rate: need });
+  }
+  return out;
+}
+
 export interface ChainPlan {
   target: string;
   rate: number;
