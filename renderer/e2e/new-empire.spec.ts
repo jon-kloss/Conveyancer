@@ -23,7 +23,10 @@ test("DATA menu → Start new empire wipes the whole plan", async ({ page, reque
   await resetView(request);
   await edit(request, [{ type: "create_factory", name: "DOOMED WORKS", position: { x: -2400, y: 2400 }, region: "GRASS FIELDS" }]);
   await edit(request, [{ type: "create_factory", name: "ALSO DOOMED", position: { x: -2000, y: 2000 }, region: "GRASS FIELDS" }]);
-  expect(Object.keys((await hydrate(request)).plan.factories)).toHaveLength(2);
+  // The dev-bridge shares one plan across the serial suite, so don't assume a
+  // clean start — just that there's something to wipe (our two, plus any left
+  // by earlier specs). new_empire clears ALL of it; the ==0 below is the check.
+  expect(Object.keys((await hydrate(request)).plan.factories).length).toBeGreaterThanOrEqual(2);
 
   await page.goto("/");
   const skip = page.getByTestId("onboard-skip");
