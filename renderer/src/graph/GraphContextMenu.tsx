@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { itemLabel } from "../lib/format";
+import { modKey } from "../lib/keys";
 import { POWER_ITEM, effClock, effCount, type Command, type Id } from "../state/types";
 import { minBeltTier } from "./logistics";
 
@@ -196,7 +197,7 @@ export default function GraphContextMenu({
       ...portIds.map((id) => ({ type: "delete_port", id }) as Command),
     ]);
     setSelection(null);
-    pushToast(`Deleted ${total} item(s). ⌘Z to undo.`, "success");
+    pushToast(`Deleted ${total} item(s). ${modKey("Z")} to undo.`, "success");
     onClose();
   };
 

@@ -3,6 +3,7 @@
 // the plan is genuinely empty.
 
 import { useStore } from "../state/store";
+import { modKey } from "../lib/keys";
 
 export default function Onboarding() {
   const plan = useStore((s) => s.plan);
@@ -121,7 +122,7 @@ export default function Onboarding() {
       <button className="btn btn-ghost" onClick={done} style={{ alignSelf: "center" }} data-testid="onboard-skip">
         JUST THE MAP
       </button>
-      <footer className="mono onboard-foot">NO TOUR. THE MAP TEACHES BY DOING — ⌘K WHENEVER LOST.</footer>
+      <footer className="mono onboard-foot">NO TOUR. THE MAP TEACHES BY DOING — {modKey("K").toUpperCase()} WHENEVER LOST.</footer>
     </div>
   );
 }

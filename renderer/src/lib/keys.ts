@@ -1,4 +1,17 @@
-// Shared typing guard for global keyboard shortcuts.
+// Shared typing guard for global keyboard shortcuts + platform-aware key labels.
+
+/** Mac-family platforms show ⌘; everything else shows Ctrl. Handlers already
+ *  accept BOTH (`e.metaKey || e.ctrlKey`) — this only fixes what we DISPLAY,
+ *  so a Windows/Linux planner isn't told to press a key their keyboard lacks. */
+const IS_MAC = /Mac|iP(hone|ad|od)/i.test(
+  // userAgentData is the modern source; platform still ships everywhere.
+  (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    navigator.userAgent,
+);
+
+/** "⌘K" on Mac, "Ctrl+K" elsewhere. */
+export const modKey = (k: string): string => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);
 
 // Input types with a caret: these own native text undo and free typing.
 // Range/checkbox/radio/button inputs do NOT belong here — a planner who just

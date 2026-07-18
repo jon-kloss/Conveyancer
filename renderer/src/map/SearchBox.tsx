@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { itemLabel } from "../lib/format";
+import { modKey } from "../lib/keys";
 
 interface Hit {
   key: string;
@@ -82,7 +83,7 @@ export default function SearchBox({ onJump }: { onJump: (pos: { x: number; y: nu
     <div className="searchbox">
       <input
         ref={inputRef}
-        placeholder="⌘K — find item, factory, node…"
+        placeholder={`${modKey("K")} — find item, factory, node…`}
         value={query}
         onChange={(e) => {
           setBoth(e.target.value);
