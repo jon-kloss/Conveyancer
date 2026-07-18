@@ -2,6 +2,7 @@
 // solver status, window controls. Frameless in Tauri; controls hidden in bridge mode.
 
 import { useStore, solveChip } from "../state/store";
+import DataMenu from "./DataMenu";
 import "./shell.css";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -19,6 +20,7 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
   const plan = useStore((s) => s.plan);
   const derived = useStore((s) => s.derived);
   const setView = useStore((s) => s.setView);
+  const reviewing = useStore((s) => s.reviewing);
 
   const factory = view.mode === "factory" ? plan.factories[view.factoryId] : null;
   const chip = solveChip(factory ? derived.factories[factory.id] : undefined);
@@ -28,7 +30,12 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
       <div className="titlebar-logo" aria-hidden>
         ◆
       </div>
-      <span className="titlebar-app t-label">FICSIT PLANNER</span>
+      {/* #117: no wordmark — the user knows what the tool is. The crumb stays
+          (WORLD MAP is the way home from a factory), search sits CENTERED in
+          the bar and is context-aware (map view portals the node/factory
+          search here; the factory graph portals its machine/item search), and
+          the save/load DATA menu docks in the right corner. */}
+      <div className="titlebar-slot titlebar-slot-search" id="titlebar-search-slot" />
       <nav className={`titlebar-crumb mono ${overlayMode ? "truncate" : ""}`}>
         <button className="crumb-link" onClick={() => setView({ mode: "map" })}>
           WORLD MAP
@@ -41,6 +48,11 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
         )}
       </nav>
       <div className="titlebar-right">
+        {/* save/load corner: the DATA menu lives HERE (not portaled from a
+            view) so it exists on the map AND inside factories, and auto-sync's
+            timer keeps ticking everywhere. Hidden during proposal review —
+            loading more data mid-review would fight the open proposal. */}
+        {!reviewing && <DataMenu />}
         <span className="chip" title="Every commit writes the plan file — there is no unsaved state.">
           SAVED ✓
         </span>

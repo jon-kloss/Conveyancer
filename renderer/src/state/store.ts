@@ -237,6 +237,14 @@ export interface AppStore {
   overlays: { flows: boolean; nodes: boolean; power: boolean; terrain: boolean };
   /** Live map node filter (search box). Empty = no filter (all nodes shown). */
   mapFilter: string;
+  /** Live factory-graph filter (header search): matching machines/items stay
+   *  lit, everything else dims. Empty = no filter. */
+  graphFilter: string;
+  /** Pending .sav awaiting the import review modal (set by the DATA menu's
+   *  picker or a drag-drop onto the map). */
+  importFile: File | null;
+  /** A Docs.json upload is in flight — the DATA button shows progress. */
+  uploadingDocs: boolean;
   /** T0 projection during slider drag — rendered italic, replaced on settle. */
   projected: { factoryId: Id; result: DerivedFactory; targetRate: number } | null;
   /** ids whose numbers changed in the last authoritative patch (settle flash). */
@@ -346,6 +354,8 @@ export interface AppStore {
   setView(view: ViewMode): void;
   setOverlay(key: "flows" | "nodes" | "power" | "terrain", on: boolean): void;
   setMapFilter(query: string): void;
+  setGraphFilter(query: string): void;
+  setImportFile(f: File | null): void;
   setProjected(p: AppStore["projected"]): void;
   setPlacingFactory(on: boolean): void;
   saveViewState(patch: Partial<ViewState>): void;
@@ -573,6 +583,9 @@ export const useStore = create<AppStore>((set, get) => ({
   selection: null,
   overlays: { flows: true, nodes: true, power: true, terrain: true },
   mapFilter: "",
+  graphFilter: "",
+  importFile: null,
+  uploadingDocs: false,
   projected: null,
   settled: new Set(),
   placingFactory: false,
@@ -758,6 +771,8 @@ export const useStore = create<AppStore>((set, get) => ({
   },
   setOverlay: (key, on) => set((s) => ({ overlays: { ...s.overlays, [key]: on } })),
   setMapFilter: (mapFilter) => set({ mapFilter }),
+  setGraphFilter: (graphFilter) => set({ graphFilter }),
+  setImportFile: (importFile) => set({ importFile }),
   setProjected: (projected) => set({ projected }),
   setPlacingFactory: (placingFactory) => set({ placingFactory }),
   saveViewState(patch) {
@@ -802,12 +817,15 @@ export const useStore = create<AppStore>((set, get) => ({
     // then re-hydrate so the richer recipe set is live (gamedata.buildVersion
     // flips off "fixture"). A refusal (e.g. an unparseable file, or a non-wasm
     // backend) surfaces on the status-bar chip — never a rejection to the UI.
+    set({ uploadingDocs: true });
     try {
       await backend.uploadDocs(bytes);
     } catch (e) {
       // reportCmdError already raises an error toast; make it Docs-specific.
       get().reportCmdError(`Couldn't load Docs.json — ${errText(e)}`);
       return false;
+    } finally {
+      set({ uploadingDocs: false });
     }
     await get().hydrate();
     const recipes = Object.keys(get().gamedata.recipes).length;
