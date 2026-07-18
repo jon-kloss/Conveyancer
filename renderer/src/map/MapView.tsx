@@ -744,14 +744,27 @@ export default function MapView() {
   // swallowed, Leaflet's marker Draggable never gets its dragend, and the pin
   // LATCHES to the pointer — every later map pan also "drags the factory",
   // committing bogus positions. Kill native dragstart at the source (paired
-  // with user-select:none on .pin-icon in map.css).
+  // with user-select:none on .pin-icon in map.css). DivIcon.createIcon reuses
+  // the existing outer DIV on setIcon, so the guard persists for the marker's
+  // whole life; the WeakSet keeps the re-arm-after-setIcon insurance (for a
+  // future icon-type swap that DOES replace the element) from stacking
+  // duplicate listeners on the reused element.
+  const armedPinsRef = useRef(new WeakSet<HTMLElement>());
   const armPinElement = (marker: L.Marker) => {
-    marker.getElement()?.addEventListener("dragstart", (e) => e.preventDefault());
+    const el = marker.getElement();
+    if (!el || armedPinsRef.current.has(el)) return;
+    armedPinsRef.current.add(el);
+    el.addEventListener("dragstart", (e) => e.preventDefault());
   };
   // Marker drags whose release the safety net had to force are discarded —
   // suppress the dragend commit and snap back to the stored position.
   const discardDragRef = useRef(new Set<string>());
   const pinHtmlRef = useRef(new Map<string, string>());
+  // Bumped when the safety net rescues a drag: a discarded drag dispatches
+  // nothing, so without this the marker-sync effect (which skips a pin while
+  // it is mid-drag) would never re-run to repaint icon/draggable state that
+  // changed underneath the stuck drag.
+  const [rescueTick, setRescueTick] = useState(0);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -820,41 +833,67 @@ export default function MapView() {
         marker.remove();
         markers.delete(id);
         pinHtmlRef.current.delete(id);
+        discardDragRef.current.delete(id);
       }
     }
     declutterPinChips(map, markers);
-  }, [plan.factories, selection]);
+  }, [plan.factories, selection, rescueTick]);
 
   // Stuck-drag safety net: if a pin's Draggable still thinks it is moving when
-  // the window sees the interaction end, its release was lost (native-drag
-  // interference, focus loss). Force-finish it and restore the stored position
-  // — a drag that needed rescuing was never an intentional drop. Listens on
-  // window "mouseup" (bubbles AFTER Leaflet's own document handler, so normal
-  // drags have already finished and this no-ops), plus dragend/blur where no
-  // mouseup will ever arrive.
+  // the interaction has plainly ended, its release was lost. Force-finish it
+  // and restore the stored position — a drag that needed rescuing was never an
+  // intentional drop. Channels, by failure mode:
+  //  - "dragend": a NATIVE drag swallowed the mouseup (the Firefox bug) — no
+  //    mouseup will ever arrive, but the native drag's own dragend does.
+  //  - mousemove with buttons===0: the release happened OFF-window (X11), so
+  //    no mouseup reaches the document at all; a button-less move while a
+  //    Draggable is mid-flight is proof the drag already ended. During a real
+  //    drag buttons!==0, so this can never discard a legitimate drop.
+  //  - "blur": focus stolen mid-drag.
+  //  - window "mouseup": belt-and-suspenders; for mouse-origin drags Leaflet's
+  //    own DOCUMENT-level handler runs first (bubble order) and finishes the
+  //    drag before this fires — deliberately so, since pre-empting it (capture
+  //    phase) would discard every normal drop. It still covers touch-origin
+  //    latches, whose Leaflet listeners are touchend-based.
   useEffect(() => {
     const release = () => {
+      let rescued = false;
       for (const [id, m] of markersRef.current) {
         const d = (m.dragging as unknown as { _draggable?: { _moving?: boolean; finishDrag?: () => void } })?._draggable;
         if (d?._moving && typeof d.finishDrag === "function") {
           discardDragRef.current.add(id);
           try {
             d.finishDrag();
-          } catch {
+          } finally {
+            // When finishDrag fired dragend (synchronously), the handler
+            // already consumed the flag and this is a no-op. When it did NOT
+            // (re-mousedown on a latched pin resets _moved, so Leaflet skips
+            // dragend), this cleans the flag — left stale it would silently
+            // swallow the NEXT legitimate drop of this pin.
             discardDragRef.current.delete(id);
           }
           const f = useStore.getState().plan.factories[id];
           if (f) m.setLatLng(toLatLng(f.position));
+          rescued = true;
         }
       }
+      // A discarded drag dispatches nothing, so nothing else re-runs the
+      // marker sync — bump it to repaint icon/draggable state that changed
+      // underneath the stuck drag.
+      if (rescued) setRescueTick((t) => t + 1);
+    };
+    const onIdleMove = (e: MouseEvent) => {
+      if (e.buttons === 0) release();
     };
     window.addEventListener("mouseup", release);
     window.addEventListener("dragend", release);
     window.addEventListener("blur", release);
+    window.addEventListener("mousemove", onIdleMove);
     return () => {
       window.removeEventListener("mouseup", release);
       window.removeEventListener("dragend", release);
       window.removeEventListener("blur", release);
+      window.removeEventListener("mousemove", onIdleMove);
     };
   }, []);
 
