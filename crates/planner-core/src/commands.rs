@@ -202,6 +202,16 @@ pub enum Command {
     ReleaseNode {
         id: Id,
     },
+    /// Change an existing claim's extractor (miner tier) / clock in place —
+    /// same id, same factory. Lets the map drawer bump Mk1→Mk2 without
+    /// releasing and re-claiming (which would stack a second claim and trip
+    /// the double-book conflict). The extraction rate is derived, so callers
+    /// pair this with SetPortCeiling to resize the fed input port.
+    SetClaim {
+        id: Id,
+        extractor: String,
+        clock: f64,
+    },
     RenamePlan {
         name: String,
     },
@@ -306,6 +316,7 @@ impl Command {
             Command::DeleteGroup { .. } => "delete group",
             Command::ExpandGroup { .. } => "expand bank",
             Command::AddPort { .. } => "add port",
+            Command::SetClaim { .. } => "set extractor",
             Command::SetPortRate { .. } => "set target rate",
             Command::SetPortCeiling { .. } => "set input ceiling",
             Command::MovePortCard { .. } => "move port",
@@ -1571,6 +1582,20 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 tx.record(ops);
             }
             prune_build_override(state, &mut tx, id);
+        }
+        Command::SetClaim {
+            id,
+            extractor,
+            clock,
+        } => {
+            let mut c = state
+                .node_claims
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            c.extractor = extractor.clone();
+            c.clock = clamp_clock(*clock)?;
+            tx.record(state.upsert(Entity::NodeClaim(c)));
         }
         Command::RenamePlan { name } => {
             let old = state.meta.name.clone();

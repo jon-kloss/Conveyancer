@@ -854,6 +854,7 @@ export type Command =
   | { type: "delete_edge"; id: Id }
   | { type: "claim_node"; factory: Id; node: string; extractor: string; clock: number }
   | { type: "release_node"; id: Id }
+  | { type: "set_claim"; id: Id; extractor: string; clock: number }
   | { type: "rename_plan"; name: string }
   | { type: "create_proposal"; proposal: Proposal }
   | { type: "toggle_proposal_item"; proposal: Id; item: Id; included: boolean }
