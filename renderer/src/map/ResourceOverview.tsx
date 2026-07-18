@@ -47,6 +47,7 @@ export default function ResourceOverview() {
   const plan = useStore((s) => s.plan);
   const gamedata = useStore((s) => s.gamedata);
   const setSelection = useStore((s) => s.setSelection);
+  const requestFly = useStore((s) => s.requestFly);
 
   const [ui, setUi] = useState<PanelState>("brief");
   const [secPower, setSecPower] = useState(true);
@@ -181,6 +182,13 @@ export default function ResourceOverview() {
     setBal("deficit");
     setQuery("");
   };
+  // Drill-down navigation: select the factory AND fly the map camera to it, so
+  // clicking a producer/consumer name takes you straight there.
+  const goFactory = (id: Id) => {
+    setSelection({ kind: "factory", id });
+    const pos = plan.factories[id]?.position;
+    if (pos) requestFly(pos);
+  };
 
   const netCell = (net: number) => (
     <span className={`ro-cell ro-net ${net > 0.01 ? "surplus" : net < -0.01 ? "deficit" : "balanced"}`}>
@@ -218,7 +226,7 @@ export default function ResourceOverview() {
             <div className="ro-drill-h">{r.raw ? "SUPPLIED BY (NODE CLAIMS / EXTERNAL)" : "MADE BY"}</div>
             {r.makers.map((m) => (
               <div className="ro-drill-row" key={m.factory}>
-                <button className="ro-fac" onClick={() => setSelection({ kind: "factory", id: m.factory })}>
+                <button className="ro-fac" onClick={() => goFactory(m.factory)}>
                   {m.name}
                 </button>
                 <span className="ro-cell ro-make">+{fmtRate(m.rate)}</span>
@@ -231,7 +239,7 @@ export default function ResourceOverview() {
             <div className="ro-drill-h">CONSUMED BY</div>
             {r.users.map((u) => (
               <div className="ro-drill-row" key={u.factory}>
-                <button className="ro-fac" onClick={() => setSelection({ kind: "factory", id: u.factory })}>
+                <button className="ro-fac" onClick={() => goFactory(u.factory)}>
                   {u.name}
                 </button>
                 <span className="ro-cell ro-use">−{fmtRate(u.rate)}</span>
