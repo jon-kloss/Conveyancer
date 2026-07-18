@@ -6,8 +6,15 @@ describe("friendlyError", () => {
     const out = friendlyError("built entities are immutable: 01KXV24XXCH4S3SRQEJBEHWSHV (set tier)");
     expect(out).toMatch(/can't set tier/i);
     expect(out).toMatch(/imported as built/i);
-    expect(out).toMatch(/rebuild it/i);
+    expect(out).toMatch(/rebuild it at the new value/i); // value edit → rebuild advice
     expect(out).not.toMatch(/01KXV24XXCH4S3SRQEJBEHWSHV/); // no raw ULID
+  });
+
+  it("uses neutral advice for structural built actions (not 'rebuild at the new value')", () => {
+    const out = friendlyError("built entities are immutable: 01ABC (delete)");
+    expect(out).toMatch(/can't delete/i);
+    expect(out).not.toMatch(/at the new value/i);
+    expect(out).toMatch(/in-game.*re-import/i);
   });
 
   it("softens entity-not-found", () => {

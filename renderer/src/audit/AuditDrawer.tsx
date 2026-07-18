@@ -219,7 +219,9 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         // UPGRADE TIER is belt-specific; consist/fleet stepping for transports
         // lives in the TransportDrawer. Built routes are game ground-truth (the
         // core rejects a tier change), so don't offer it — the row explains why.
-        built: r.status === "built",
+        // Only belt routes (tier != null) get the belt/tier "BUILT · FIXED" note;
+        // a built rail/truck/drone route has no belt tier, so no chip.
+        built: tier != null && r.status === "built",
         upgrade:
           tier != null && tier < 6 && r.status !== "built"
             ? () => void dispatch([{ type: "set_route_tier", id: r.id, tier: tier + 1 }])

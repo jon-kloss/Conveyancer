@@ -17,7 +17,14 @@ const invalidHints: [RegExp, string][] = [
 export const friendlyError = (raw: string): string => {
   const built = raw.match(/^built entities are immutable: \S+ \((.+)\)$/);
   if (built) {
-    return `Can't ${built[1]} — this is imported as built, so it's fixed to your save. Rebuild it at the new value in-game, then re-import to apply the change.`;
+    const action = built[1];
+    // Value edits (tier/clock/count/…) want "rebuild at the new value"; structural
+    // actions (delete/move/expand) want a neutral "change it in-game" instead.
+    const valueEdit = /tier|rate|clock|count|recipe|ceiling|floor|spec|priori/i.test(action);
+    const tail = valueEdit
+      ? "Rebuild it at the new value in-game, then re-import to apply the change."
+      : "Make the change in-game, then re-import your save.";
+    return `Can't ${action} — this is imported as built, so it's fixed to your save. ${tail}`;
   }
   if (/^entity not found:/.test(raw)) {
     return "That item no longer exists — it may have just been deleted or undone. Nothing was changed.";

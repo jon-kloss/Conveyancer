@@ -152,9 +152,10 @@ export default function Inspector({
   // port — is selected, that entity's own sections own the panel; showing the
   // factory target too reads as if it belongs to the selection (e.g. a CABLE
   // target and a BIOMASS-belt binding rendered over a selected IRON ROD belt).
-  // Show in overview (nothing / the factory itself selected) and when the out
-  // port is the selection; hide when a specific belt / machine / junction / other
-  // port owns the panel.
+  // The inspector only mounts for a group / port / edge selection, so the factory
+  // OUTPUT TARGET renders exactly when the out port itself is selected — never
+  // over a machine, belt, or a different port, which each own the panel. (The
+  // group/edge/junction guards are belt-and-suspenders against future mounts.)
   const showFactoryTarget =
     !!outPort && !selectedGroup && !selectedEdge && !selectedJunction && (!selectedPort || selectedPort.id === outPort.id);
   const chip = solveChip(authoritative);

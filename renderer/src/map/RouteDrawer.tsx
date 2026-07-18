@@ -53,7 +53,11 @@ export default function RouteDrawer({ route }: { route: Route }) {
             {dr ? fmtKm(dr.lengthM) : "—"} · MK.{tier} · {fmtRate(dr?.capacity ?? 0)}/min CAP
           </div>
         </div>
-        <span className="chip planned">◇ PLANNED</span>
+        {route.status === "built" ? (
+          <span className="chip built">◆ BUILT</span>
+        ) : (
+          <span className="chip planned">◇ PLANNED</span>
+        )}
         <button className="drawer-close" onClick={() => setSelection(null)} aria-label="Close">
           ×
         </button>
