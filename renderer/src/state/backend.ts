@@ -102,10 +102,10 @@ export interface Backend {
    *  — the desktop shell and dev bridge read the catalog from the host
    *  (FICSIT_DOCS_JSON), so their implementations reject. */
   uploadDocs(bytes: Uint8Array): Promise<void>;
-  /** Web build: clear the persisted plan (KEEPING the uploaded Docs.json) and
-   *  boot a fresh empty session — "start a new empire" for importing an
-   *  unrelated save. Web-only; the desktop shell and dev bridge own their own
-   *  plan store (SQLite / host), so they reject. */
+  /** Clear the whole plan + undo journal (KEEPING the gamedata catalog) and
+   *  project the empty plan — "start a new empire" for importing an unrelated
+   *  save. A `Session::new_empire` op on every transport: SQLite wipe (desktop /
+   *  dev bridge) or the wasm store reset snapshotted to IndexedDB (web). */
   newEmpire(): Promise<void>;
 }
 
@@ -116,15 +116,6 @@ export interface Backend {
 function docsUploadUnsupported(): Promise<never> {
   return Promise.reject(
     new Error("Docs.json upload is only supported on the web build"),
-  );
-}
-
-/** "Start a new empire" clears the browser's IndexedDB plan snapshot — a
- *  web-only concept. The desktop shell / dev bridge persist to a host-owned
- *  plan store, so the UI only offers this on the web build; guard, don't path. */
-function newEmpireUnsupported(): Promise<never> {
-  return Promise.reject(
-    new Error("Starting a new empire is only supported on the web build"),
   );
 }
 
@@ -221,8 +212,8 @@ class TauriBackend implements Backend {
   uploadDocs() {
     return docsUploadUnsupported();
   }
-  newEmpire() {
-    return newEmpireUnsupported();
+  async newEmpire() {
+    await this.invoke("new_empire");
   }
 }
 
@@ -334,8 +325,8 @@ class BridgeBackend implements Backend {
   uploadDocs() {
     return docsUploadUnsupported();
   }
-  newEmpire() {
-    return newEmpireUnsupported();
+  async newEmpire() {
+    await this.call("new_empire", { method: "POST" });
   }
 }
 

@@ -104,15 +104,11 @@ export class WasmBackend implements Backend {
     });
   }
 
-  /** Clear the plan (keep the uploaded Docs.json) and rebuild a fresh empty
-   *  session. A worker CONTROL message, like `uploadDocs` — not a `dispatch`. */
-  newEmpire(): Promise<void> {
-    if (this.deadError) return Promise.reject(this.deadError);
-    const id = ++this.seq;
-    return new Promise<void>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.worker.postMessage({ id, kind: "new_empire" });
-    });
+  /** Clear the plan (keep the catalog). A normal `dispatch("new_empire")`: the
+   *  wasm `Session::new_empire` resets the store, and the worker's
+   *  snapshot-after-mutate writes the now-empty blob to IndexedDB. */
+  async newEmpire() {
+    await this.call("new_empire");
   }
 
   hydrate() {

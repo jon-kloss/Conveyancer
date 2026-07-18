@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { MapCanvasLayer } from "./CanvasLayer";
+import { attachSmoothWheelZoom } from "./smoothZoom";
 import type { CanvasLayerData, NodeRenderState } from "./CanvasLayer";
 import { fromLatLng, toLatLng } from "./maputil";
 import { useStore } from "../state/store";
@@ -414,7 +415,11 @@ export default function MapView() {
       attributionControl: false,
       minZoom: 1,
       maxZoom: 6,
-      zoomSnap: 0.5,
+      // zoomSnap 0 lets the eased wheel zoom land on any fractional level;
+      // scrollWheelZoom off hands the wheel to attachSmoothWheelZoom (below) so
+      // Leaflet's stepped handler doesn't double-zoom.
+      zoomSnap: 0,
+      scrollWheelZoom: false,
       doubleClickZoom: false,
     });
     const b = useStore.getState().world.bounds;
@@ -450,6 +455,17 @@ export default function MapView() {
     setZoomPct(Math.round(Math.pow(2, map.getZoom() - 2) * 100));
 
     map.on("zoomend", () => setZoomPct(Math.round(Math.pow(2, map.getZoom() - 2) * 100)));
+    // Live zoom stamp: a direct DOM write on every zoom frame (NOT React state —
+    // the eased wheel zoom fires `zoom` per rAF frame, and a setState per frame
+    // would re-render this heavy component and undo the smoothness). The zoom %
+    // readout still lands on `zoomend`; this attribute just lets the smooth-zoom
+    // e2e observe the glide.
+    const stampZoom = () => {
+      const rootEl = map.getContainer().closest<HTMLElement>('[data-testid="map-root"]');
+      (rootEl ?? map.getContainer()).dataset.zoom = map.getZoom().toFixed(3);
+    };
+    map.on("zoom", stampZoom);
+    stampZoom();
     // Testability stamp (M5): world-coord center on the map-root element — a
     // cheap string piggybacked on the settle we already handle, so the fly
     // e2e can assert the camera actually moved after a SHOW click. Stamped
@@ -468,7 +484,11 @@ export default function MapView() {
     });
     stampCenter();
 
+    // Eased, continuous wheel zoom (replaces Leaflet's chunky stepped zoom).
+    const detachZoom = attachSmoothWheelZoom(map, map.getContainer());
+
     return () => {
+      detachZoom();
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
@@ -1035,10 +1055,11 @@ export default function MapView() {
                       <span className="data-menu-item-sub">swap in a different game version's catalog</span>
                     </button>
                   )}
-                  {/* Start over: web-only (clears the IndexedDB plan snapshot),
-                      and only when there's something to clear. Two-click confirm
-                      guards the destructive wipe; the Docs.json catalog is kept. */}
-                  {__WASM_BACKEND__ && factoryCount > 0 && (
+                  {/* Start over: a cross-platform Session::new_empire (SQLite
+                      wipe on desktop, store reset → IndexedDB on web), shown only
+                      when there's something to clear. Two-click confirm guards the
+                      destructive wipe; the gamedata catalog is kept. */}
+                  {factoryCount > 0 && (
                     <button
                       className={`data-menu-item data-menu-danger ${confirmReset ? "armed" : ""}`}
                       onClick={() => {
@@ -1117,7 +1138,7 @@ export default function MapView() {
             <button onClick={() => zoomBy(-0.5)} aria-label="Zoom out">
               −
             </button>
-            <span>{zoomPct}%</span>
+            <span data-testid="zoom-pct">{zoomPct}%</span>
             <button onClick={() => zoomBy(0.5)} aria-label="Zoom in">
               +
             </button>
