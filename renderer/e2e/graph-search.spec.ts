@@ -33,7 +33,9 @@ test("graph search dims non-matching machines, clears on empty", async ({ page, 
     await page.getByTestId("btn-open-factory").click();
     await expect(page.locator(".react-flow__pane")).toBeVisible();
 
-    // Factory mode: the same slot now carries the graph machine/item filter.
+    // Factory mode: the same slot now carries the graph machine/item filter,
+    // and the titlebar DATA menu is still there (it used to vanish here).
+    await expect(page.getByTestId("btn-data-menu")).toBeVisible();
     const gsearch = page.getByTestId("graph-search").locator("input");
     await expect(gsearch).toBeVisible();
     await gsearch.fill("screw");

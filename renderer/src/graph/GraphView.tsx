@@ -3,7 +3,7 @@
 // solver contract (4c): every edit re-solves live; numbers change, geometry
 // doesn't; infeasible hard-stops, never errors.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   ReactFlow,
@@ -63,7 +63,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   // #117 context-aware header search: the graph's machine/item filter renders
   // into the titlebar's centered slot (portal); typing dims non-matching nodes.
   const [searchSlot, setSearchSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => {
+  // useLayoutEffect: resolve the slot before paint so the search never
+  // flashes unportaled for a frame on mount.
+  useLayoutEffect(() => {
     setSearchSlot(document.getElementById("titlebar-search-slot"));
   }, []);
   const [t2Busy, setT2Busy] = useState(false);

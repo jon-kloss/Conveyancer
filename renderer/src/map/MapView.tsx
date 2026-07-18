@@ -3,7 +3,7 @@
 // factories; placeholder treatment for world imagery (runtime asset — see
 // DECISIONS.md on tile licensing).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -22,16 +22,6 @@ import SwitchDrawer from "./SwitchDrawer";
 import RoutePopover from "./RoutePopover";
 import Legend from "./Legend";
 import SearchBox from "./SearchBox";
-import ImportModal from "../import/ImportModal";
-import {
-  fsAccessSupported,
-  pickSaveForSync,
-  readStoredHandleSilently,
-  getSyncMeta,
-  setSyncMeta,
-  relTime,
-  type SyncMeta,
-} from "../import/saveHandle";
 import { fmtPower, itemLabel, routeBottleneck } from "../lib/format";
 import "./map.css";
 
@@ -141,181 +131,29 @@ export default function MapView() {
   const [zoomPct, setZoomPct] = useState(100);
   const [routeDraft, setRouteDraft] = useState<{ from: string; cursor: { x: number; y: number } } | null>(null);
   const [routePopover, setRoutePopover] = useState<{ from: string; to: string } | null>(null);
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  // Web Phase 4a: upload a real Docs.json so the browser session runs on the
-  // player's game catalog instead of the bundled fixture. Web-only — the
-  // desktop shell reads the catalog from FICSIT_DOCS_JSON, so the button is
-  // compiled out (`__WASM_BACKEND__` is a Vite define, statically false there).
-  const uploadDocs = useStore((s) => s.uploadDocs);
-  const docsRef = useRef<HTMLInputElement>(null);
-  const [uploadingDocs, setUploadingDocs] = useState(false);
-  // #79: both data-loading actions live behind one DATA menu; files can also be
-  // dropped straight onto the map. `.sav` opens the import review, `.json` (web
-  // only) swaps in the player's real recipe catalog.
-  const [dataMenu, setDataMenu] = useState(false);
-  // "Start new empire" (web only): a two-click destructive latch — the first
-  // click arms the confirm, the second wipes the plan (keeping the Docs.json).
-  const newEmpire = useStore((s) => s.newEmpire);
-  const factoryCount = useStore((s) => Object.keys(s.plan.factories).length);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const closeDataMenu = useCallback(() => {
-    setDataMenu(false);
-    setConfirmReset(false);
-  }, []);
-  // Disarm the destructive "Start new empire" confirm whenever the menu closes
-  // by ANY path (a sibling item's bare setDataMenu(false), the backdrop, Esc) —
-  // otherwise an armed confirm survives the close and a single click on the next
-  // open would wipe the plan with no second-click guard.
-  useEffect(() => {
-    if (!dataMenu) setConfirmReset(false);
-  }, [dataMenu]);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
-  // #117 toolbar rework: the save/load DATA menu renders into the titlebar's
-  // top-right corner (where users expect save features) and the node/factory
-  // search renders into its CENTERED slot — context-aware: the factory graph
-  // portals its own machine/item search into the same slot. State and
-  // handlers stay HERE (map-coupled: import modal, drag-drop, new-empire
-  // confirm, Leaflet panTo); only the DOM moves. Slots resolve after first
-  // mount — Titlebar renders earlier in the same tree.
+  // #117 toolbar rework: the node/factory search renders into the titlebar's
+  // CENTERED slot — context-aware: the factory graph portals its own
+  // machine/item search into the same slot. (The DATA menu is Titlebar-owned
+  // now — see shell/DataMenu.tsx.) useLayoutEffect so the slot resolves before
+  // paint — a passive effect would flash the in-map fallback for one frame.
   const [searchSlot, setSearchSlot] = useState<HTMLElement | null>(null);
-  const [dataSlot, setDataSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSearchSlot(document.getElementById("titlebar-search-slot"));
-    setDataSlot(document.getElementById("titlebar-data-slot"));
   }, []);
-  const loadDocsFile = useCallback(
-    async (f: File) => {
-      setUploadingDocs(true);
-      try {
-        const bytes = new Uint8Array(await f.arrayBuffer());
-        await uploadDocs(bytes);
-      } finally {
-        setUploadingDocs(false);
-      }
-    },
-    [uploadDocs],
-  );
-  const acceptFiles = useCallback(
-    (files: File[]) => {
-      const sav = files.find((f) => f.name.toLowerCase().endsWith(".sav"));
-      const docs = files.find((f) => f.name.toLowerCase().endsWith(".json"));
-      if (sav) setImportFile(sav);
-      if (docs && __WASM_BACKEND__) void loadDocsFile(docs);
-    },
-    [loadDocsFile],
-  );
-  // Sync Phase 2: "Sync from save" re-reads the retained save handle and
-  // reconciles in one click. Gated on a real Docs.json (a fixture catalog would
-  // quarantine most recipes → junk diffs); grayed with a how-to-enable tooltip
-  // otherwise. Chrome/Edge get the no-re-pick handle path; elsewhere it falls
-  // back to the classic file input (re-pick each time, no retention).
-  const syncImport = useStore((s) => s.syncImport);
-  const pushToast = useStore((s) => s.pushToast);
-  const catalogLoaded = useStore((s) => {
-    const bv = s.gamedata.buildVersion;
-    return !!bv && bv !== "fixture";
-  });
-  const [syncMeta, setSyncMetaState] = useState<SyncMeta | undefined>();
-  const [syncing, setSyncing] = useState(false);
-  useEffect(() => {
-    // A missing/blocked handle store just means no "last synced" affordance —
-    // never a dead end (matches the file's no-crash discipline).
-    if (__WASM_BACKEND__) void getSyncMeta().then(setSyncMetaState).catch(() => {});
+  // Drag-drop stays map-owned (the map is the drop surface); the files land in
+  // the store, where the Titlebar's DataMenu renders the ImportModal.
+  const acceptFiles = useCallback((files: File[]) => {
+    const sav = files.find((f) => f.name.toLowerCase().endsWith(".sav"));
+    const docs = files.find((f) => f.name.toLowerCase().endsWith(".json"));
+    if (sav) useStore.getState().setImportFile(sav);
+    if (docs && __WASM_BACKEND__)
+      void (async () => {
+        const bytes = new Uint8Array(await docs.arrayBuffer());
+        await useStore.getState().uploadDocs(bytes);
+      })();
   }, []);
-  const onSync = useCallback(async () => {
-    if (!catalogLoaded || syncing) return; // defensive; the button is disabled too
-    if (!fsAccessSupported()) {
-      // No File System Access here — reuse the classic picker + ImportModal.
-      fileRef.current?.click();
-      return;
-    }
-    setSyncing(true);
-    try {
-      const file = await pickSaveForSync();
-      if (!file) return; // user cancelled the picker / denied permission
-      const outcome = await syncImport(file);
-      if (outcome) {
-        const meta = { name: file.name, lastSyncedAt: Date.now() };
-        await setSyncMeta(meta);
-        setSyncMetaState(meta);
-      }
-    } catch (e) {
-      // IDB/permission-layer failure (syncImport itself never rejects) — toast
-      // instead of leaking an unhandled rejection.
-      pushToast(`Couldn't sync from save — ${e instanceof Error ? e.message : String(e)}`, "error");
-    } finally {
-      setSyncing(false);
-    }
-  }, [catalogLoaded, syncing, syncImport, pushToast]);
-
-  // Sync Phase 3: auto-pull. Needs both the Docs.json gate AND File System
-  // Access (the timer re-reads the retained handle with no user gesture, so it
-  // is Chrome/Edge-only). Option B (in store.autoPull): conflict-free drift
-  // applies silently; real conflicts open review.
-  const autoSync = useStore((s) => s.autoSync);
-  const setAutoSync = useStore((s) => s.setAutoSync);
-  const autoPull = useStore((s) => s.autoPull);
-  const autoSyncReady = catalogLoaded && fsAccessSupported();
-  const autoPullBusy = useRef(false);
-  const recordSync = useCallback(async (name: string) => {
-    const meta = { name, lastSyncedAt: Date.now() };
-    await setSyncMeta(meta);
-    setSyncMetaState(meta);
-  }, []);
-  const onToggleAutoSync = useCallback(async () => {
-    if (!autoSyncReady) return; // defensive; the row is aria-disabled too
-    if (autoSync.enabled) {
-      setAutoSync(false);
-      return;
-    }
-    if (syncing) return; // a pick/sync is already in flight — no double picker
-    setSyncing(true);
-    try {
-      // Establish a granted handle up front (this click is the user gesture the
-      // silent timer can't provide later); bail if the user cancels the pick.
-      let file = await readStoredHandleSilently();
-      if (!file) file = await pickSaveForSync();
-      if (!file) return;
-      setAutoSync(true);
-      pushToast(
-        `Auto-sync on — every ${autoSync.intervalMin} min while this tab is open (Chrome/Edge)`,
-        "info",
-      );
-      const outcome = await autoPull(file); // one immediate pull so it visibly works
-      if (outcome) await recordSync(file.name);
-    } catch (e) {
-      pushToast(`Couldn't start auto-sync — ${e instanceof Error ? e.message : String(e)}`, "error");
-    } finally {
-      setSyncing(false);
-    }
-  }, [autoSyncReady, autoSync, setAutoSync, pushToast, autoPull, recordSync, syncing]);
-  useEffect(() => {
-    if (!__WASM_BACKEND__ || !autoSync.enabled || !autoSyncReady) return;
-    let cancelled = false;
-    const tick = async () => {
-      // Skip a tick that would collide: another pull running, or an open review
-      // (never clobber a proposal the user is mid-decision on).
-      if (cancelled || autoPullBusy.current || useStore.getState().reviewing) return;
-      autoPullBusy.current = true;
-      try {
-        const file = await readStoredHandleSilently();
-        if (!file) return; // permission lapsed / no handle — skip quietly
-        const outcome = await autoPull(file);
-        if (outcome && !cancelled) await recordSync(file.name);
-      } catch {
-        /* transient read failure — the next tick retries */
-      } finally {
-        autoPullBusy.current = false;
-      }
-    };
-    const id = window.setInterval(() => void tick(), autoSync.intervalMin * 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [autoSync.enabled, autoSync.intervalMin, autoSyncReady, autoPull, recordSync]);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
   // one-shot: swallow the contextmenu that follows a route-drag release
@@ -919,11 +757,9 @@ export default function MapView() {
       if (e.key === "n" || e.key === "N") setPlacing(!placing);
       else if (e.key === "p" || e.key === "P") setWizard({ open: true });
       else if (e.key === "Escape") {
-        // top layer first: the DATA dropdown (its fixed backdrop otherwise
-        // swallows every click while the menu quietly stays open)
-        if (dataMenu) closeDataMenu();
-        // an in-flight route draft cancels next (via the ref: no new deps)
-        else if (routeDraftRef.current) setRouteDraft(null);
+        // an in-flight route draft cancels first (via the ref: no new deps);
+        // the DATA dropdown closes itself (shell/DataMenu.tsx capture listener)
+        if (routeDraftRef.current) setRouteDraft(null);
         else if (placing) setPlacing(false);
         else setSelection(null);
       } else if (e.key === "1") setOverlay("flows", !overlays.flows);
@@ -939,7 +775,7 @@ export default function MapView() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [placing, overlays, plan.factories, selection, dataMenu, closeDataMenu, setOverlay, setPlacing, setSelection, setView, setWizard]);
+  }, [placing, overlays, plan.factories, selection, setOverlay, setPlacing, setSelection, setView, setWizard]);
 
   const panTo = useCallback((pos: { x: number; y: number }) => {
     mapRef.current?.panTo(toLatLng(pos));
@@ -1002,9 +838,10 @@ export default function MapView() {
         </div>
       )}
 
-      {/* top chrome — search docks centered in the titlebar (portal); the DATA
-          menu docks in its corner; chips + actions stay over the map */}
-      {searchSlot ? createPortal(<SearchBox onJump={panTo} />, searchSlot) : <SearchBox onJump={panTo} />}
+      {/* top chrome — search docks centered in the titlebar (portal; hidden
+          during proposal review, when the map is a read-only preview); chips +
+          actions stay over the map */}
+      {reviewing ? null : searchSlot ? createPortal(<SearchBox onJump={panTo} />, searchSlot) : <SearchBox onJump={panTo} />}
       <div className="map-chrome-top">
         <div className="map-overlay-chips">
           <button
@@ -1044,238 +881,6 @@ export default function MapView() {
           >
             + FACTORY <span className="key-hint">N</span>
           </button>
-          {(() => {
-            const dataMenuEl = (
-          <div className="data-menu-wrap">
-            <button
-              className={`btn btn-ghost ${dataMenu ? "active" : ""}`}
-              onClick={() => (dataMenu ? closeDataMenu() : setDataMenu(true))}
-              data-testid="btn-data-menu"
-              title="Import a save or load your game's Docs.json"
-            >
-              {uploadingDocs ? "LOADING CATALOG…" : "DATA ▾"}
-            </button>
-            {dataMenu && (
-              <>
-                <div className="data-menu-backdrop" onClick={closeDataMenu} />
-                <div className="data-menu" data-testid="data-menu">
-                  {/* Web + still-on-fixture: the catalog must load BEFORE a save
-                      so classes resolve, so state the order loudly and float the
-                      Docs.json action to the top as step ①. */}
-                  {__WASM_BACKEND__ && !catalogLoaded && (
-                    <div className="data-menu-order" data-testid="data-menu-order">
-                      Load in order: <b>① Upload Docs.json</b> → <b>② Import save</b>
-                    </div>
-                  )}
-                  {__WASM_BACKEND__ && !catalogLoaded && (
-                    <button
-                      className="data-menu-item data-menu-step"
-                      onClick={() => {
-                        setDataMenu(false);
-                        docsRef.current?.click();
-                      }}
-                      disabled={uploadingDocs}
-                      data-testid="btn-upload-docs-first"
-                    >
-                      <span className="data-menu-item-label">① Upload Docs.json</span>
-                      <span className="data-menu-item-sub">start here — the recipe catalog for your game version</span>
-                    </button>
-                  )}
-                  <button
-                    className="data-menu-item"
-                    onClick={() => {
-                      setDataMenu(false);
-                      fileRef.current?.click();
-                    }}
-                    data-testid="btn-import"
-                  >
-                    <span className="data-menu-item-label">
-                      {__WASM_BACKEND__ && !catalogLoaded ? "② Import save" : "Import save"}
-                    </span>
-                    <span className="data-menu-item-sub">
-                      {__WASM_BACKEND__ && !catalogLoaded
-                        ? "upload your Docs.json above first for full recipe matching"
-                        : ".sav — your factories as a Built layer"}
-                    </span>
-                  </button>
-                  {__WASM_BACKEND__ && (
-                    // One "Sync from save" control with an Auto toggle. aria-disabled
-                    // (not the native attribute) keeps the how-to-enable tooltip on
-                    // hover — browsers suppress title on a natively-disabled button.
-                    // Turning Auto on disables the manual click (the timer owns it).
-                    <div className="data-menu-block sync-block">
-                      <div className="sync-row">
-                        <button
-                          className="data-menu-item sync-main"
-                          onClick={() => {
-                            if (!catalogLoaded || syncing || autoSync.enabled) return;
-                            setDataMenu(false);
-                            void onSync();
-                          }}
-                          aria-disabled={!catalogLoaded || syncing || autoSync.enabled}
-                          title={
-                            !catalogLoaded
-                              ? "Upload your Docs.json first (DATA ▸ Upload Docs.json) to enable save sync"
-                              : autoSync.enabled
-                                ? "Auto-sync is on — turn it off to sync manually"
-                                : undefined
-                          }
-                          data-testid="btn-sync-save"
-                        >
-                          <span className="data-menu-item-label">
-                            {autoSync.enabled ? "Auto-syncing" : syncing ? "Syncing…" : "Sync from save"}
-                          </span>
-                          <span className="data-menu-item-sub">
-                            {!catalogLoaded
-                              ? "needs your Docs.json — upload it below to enable"
-                              : autoSync.enabled
-                                ? `every ${autoSync.intervalMin} min · applies safe changes, asks on conflicts`
-                                : syncMeta
-                                  ? `re-read ${syncMeta.name} · synced ${relTime(syncMeta.lastSyncedAt)}`
-                                  : fsAccessSupported()
-                                    ? "re-read your save & reconcile — no re-pick next time"
-                                    : "re-read your save & reconcile"}
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={autoSync.enabled}
-                          aria-disabled={!autoSyncReady}
-                          className={`sync-auto ${autoSync.enabled ? "on" : ""}`}
-                          onClick={() => void onToggleAutoSync()}
-                          title={
-                            autoSyncReady
-                              ? autoSync.enabled
-                                ? "Auto-sync on — click to turn off"
-                                : "Auto-sync: re-read on a timer (Chrome/Edge, this tab open)"
-                              : !catalogLoaded
-                                ? "Upload your Docs.json first (DATA ▸ Upload Docs.json) to enable save sync"
-                                : "Auto-sync needs the File System Access API — use Chrome or Edge"
-                          }
-                          data-testid="btn-auto-sync"
-                        >
-                          <span className="sync-auto-text mono">AUTO</span>
-                          <span className="sync-auto-track" aria-hidden>
-                            <span className="sync-auto-knob" />
-                          </span>
-                        </button>
-                      </div>
-                      {autoSync.enabled && autoSyncReady && (
-                        <div className="autosync-intervals" data-testid="autosync-intervals">
-                          <span className="autosync-label mono">every</span>
-                          {[5, 10, 15].map((n) => (
-                            <button
-                              key={n}
-                              type="button"
-                              className={`autosync-chip ${n === autoSync.intervalMin ? "active" : ""}`}
-                              onClick={() => setAutoSync(true, n)}
-                              data-testid={`autosync-${n}`}
-                            >
-                              {n}m
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {/* Once a real catalog is loaded the step-① button up top is
-                      gone, so keep an "update" entry here to swap game versions. */}
-                  {__WASM_BACKEND__ && catalogLoaded && (
-                    <button
-                      className="data-menu-item"
-                      onClick={() => {
-                        setDataMenu(false);
-                        docsRef.current?.click();
-                      }}
-                      disabled={uploadingDocs}
-                      data-testid="btn-upload-docs"
-                    >
-                      <span className="data-menu-item-label">Update Docs.json</span>
-                      <span className="data-menu-item-sub">swap in a different game version's catalog</span>
-                    </button>
-                  )}
-                  {/* Start over: a cross-platform Session::new_empire (SQLite
-                      wipe on desktop, store reset → IndexedDB on web), shown only
-                      when there's something to clear. Two-click confirm guards the
-                      destructive wipe; the gamedata catalog is kept. */}
-                  {factoryCount > 0 && (
-                    <button
-                      className={`data-menu-item data-menu-danger ${confirmReset ? "armed" : ""}`}
-                      onClick={() => {
-                        if (!confirmReset) {
-                          setConfirmReset(true);
-                          return;
-                        }
-                        closeDataMenu();
-                        void newEmpire();
-                      }}
-                      data-testid="btn-new-empire"
-                    >
-                      <span className="data-menu-item-label">
-                        {confirmReset ? "Click again to delete everything" : "Start new empire"}
-                      </span>
-                      <span className="data-menu-item-sub">
-                        {confirmReset
-                          ? `deletes all ${factoryCount} ${factoryCount === 1 ? "factory" : "factories"} & routes — keeps your Docs.json`
-                          : "wipe the current plan to import a fresh save"}
-                      </span>
-                    </button>
-                  )}
-                  <div className="data-menu-hint">
-                    <div className="data-menu-hint-head">Or drag &amp; drop a file anywhere</div>
-                    <div className="data-menu-hint-row">
-                      <span className="data-menu-hint-key">Save</span>
-                      <code>%LOCALAPPDATA%\FactoryGame\Saved\SaveGames\</code>
-                    </div>
-                    {__WASM_BACKEND__ && (
-                      <>
-                        <div className="data-menu-hint-row">
-                          <span className="data-menu-hint-key">Docs (Steam)</span>
-                          <code>…\steamapps\common\Satisfactory\CommunityResources\Docs\en-US.json</code>
-                        </div>
-                        <div className="data-menu-hint-row">
-                          <span className="data-menu-hint-key">Docs (Epic)</span>
-                          <code>…\Epic Games\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json</code>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-            );
-            // #117: the save/load menu docks in the titlebar's top-right
-            // corner (portal); inline fallback if the slot isn't mounted.
-            return dataSlot ? createPortal(dataMenuEl, dataSlot) : dataMenuEl;
-          })()}
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".sav"
-            style={{ display: "none" }}
-            data-testid="import-file-input"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) setImportFile(f);
-              e.currentTarget.value = "";
-            }}
-          />
-          {__WASM_BACKEND__ && (
-            <input
-              ref={docsRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: "none" }}
-              data-testid="docs-file-input"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                e.currentTarget.value = "";
-                if (f) void loadDocsFile(f);
-              }}
-            />
-          )}
           <button className="btn btn-primary" onClick={() => setWizard({ open: true })} data-testid="btn-wizard">
             PLAN SUPPLY CHAIN <span className="key-hint">P</span>
           </button>
@@ -1316,7 +921,6 @@ export default function MapView() {
         />
       )}
       {routeDraft && <div className="map-placing-hint mono">RELEASE OVER A FACTORY TO BIND THE ROUTE</div>}
-      {importFile && <ImportModal file={importFile} onClose={() => setImportFile(null)} />}
     </div>
   );
 }

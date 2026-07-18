@@ -2,6 +2,7 @@
 // solver status, window controls. Frameless in Tauri; controls hidden in bridge mode.
 
 import { useStore, solveChip } from "../state/store";
+import DataMenu from "./DataMenu";
 import "./shell.css";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -19,6 +20,7 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
   const plan = useStore((s) => s.plan);
   const derived = useStore((s) => s.derived);
   const setView = useStore((s) => s.setView);
+  const reviewing = useStore((s) => s.reviewing);
 
   const factory = view.mode === "factory" ? plan.factories[view.factoryId] : null;
   const chip = solveChip(factory ? derived.factories[factory.id] : undefined);
@@ -46,8 +48,11 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
         )}
       </nav>
       <div className="titlebar-right">
-        {/* save/load corner slot — filled by MapView's DATA menu portal */}
-        <div className="titlebar-slot" id="titlebar-data-slot" />
+        {/* save/load corner: the DATA menu lives HERE (not portaled from a
+            view) so it exists on the map AND inside factories, and auto-sync's
+            timer keeps ticking everywhere. Hidden during proposal review —
+            loading more data mid-review would fight the open proposal. */}
+        {!reviewing && <DataMenu />}
         <span className="chip" title="Every commit writes the plan file — there is no unsaved state.">
           SAVED ✓
         </span>

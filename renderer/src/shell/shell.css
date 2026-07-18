@@ -57,9 +57,12 @@
 .titlebar .searchbox input {
   height: 26px;
 }
+/* NOTE: no z-index here — the slot's transform creates a stacking context, so
+   one would be inert against the data-menu backdrop anyway. Instead the menu
+   closes itself when ⌘K invokes the search (shell/DataMenu.tsx), so the two
+   are never open at once. */
 .titlebar .search-results {
   top: 30px;
-  z-index: 41; /* above the data-menu backdrop (39) — never both open, but safe */
 }
 /* The DATA dropdown hangs from the button in the bar's right corner. */
 .titlebar .data-menu {
@@ -411,4 +414,216 @@
   .toast {
     animation: none;
   }
+}
+/* ---- DATA menu (#79, titlebar-owned since #117): import save / upload
+   docs / sync. Drop-overlay styles stay in map.css — the map is the drop
+   surface. ---- */
+.data-menu-wrap {
+  position: relative;
+}
+.data-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+.data-menu {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  width: 340px;
+  background: var(--steel-800);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  overflow: hidden;
+  z-index: 40;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+/* Order banner (web, pre-catalog): states the required upload sequence. */
+.data-menu-order {
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-300);
+  background: var(--bp-900, var(--steel-900));
+  border-bottom: 1px solid var(--steel-600);
+}
+.data-menu-order b {
+  color: var(--signal-400);
+  font-weight: 700;
+}
+/* The step-① Docs.json action floated to the top gets a left accent so it
+   reads as the starting point. */
+.data-menu-step {
+  border-left: 2px solid var(--signal-500);
+}
+.data-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--steel-700);
+  cursor: pointer;
+  color: var(--ink-100);
+}
+.data-menu-item:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--steel-700);
+}
+.data-menu-item:disabled,
+.data-menu-item[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+.data-menu-item-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.data-menu-item-sub {
+  font-size: 11px;
+  color: var(--ink-500);
+}
+/* Destructive "Start new empire": a red left accent, and once armed the whole
+   row goes red so the second (confirming) click reads as dangerous. */
+.data-menu-danger {
+  border-left: 2px solid var(--flow-crit);
+}
+.data-menu-danger:hover:not(:disabled) {
+  background: rgba(255, 93, 85, 0.08);
+}
+.data-menu-danger.armed {
+  background: rgba(255, 93, 85, 0.12);
+}
+.data-menu-danger.armed .data-menu-item-label,
+.data-menu-danger.armed .data-menu-item-sub {
+  color: var(--flow-crit);
+}
+/* Sync-from-save + Auto toggle: one row (main action + a switch), plus an
+   interval chip row when Auto is on. The block owns the bottom border so the
+   whole control reads as a single menu row. */
+.data-menu-block {
+  border-bottom: 1px solid var(--steel-700);
+}
+.data-menu-block .data-menu-item {
+  border-bottom: none;
+}
+.sync-row {
+  display: flex;
+  align-items: stretch;
+}
+.sync-main {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+/* The Auto switch: an AUTO label + a pill track/knob, orange when on. */
+.sync-auto {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border: none;
+  border-left: 1px solid var(--steel-700);
+  background: none;
+  cursor: pointer;
+}
+.sync-auto[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+.sync-auto-text {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-500);
+}
+.sync-auto.on .sync-auto-text {
+  color: var(--signal-orange, #ff7a1a);
+}
+.sync-auto-track {
+  position: relative;
+  width: 28px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--steel-600);
+  transition: background 0.15s ease;
+}
+.sync-auto.on .sync-auto-track {
+  background: var(--signal-orange, #ff7a1a);
+}
+.sync-auto-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink-100);
+  transition: transform 0.15s ease;
+}
+.sync-auto.on .sync-auto-knob {
+  transform: translateX(13px);
+}
+.autosync-intervals {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 10px 12px;
+}
+.autosync-label {
+  font-size: 10.5px;
+  color: var(--ink-500);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.autosync-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--steel-600);
+  color: var(--ink-300);
+  background: transparent;
+  cursor: pointer;
+}
+.autosync-chip:hover {
+  border-color: var(--ink-300);
+}
+.autosync-chip.active {
+  border-color: var(--signal-orange, #ff7a1a);
+  color: var(--signal-orange, #ff7a1a);
+  background: color-mix(in srgb, var(--signal-orange, #ff7a1a) 14%, transparent);
+}
+.data-menu-hint {
+  padding: 10px 12px;
+  background: var(--steel-900);
+  font-family: var(--font-mono);
+}
+.data-menu-hint-head {
+  font-size: 11px;
+  color: var(--ink-300);
+  margin-bottom: 6px;
+}
+.data-menu-hint-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 6px;
+}
+.data-menu-hint-row:last-child {
+  margin-bottom: 0;
+}
+.data-menu-hint-key {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--signal-500);
+  text-transform: uppercase;
+}
+.data-menu-hint-row code {
+  font-size: 10px;
+  color: var(--ink-500);
+  word-break: break-all;
 }
