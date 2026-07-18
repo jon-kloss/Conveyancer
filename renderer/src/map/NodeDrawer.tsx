@@ -31,6 +31,10 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   const catalogNode = world.nodes.find((n) => n.id === node.id);
   const saveOnly = node.id.startsWith("save:");
   const rate = extractionRate(gamedata.machines[extractor], node.purity, 1.0);
+  // Re-claiming a node the chosen factory already holds would stack a second
+  // claim (double-book). Detect it so CLAIM FOR edits the existing claim's tier
+  // in place instead — idempotent per factory.
+  const existingForFactory = claims.find((c) => c.factory === factoryId);
 
   const claim = () => {
     if (!factoryId) return;
@@ -95,6 +99,41 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
     void dispatch(cmds);
   };
 
+  // Swap a claim's extractor (miner tier) in place — same claim, same factory,
+  // one undo step. Re-claiming for the same factory would STACK a second claim
+  // and trip the double-book conflict; set_claim mutates the existing one. The
+  // rate is derived from the tier, so nudge the fed input port's ceiling too —
+  // matched by the OLD rate and updated (never deleted), so belts already wired
+  // to it survive the change.
+  const changeExtractor = (c: (typeof claims)[number], nextExtractor: string) => {
+    if (!nextExtractor || nextExtractor === c.extractor) return;
+    const oldRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock);
+    const newRate = extractionRate(gamedata.machines[nextExtractor], node.purity, c.clock);
+    const cmds: Parameters<typeof dispatch>[0] = [
+      { type: "set_claim", id: c.id, extractor: nextExtractor, clock: c.clock },
+    ];
+    // Find the boundary input port this claim feeds so its ceiling tracks the
+    // new rate. Match conservatively (same factory + item + the OLD ceiling),
+    // and when several claims of this factory feed indistinguishable ports,
+    // prefer the one actually wired into the graph — bumping the belt-carrying
+    // port, not an idle sibling (same disambiguation moveClaim uses).
+    const portWired = (pid: string) =>
+      Object.values(plan.edges).some(
+        (e) => (e.from.kind === "port" && e.from.id === pid) || (e.to.kind === "port" && e.to.id === pid),
+      );
+    const candidates = Object.values(plan.ports).filter(
+      (p) =>
+        p.factory === c.factory &&
+        p.direction === "in" &&
+        p.item === node.item &&
+        p.boundRoute === null &&
+        Math.abs((p.rateCeiling ?? -1) - oldRate) < 0.5,
+    );
+    const port = candidates.find((p) => portWired(p.id)) ?? candidates[0];
+    if (port) cmds.push({ type: "set_port_ceiling", id: port.id, rateCeiling: newRate });
+    void dispatch(cmds);
+  };
+
   return (
     <aside className="drawer summary-drawer" data-testid="node-drawer">
       <header className="drawer-header">
@@ -145,9 +184,23 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
           const others = factories.filter((f) => f.id !== c.factory);
           return (
             <div className="drawer-row" key={c.id}>
-              <span className="drawer-row-name">
-                {plan.factories[c.factory]?.name ?? "?"} · {gamedata.machines[c.extractor]?.displayName ?? c.extractor}
-              </span>
+              <span className="drawer-row-name">{plan.factories[c.factory]?.name ?? "?"}</span>
+              <select
+                aria-label="Miner tier"
+                data-testid="claim-tier"
+                value={c.extractor}
+                onChange={(e) => changeExtractor(c, e.target.value)}
+                style={{ height: 22 }}
+                title="Change this claim's miner tier"
+              >
+                {EXTRACTORS.filter((m) => gamedata.machines[m]).map((m) => (
+                  <option key={m} value={m}>
+                    {gamedata.machines[m].displayName}
+                  </option>
+                ))}
+                {/* keep an unknown/legacy extractor selectable so its rate stays honest */}
+                {!EXTRACTORS.includes(c.extractor) && <option value={c.extractor}>{gamedata.machines[c.extractor]?.displayName ?? c.extractor}</option>}
+              </select>
               <span className="t-data-12 projected">
                 {fmtRate(extractionRate(gamedata.machines[c.extractor], node.purity, c.clock))}
                 <span className="unit">/min</span>
@@ -217,9 +270,26 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
                 <span className="unit">/min</span>
               </span>
             </div>
-            <button className="btn btn-primary" style={{ width: "100%", marginTop: 8 }} onClick={claim} data-testid="btn-claim">
-              CLAIM NODE + ADD INPUT PORT
-            </button>
+            {existingForFactory ? (
+              existingForFactory.extractor === extractor ? (
+                <button className="btn btn-ghost" style={{ width: "100%", marginTop: 8 }} disabled data-testid="btn-claim">
+                  ALREADY CLAIMED BY THIS FACTORY
+                </button>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  style={{ width: "100%", marginTop: 8 }}
+                  onClick={() => changeExtractor(existingForFactory, extractor)}
+                  data-testid="btn-claim-update"
+                >
+                  UPDATE CLAIM → {gamedata.machines[extractor]?.displayName ?? extractor}
+                </button>
+              )
+            ) : (
+              <button className="btn btn-primary" style={{ width: "100%", marginTop: 8 }} onClick={claim} data-testid="btn-claim">
+                CLAIM NODE + ADD INPUT PORT
+              </button>
+            )}
           </>
         )}
       </section>
