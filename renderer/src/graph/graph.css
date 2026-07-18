@@ -1074,3 +1074,111 @@
 .mfr-foot .btn-primary {
   margin-left: auto;
 }
+
+/* ---- graph right-click context menu (send-out + bulk actions) ---- */
+.ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.ctx-menu {
+  position: fixed;
+  z-index: 41;
+  min-width: 210px;
+  max-width: 260px;
+  padding: 4px;
+  background: var(--steel-900);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ctx-head {
+  font-size: 9.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.06em;
+  padding: 5px 8px 3px;
+  border-bottom: 1px solid var(--steel-700);
+  margin-bottom: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  font-size: 12px;
+  color: var(--ink-200);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.ctx-item:hover {
+  background: var(--steel-700);
+  color: var(--ink-100);
+}
+.ctx-item.ctx-danger {
+  color: var(--flow-crit);
+}
+.ctx-item.ctx-danger:hover {
+  background: color-mix(in srgb, var(--flow-crit) 18%, transparent);
+}
+.ctx-sub,
+.ctx-floors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.ctx-floors {
+  flex-direction: column;
+  align-items: stretch;
+}
+.ctx-sub-label {
+  font-size: 11px;
+  color: var(--ink-400);
+}
+.ctx-sub input {
+  width: 60px;
+  padding: 4px 6px;
+  background: var(--steel-950);
+  border: 1px solid var(--steel-600);
+  border-radius: 3px;
+  color: var(--ink-100);
+  font-size: 12px;
+}
+.ctx-apply,
+.ctx-floor {
+  padding: 4px 8px;
+  background: var(--steel-700);
+  border: 1px solid var(--steel-600);
+  border-radius: 3px;
+  color: var(--ink-100);
+  font-size: 11px;
+  cursor: pointer;
+}
+.ctx-apply:hover,
+.ctx-floor:hover {
+  background: var(--signal-500);
+  border-color: var(--signal-500);
+  color: var(--steel-950);
+}
+.ctx-floor-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.ctx-floor {
+  min-width: 26px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+.ctx-floor.new {
+  color: var(--flow-ok);
+}
