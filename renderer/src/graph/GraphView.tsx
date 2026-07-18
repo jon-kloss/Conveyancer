@@ -3,7 +3,7 @@
 // solver contract (4c): every edit re-solves live; numbers change, geometry
 // doesn't; infeasible hard-stops, never errors.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -11,6 +11,7 @@ import {
   Background,
   BackgroundVariant,
   MiniMap,
+  SelectionMode,
   applyNodeChanges,
   type Connection,
   type Edge,
@@ -30,6 +31,7 @@ import AddGroupMenu from "./AddGroupMenu";
 import AddPortMenu from "./AddPortMenu";
 import BuildSheet from "./BuildSheet";
 import MakeFromResources from "./MakeFromResources";
+import GraphContextMenu, { type CtxTarget } from "./GraphContextMenu";
 import { fmtPower } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
 import { isEditableTarget } from "../lib/keys";
@@ -245,6 +247,26 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const [logisticMenu, setLogisticMenu] = useState(false);
   const [buildSheet, setBuildSheet] = useState(false);
   const [makeOpen, setMakeOpen] = useState(false);
+  const [ctx, setCtx] = useState<CtxTarget | null>(null);
+  // True while a marquee box-selection is in progress — suppresses the
+  // single-selection sync so React Flow keeps the whole multi-selection.
+  const boxSelRef = useRef(false);
+
+  // Right-click a node → context menu over the current selection if this node
+  // is part of it (bulk), else just this node.
+  const openNodeCtx = useCallback(
+    (e: ReactMouseEvent, node: Node) => {
+      e.preventDefault();
+      const selected = getNodes().filter((n) => n.selected).map((n) => n.id);
+      const nodeIds = node.selected && selected.length > 1 ? selected : [node.id];
+      setCtx({ x: e.clientX, y: e.clientY, nodeIds });
+    },
+    [getNodes],
+  );
+  const openSelectionCtx = useCallback((e: ReactMouseEvent, sel: Node[]) => {
+    e.preventDefault();
+    setCtx({ x: e.clientX, y: e.clientY, nodeIds: sel.map((n) => n.id) });
+  }, []);
 
   // Display derived: T0 projection during drag, else authoritative T1.
   const df: DerivedFactory | undefined =
@@ -362,6 +384,10 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     setNodes((prev) => {
       const fresh = buildNodes();
       const prevById = new Map(prev.map((n) => [n.id, n]));
+      // While a marquee selection is live (or several nodes are already
+      // box-selected), React Flow owns `selected` — this single-selection
+      // rebuild must not collapse it. Preserve each node's current selected.
+      const multi = boxSelRef.current || prev.filter((n) => n.selected).length > 1;
       let identical = fresh.length === prev.length;
       const next = fresh.map((f, i) => {
         const p = prevById.get(f.id);
@@ -369,11 +395,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           identical = false;
           return f;
         }
+        const fSelected = multi ? !!p.selected : !!f.selected;
+        if (multi) f = { ...f, selected: fSelected };
         const pd = p.data as Record<string, unknown>;
         const fd = f.data as Record<string, unknown>;
         const unchanged =
           p.type === f.type &&
-          !!p.selected === !!f.selected &&
+          !!p.selected === fSelected &&
           p.position.x === f.position.x &&
           p.position.y === f.position.y &&
           p.style?.opacity === f.style?.opacity &&
@@ -399,7 +427,10 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     (changes: NodeChange[]) => {
       setNodes((ns) => applyNodeChanges(changes, ns));
       for (const ch of changes) {
-        if (ch.type === "select" && ch.selected) {
+        // Skip the single-selection sync during a marquee drag — otherwise each
+        // node entering the box would collapse the app selection to just it and
+        // the rebuild would drop the rest of the box-selection.
+        if (ch.type === "select" && ch.selected && !boxSelRef.current) {
           const st = useStore.getState().plan;
           setSelection(
             st.groups[ch.id]
@@ -875,6 +906,21 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           onPaneClick={() => {
             setSelection(null);
             setAddMenu(null);
+            setCtx(null);
+          }}
+          onSelectionStart={() => {
+            boxSelRef.current = true;
+            setSelection(null);
+            setCtx(null);
+          }}
+          onSelectionEnd={() => {
+            boxSelRef.current = false;
+          }}
+          onNodeContextMenu={openNodeCtx}
+          onSelectionContextMenu={openSelectionCtx}
+          onPaneContextMenu={(e) => {
+            e.preventDefault();
+            setCtx(null);
           }}
           zoomOnDoubleClick={false}
           snapToGrid
@@ -884,6 +930,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           fitView
           proOptions={{ hideAttribution: true }}
           deleteKeyCode={null}
+          // Left-drag on the canvas box-selects the machines it touches; scroll/
+          // trackpad pans and pinch/ctrl-scroll zooms, so drag-to-pan giving way
+          // to marquee select still leaves the graph fully navigable.
+          selectionOnDrag
+          panOnDrag={false}
+          panOnScroll
+          selectionMode={SelectionMode.Partial}
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1.5} color="var(--graph-dot)" />
           <FloorPlates groups={factoryGroups} edges={factoryEdges} geoms={plateGeoms} activeFloor={floorFilter} />
@@ -919,6 +972,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
 
       {buildSheet && <BuildSheet factoryId={factoryId} onClose={() => setBuildSheet(false)} />}
       {makeOpen && <MakeFromResources factoryId={factoryId} onClose={() => setMakeOpen(false)} />}
+      {ctx && <GraphContextMenu target={ctx} factoryId={factoryId} onClose={() => setCtx(null)} />}
     </div>
   );
 }
