@@ -117,9 +117,18 @@ export default function App() {
         const st = useStore.getState();
         st.setAdvisorOpen(!st.advisorOpen);
       } else if ((e.key === "h" || e.key === "H") && !e.metaKey && !e.ctrlKey && !isEditableTarget(e)) {
-        // H toggles the resume dashboard (home) — but never over a review.
+        // H toggles the resume dashboard (home). Inside the factory graph H is
+        // the Pan-tool hotkey (Figma hand) which GraphView owns — but only while
+        // the graph is the active surface. When the dashboard is layered OVER
+        // the graph, H still closes it (as on the map); consume the key so
+        // GraphView's Pan handler doesn't also flip the tool underneath. Escape
+        // stays the graph's way back to the map, so H=home is one keystroke away.
         const st = useStore.getState();
-        if (!st.reviewing) st.setDashboardOpen(!st.dashboardOpen);
+        if (st.view.mode === "factory" && !st.dashboardOpen) return;
+        if (!st.reviewing) {
+          st.setDashboardOpen(!st.dashboardOpen);
+          if (st.view.mode === "factory") e.stopImmediatePropagation();
+        }
       } else if (e.key === "Escape") {
         const st = useStore.getState();
         // The wizard and the review surface own their Escape flows, and a
