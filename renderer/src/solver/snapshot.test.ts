@@ -134,11 +134,13 @@ describe("buildSnapshot — driven generators (audit #123)", () => {
   });
 
   it("respects the planned delta overlay in the driven-cycles product", () => {
+    // Overlay values chosen so effective (3 x 2 = 6) diverges from the raw
+    // baseline (2 x 1 = 2) — a regression to g.count * g.clock fails here.
     const g0 = group("gen", "Recipe_Power_Coal_C", 2, 1);
-    (g0 as { plannedDelta: unknown }).plannedDelta = { count: 4, clock: 0.5 };
+    (g0 as { plannedDelta: unknown }).plannedDelta = { count: 3, clock: 2 };
     const plan = makePlan({ groups: { gen: g0 } });
     const g = (buildSnapshot(plan, gamedata, F)!.groups as SnapGroup[])[0];
-    expect(g.drivenCycles).toBeCloseTo(2);
+    expect(g.drivenCycles).toBeCloseTo(6);
   });
 
   it("keeps drivenCycles null for ordinary production groups", () => {

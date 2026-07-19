@@ -196,6 +196,15 @@ fn demand_pass(
                         cycles = cycles.max(demanded / (amount * 60.0 / group.recipe.duration_s));
                     }
                 }
+                // Driven-generator floor (mirror of T1's `m + s == n`): an
+                // un-wired generator's power output is demanded by nothing, so
+                // demand alone idles it to 0 cycles — and every drag frame read
+                // "GENERATES 0 MW". Hold it at its nameplate cycles; fuel is
+                // pulled below, and any over-cap fuel draw surfaces as
+                // saturation like every other T0 demand (T1 settles exactly).
+                if let Some(d) = group.driven_cycles {
+                    cycles = cycles.max(d);
+                }
                 group_cycles.insert(gid.clone(), cycles);
                 for (item, _) in group.recipe.inputs.clone() {
                     let need = cycles * group.recipe.in_rate(&item);
@@ -371,11 +380,19 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         // Binding selection by slack RELATIVE to baseline: a sibling-violated
         // cap sits at large negative absolute slack forever — the cap that
         // binds the EDIT is the one closest to its own floor.
-        let min_rel_slack = |flows: &[f64]| -> Option<(CapKey, f64)> {
+        // Binding selection considers only caps the edit actually PUSHES
+        // (flow increasing across the final bracket): a flow-invariant
+        // violated sibling sits at relative slack exactly 0 and would
+        // otherwise tie-win against the true binding at the crossing point,
+        // re-blaming the sibling the relative-feasibility rework exonerated.
+        let min_rel_slack = |f_lo: &[f64], f_hi: &[f64]| -> Option<(CapKey, f64)> {
             let mut best: Option<(CapKey, f64)> = None;
             for (i, &k) in cap_keys.iter().enumerate() {
+                if cap_flow(k, f_hi) <= cap_flow(k, f_lo) + 1e-12 {
+                    continue; // the edit does not push this cap — cannot be its binding
+                }
                 let cap = cap_bound(k);
-                let rel = (cap - cap_flow(k, flows)) / (1.0 + cap) - base_slack[i].min(0.0);
+                let rel = (cap - cap_flow(k, f_lo)) / (1.0 + cap) - base_slack[i].min(0.0);
                 if best.is_none_or(|(_, s)| rel < s) {
                     best = Some((k, rel));
                 }
@@ -433,7 +450,7 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
                 }
             }
             // The binding is the minimum RELATIVE-slack cap at the feasible end.
-            let Some((key, _)) = min_rel_slack(&f_lo) else {
+            let Some((key, _)) = min_rel_slack(&f_lo, &f_hi) else {
                 break 'ceiling None;
             };
             // Secant polish: the final bracket lies inside a single linear
