@@ -9,7 +9,9 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import { resetView } from "../e2e/helpers";
 
-test.describe.configure({ mode: "serial" });
+// NOTE: no serial mode — the runner uses --workers=1, and per-test isolation
+// (each test seeds + deletes its own factories) means a failure must NOT
+// cascade-skip sibling probes: every probe needs a verdict.
 
 const API = "http://localhost:8791/api";
 async function edit(request: APIRequestContext, cmds: unknown[]): Promise<{ created: string[] }> {

@@ -29,7 +29,9 @@ import { test, expect, type Page } from "@playwright/test";
 import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 
-test.describe.configure({ mode: "serial" });
+// NOTE: no serial mode — the runner uses --workers=1, and per-test isolation
+// (each test seeds + deletes its own factories) means a failure must NOT
+// cascade-skip sibling probes: every probe needs a verdict.
 
 // The bundled fixture catalog on disk — the SAME JSON compiled into the wasm as
 // the default. Uploading it is a GOOD upload: buildVersion flips "fixture" →
@@ -132,6 +134,11 @@ const dispatchFactory = (page: Page, name: string, pos: { x: number; y: number; 
 test("truncated Docs.json upload is rejected with a friendly error, app not wedged", async ({ page }) => {
   await page.goto("/");
   await waitReady(page);
+
+  // Web-only probe: the docs upload input is __WASM_BACKEND__-gated and does
+  // not exist on the bridge build this suite runs against. Skip (not fail) —
+  // run it under playwright.web.config.ts to get a real verdict.
+  test.skip((await page.getByTestId("docs-file-input").count()) === 0, "web-only: bridge build has no docs upload input");
 
   // Seed a plan we expect to survive the failed upload.
   const kept = await dispatchFactory(page, "KEEP", { x: 1, y: 2, z: 0 });
