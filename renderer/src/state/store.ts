@@ -220,8 +220,13 @@ const emptyDerived: Derived = {
 export interface AppStore {
   ready: boolean;
   error: string | null;
+  /** MANIFOLD boot progress (handoff §4a/§7): REAL loader stages only —
+   *  the ticker narrates these verbatim and the expanding bus follows
+   *  `fraction`; no synthetic timers anywhere in this model. */
+  boot: { stage: string; fraction: number };
   /** last refused backend command — status-bar chip, NOT the full-screen
-      BACKEND UNREACHABLE card (that is `error`, set only by hydrate). */
+      BACKEND UNREACHABLE card (that is `error`, set only by a failed FIRST
+      boot; live re-hydrate failures route here instead). */
   cmdError: { message: string; at: number } | null;
   /** transient action-feedback toasts (auto-dismiss); newest last */
   toasts: Toast[];
@@ -568,6 +573,7 @@ async function rankOnDevice(model: string): Promise<RankResponse> {
 
 export const useStore = create<AppStore>((set, get) => ({
   ready: false,
+  boot: { stage: "CONNECTING BACKEND", fraction: 0 },
   error: null,
   cmdError: null,
   toasts: [],
@@ -627,10 +633,35 @@ export const useStore = create<AppStore>((set, get) => ({
     lastMergedHash = "";
     set({ rank: null, rankEpoch: 0 });
     try {
+      // Boot stages are the REAL awaits: the hydrate round-trip (on web this
+      // spans worker spin-up + IndexedDB docs restore + the wasm session
+      // rebuild), then applying the payload. The fractions are stage weights
+      // of known work; the BootScreen smoother animates through the bursts.
+      set({ boot: { stage: "READING PLAN FILE", fraction: 0.06 } });
       const init = await backend.hydrate();
+      const nFactories = Object.keys(init.plan.factories).length;
+      const nRoutes = Object.keys(init.plan.routes).length;
+      set({
+        boot: {
+          stage: `HYDRATING FACTORIES — ${nFactories}` + (nRoutes ? ` · ROUTES — ${nRoutes}` : ""),
+          fraction: 0.82,
+        },
+      });
+      // Yield one macrotask so React commits the HYDRATING stage before the
+      // heavy synchronous payload set below — without it both sets land in
+      // the same microtask and the middle stage never renders. This is a
+      // scheduling yield, not synthetic progress: 0.82 fronts the real
+      // payload-application work that follows. (Not rAF — headless/fresh
+      // pages can park rAF for ~1.5s and would stall the boot.)
+      await new Promise((r) => setTimeout(r, 0));
       const openFactory = init.viewState?.openFactory;
       set({
+        boot: {
+          stage: `EMPIRE ONLINE — ${nFactories} ${nFactories === 1 ? "FACTORY" : "FACTORIES"}`,
+          fraction: 1,
+        },
         ready: true,
+        error: null,
         plan: init.plan,
         derived: init.derived,
         gamedata: init.gamedata,
@@ -649,7 +680,13 @@ export const useStore = create<AppStore>((set, get) => ({
             : { mode: "map" },
       });
     } catch (e) {
-      set({ error: String(e) });
+      // Fatal `error` (the full-screen BACKEND UNREACHABLE card) is for a
+      // failed FIRST boot only. hydrate() is also the re-projection step for
+      // live-app actions (uploadDocs, newEmpire, syncImport, autoPull,
+      // optimizeAdopt) — a transient blip there must not nuke a healthy
+      // running app; surface it as a command error and leave the app standing.
+      if (get().ready) get().reportCmdError(`Plan re-sync failed — ${errText(e)}`);
+      else set({ error: String(e) });
     }
   },
 

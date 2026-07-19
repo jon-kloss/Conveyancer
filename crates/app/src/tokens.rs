@@ -58,6 +58,11 @@ pub const COLORS: &[Token] = tokens![
     "flow-crit-dark" => "#7A2622",
     "underclock" => "#5BC8C0",
     "underclock-dark" => "#2A5F57",
+    // MANIFOLD boot choreography (handoff §6): the comet head riding the
+    // growing bus + item dots. Loader-only decorative color — "orange is a
+    // verb" stays intact (the loader IS the sanctioned decorative surface);
+    // the surveyor crosshair reuses ink-faint.
+    "signal-comet" => "#FFD9AE",
     // Resource identity — MAP DATA ONLY, never a UI signal. Muted, low-chroma
     // terrain tints so a player can read node type at a glance (iron vs copper
     // vs oil) without competing with the reserved verbs (signal orange, plan
