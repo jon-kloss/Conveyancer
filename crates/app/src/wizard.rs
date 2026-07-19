@@ -443,7 +443,7 @@ pub fn global_solve(
     let floor = purity_rank(&c.purity_floor);
 
     // pick nodes per raw item, best purity first, clustered near first pick
-    let mut picked_nodes: Vec<(String, String, f64)> = Vec::new(); // (node id, item, rate at Mk.2)
+    let mut picked_nodes: Vec<(String, String, f64)> = Vec::new(); // (node id, item, extraction rate — per-item extractor via extractor_for)
     let mut anchor: Option<(f64, f64)> = None;
     // Running sum of picked node coordinates → the site lands on their centroid
     // (close to every resource it draws), not just the first pick + a fixed
