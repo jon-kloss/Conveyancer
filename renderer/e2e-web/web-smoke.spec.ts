@@ -304,6 +304,11 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   const autoBtn = page.getByTestId("btn-auto-sync");
   await expect(autoBtn).toHaveAttribute("aria-disabled", "true");
   await expect(autoBtn).toHaveAttribute("title", /Docs\.json/);
+  // The load ORDER is enforced, not suggested: step ② (Import save) is
+  // disabled while the app is still on the fixture catalog.
+  const importBtn = page.getByTestId("btn-import");
+  await expect(importBtn).toHaveAttribute("aria-disabled", "true");
+  await expect(importBtn).toContainText("② Import save");
 
   // Upload through the real input the button drives (setInputFiles fires its
   // onChange → store.uploadDocs → worker rebuild → hydrate). The button is
@@ -323,12 +328,20 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   );
   expect(recipeCount, "the uploaded catalog has recipes").toBeGreaterThan(0);
 
-  // The gate lifts now that a real catalog is loaded: Sync from save is live.
-  await expect(syncBtn).toHaveAttribute("aria-disabled", "false");
+  // The DOCS gate lifts — step ② unlocks — but sync stays gated on an
+  // IMPORTED SAVE: "Sync from save" re-reads a save you already imported, so
+  // with no import in the plan its gate holds with the how-to title. (The
+  // first-time flow is ② Import save, never sync.)
+  await expect(importBtn).toHaveAttribute("aria-disabled", "false");
+  await expect(importBtn).not.toContainText("②");
+  await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
+  await expect(syncBtn).toHaveAttribute("title", /[Ii]mport your save/);
+  await expect(autoBtn).toHaveAttribute("title", /[Ii]mport your save/);
 
-  // Auto-sync owns the manual sync: turning it ON disables the manual button
-  // (the timer handles re-reads) until it's turned back off. Drive the toggle
-  // through the store (the real toggle needs an OS file picker we can't script).
+  // Auto-sync owns the manual sync label: forcing it ON via the store swaps
+  // the label to Auto-syncing (the timer owns re-reads); OFF returns it to
+  // the save-gated idle state. Drive the toggle through the store (the real
+  // toggle needs an OS file picker we can't script).
   const setAuto = (on: boolean) =>
     page.evaluate(
       (v) =>
@@ -341,7 +354,8 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
   await expect(syncBtn).toContainText("Auto-syncing");
   await setAuto(false);
-  await expect(syncBtn).toHaveAttribute("aria-disabled", "false");
+  await expect(syncBtn).toContainText("Sync from save");
+  await expect(syncBtn).toHaveAttribute("aria-disabled", "true"); // still save-gated
 
   // RELOAD + PERSIST — the worker reads the docs bytes back out of IndexedDB and
   // reconstructs the session on the real catalog. If docs were not persisted,
