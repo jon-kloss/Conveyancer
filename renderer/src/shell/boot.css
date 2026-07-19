@@ -6,6 +6,12 @@
   position: fixed;
   inset: 0;
   z-index: 4000;
+  /* Own compositor layer: without it the opaque overlay lets the compositor
+     skip rasterizing the map beneath, and the unmount then pays the whole
+     deferred raster/decode at once — a BeginFrame stall that froze rAF for
+     ~500ms right as the map became interactive. The reveal animates opacity
+     anyway, so the layer is warranted. */
+  will-change: opacity;
   background-color: var(--map-canvas);
   background-image:
     linear-gradient(var(--map-grid) 1px, transparent 1px),

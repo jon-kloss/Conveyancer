@@ -20,7 +20,26 @@ test("wheel zoom eases through intermediate fractional levels", async ({ page, r
   if (await skip.isVisible().catch(() => false)) await skip.click();
   const root = page.getByTestId("map-root");
   await expect(root).toBeVisible();
-  await page.waitForTimeout(300);
+  // Headless chromium can park requestAnimationFrame for the first ~1.5s of
+  // a fresh page (BeginFrames idle until the compositor warms) — on a fast
+  // boot the 450ms sampling window then sees 1-2 frames and a real glide
+  // reads as a jump. Wait for a steady frame cadence first: this spec tests
+  // the zoom EASING, not early-page frame scheduling.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        let last = performance.now();
+        let streak = 0;
+        const tick = () => {
+          const now = performance.now();
+          streak = now - last < 50 ? streak + 1 : 0;
+          last = now;
+          if (streak >= 5) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+  );
   const box = (await page.locator(".leaflet-container").boundingBox())!;
 
   // Dispatch one wheel tick at the map center, then sample the live zoom stamp
