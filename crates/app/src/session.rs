@@ -2353,14 +2353,17 @@ impl Session {
                     _ => Some(mw * g.effective_count() as f64 * g.effective_clock()),
                 }
             };
-            let gen_of = |fid: &Id| -> f64 {
-                self.state
-                    .groups
-                    .values()
-                    .filter(|g| &g.factory == fid)
-                    .filter_map(&group_gen_mw)
-                    .sum()
-            };
+            // Folded ONCE into a per-factory map: gen_of is called per grid
+            // member and again per switch-side factory, and a full
+            // state.groups rescan on every call would make the per-grid pass
+            // O((members + switch sides) × total groups) on every recompute.
+            let mut gen_by_factory: BTreeMap<Id, f64> = BTreeMap::new();
+            for g in self.state.groups.values() {
+                if let Some(mw) = group_gen_mw(g) {
+                    *gen_by_factory.entry(g.factory.clone()).or_insert(0.0) += mw;
+                }
+            }
+            let gen_of = |fid: &Id| -> f64 { gen_by_factory.get(fid).copied().unwrap_or(0.0) };
             for (i, (_, members)) in grids.into_iter().enumerate() {
                 let generation_mw: f64 = members.iter().map(&gen_of).sum();
                 let demand_mw: f64 = members
@@ -2450,11 +2453,11 @@ impl Session {
                     next_shed,
                 });
             }
-            // Empire generation: the SAME per-group rule as the per-grid sums
-            // above (group_gen_mw), applied over every generator group — so
-            // the status bar total and the grid cards agree by construction.
-            derived.total_generation_mw =
-                self.state.groups.values().filter_map(&group_gen_mw).sum();
+            // Empire generation: the SAME per-group fold as the per-grid sums
+            // above (gen_by_factory covers every factory with a generator,
+            // gridded or not) — so the status bar total and the grid cards
+            // agree by construction.
+            derived.total_generation_mw = gen_by_factory.values().sum();
         }
         // Build queue: a pure projection over canonical state + gamedata,
         // recomputed here like circuits/deficits (no stored ordering entity).

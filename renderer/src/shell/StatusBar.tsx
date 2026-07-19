@@ -78,7 +78,12 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
         worstHeadroom = h;
       }
     }
-    const fillPct = worst.generationMw > 0 ? (worst.demandMw / worst.generationMw) * 100 : worst.demandMw / 5;
+    // A consumer-only grid (no generator in the component) is DEFINITIVELY
+    // 100% overdrawn the moment it draws anything — render it full, matching
+    // the audit drawer's card for the same circuit, never a near-empty
+    // alarm-red sliver (the exact width/color contradiction this memo fixes).
+    const fillPct =
+      worst.generationMw > 0 ? (worst.demandMw / worst.generationMw) * 100 : worst.demandMw > 0 ? 100 : 0;
     return {
       level: powerLevel(worstHeadroom),
       fillPct,
