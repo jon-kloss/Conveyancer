@@ -190,10 +190,17 @@ export default function MakeFromResources({
     return h === Infinity ? Infinity : Math.floor((h / opt.fuelPer) * opt.mwPer);
   };
   const [mwInput, setMwInput] = useState<Record<string, number>>({});
+  // The DISPLAYED MW for a row: user-entered, else pool max, else (uncapped
+  // supply) one generator's nameplate. buildPower MUST build exactly this
+  // number — a divergent build-side default once built MAX_SAFE_INTEGER MW
+  // (~10^14 generators) on an uncapped port while the field showed "75".
+  const displayMwOf = (opt: (typeof power)[number], maxMw: number) =>
+    mwInput[opt.recipe] ?? (maxMw === Infinity ? opt.mwPer : maxMw);
   const buildPower = async (opt: (typeof power)[number]) => {
     if (busy) return;
     const maxMw = maxMwOf(opt);
-    const mw = Math.min(mwInput[opt.recipe] ?? maxMw, maxMw === Infinity ? Number.MAX_SAFE_INTEGER : maxMw);
+    const requested = displayMwOf(opt, maxMw);
+    const mw = maxMw === Infinity ? requested : Math.min(requested, maxMw);
     if (!(mw > 0)) return;
     setBusy(true);
     try {
@@ -490,7 +497,7 @@ export default function MakeFromResources({
         <div className="mfr-power-head mono">⚡ MAKE POWER</div>
         {power.map((opt) => {
           const maxMw = maxMwOf(opt);
-          const mw = mwInput[opt.recipe] ?? (maxMw === Infinity ? opt.mwPer : maxMw);
+          const mw = displayMwOf(opt, maxMw);
           const over = maxMw !== Infinity && mw > maxMw;
           return (
             <div key={opt.recipe} className="mfr-power-row" data-testid={`mfr-power-${opt.fuel}`}>
@@ -506,7 +513,7 @@ export default function MakeFromResources({
               </div>
               <input
                 type="number"
-                min={1}
+                min={0}
                 className="mono mfr-power-mw"
                 value={Math.round(mw)}
                 onChange={(e) =>
@@ -555,9 +562,11 @@ export default function MakeFromResources({
         ) : makeable.length === 0 ? (
           <>
             <div className="mfr-empty">
-              {power.length > 0
+              {power.some((o) => maxMwOf(o) >= 1)
                 ? "No items are fully makeable from these inputs alone — but they can BURN. Build power below, or add more raws (e.g. another ore) to unlock recipes."
-                : "Nothing is fully makeable from these inputs alone. Add more raw resources (e.g. another ore) to unlock recipes."}
+                : power.length > 0
+                  ? "No items are fully makeable, and the fuel here is already fully committed — claim more nodes to build items or power."
+                  : "Nothing is fully makeable from these inputs alone. Add more raw resources (e.g. another ore) to unlock recipes."}
             </div>
             {powerSection}
           </>
@@ -587,8 +596,6 @@ export default function MakeFromResources({
                 </span>
               </label>
             )}
-
-            {powerSection}
 
             {blocked && (
               <div className="mfr-warn" data-testid="mfr-warn">
@@ -653,6 +660,10 @@ export default function MakeFromResources({
                 {busy ? "BUILDING…" : target ? `BUILD ${name(target).toUpperCase()}` : "PICK AN ITEM"}
               </button>
             </footer>
+            {/* AFTER the item footer/warning: a blocked-ITEM warning sitting
+                between the power rows and their BUILD buttons read as a power
+                shortfall. Power is its own self-contained block down here. */}
+            {powerSection}
           </>
         )}
       </div>
