@@ -1,4 +1,4 @@
-# Caddy static server for the FICSIT Planner web build (Web Phase 4a).
+# Caddy static server for the MANIFOLD web build (Web Phase 4a).
 # The whole app runs client-side (wasm Session in a Web Worker over IndexedDB) —
 # there is NO backend here, so this only serves the built `dist-web` bundle.
 #
@@ -31,8 +31,28 @@
 	@html path / /index.html
 	header @html Cache-Control "no-cache"
 
-	# Single-page app: unknown paths fall back to the shell (harmless here — the
-	# app has no client-side router yet — but correct if one is added later).
-	try_files {path} /index.html
-	file_server
+	# Public assets (icons, map tiles) are NOT fingerprinted, so no `immutable`:
+	# a short shared max-age with revalidation keeps them cheap without letting
+	# any bad response outlive the next reload.
+	@public path /icons/* /map/*
+	header @public Cache-Control "public, max-age=3600, stale-while-revalidate=86400"
+
+	# Asset paths must 404 when missing — NEVER fall back to index.html. During
+	# a redeploy hiccup the SPA fallback answered icon requests with 200 + HTML;
+	# with no explicit cache policy the browser heuristically CACHED those
+	# HTML-as-PNG bodies, and every game icon stayed "broken" until a hard
+	# refresh (2026-07-19 live incident). Errors must stay errors: a 404 is
+	# retried on the next load, a cached 200 is not.
+	@asset path /assets/* /icons/* /map/*
+	handle @asset {
+		file_server
+	}
+
+	# Single-page app: unknown NAVIGATION paths fall back to the shell
+	# (harmless here — the app has no client-side router yet — but correct if
+	# one is added later).
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
 }
