@@ -18,9 +18,9 @@ async function hydrate(request: APIRequestContext) {
   return (await request.get(`${API}/hydrate`)).json();
 }
 const inPortsOf = (h: { plan: { ports: object } }, f: string, item: string) =>
-  Object.values(h.plan.ports as Record<string, { factory: string; direction: string; item: string; id: string }>).filter(
-    (p) => p.factory === f && p.direction === "in" && p.item === item,
-  );
+  Object.values(
+    h.plan.ports as Record<string, { factory: string; direction: string; item: string; id: string; rateCeiling: number | null }>,
+  ).filter((p) => p.factory === f && p.direction === "in" && p.item === item);
 
 test("release ⇄ re-claim round-trips: wired port reused, unwired port deleted", async ({ page, request }) => {
   await resetView(request);
@@ -45,6 +45,7 @@ test("release ⇄ re-claim round-trips: wired port reused, unwired port deleted"
     let h = await hydrate(request);
     expect(inPortsOf(h, f, "Desc_Coal_C")).toHaveLength(1);
     const portId = inPortsOf(h, f, "Desc_Coal_C")[0].id;
+    const mk1Ceil = inPortsOf(h, f, "Desc_Coal_C")[0].rateCeiling!;
 
     // ---- WIRE the port (a generator eats the coal) ----
     const gid = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_GeneratorCoal_C", recipe: "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C", count: 1, clock: 1, graphPos: { x: 300, y: 80 }, floor: 0 }])).created[0];
@@ -69,13 +70,17 @@ test("release ⇄ re-claim round-trips: wired port reused, unwired port deleted"
     expect(inPortsOf(h, f, "Desc_Coal_C")).toHaveLength(1); // orphan, still wired
     expect(Object.values(h.plan.edges as object)).toHaveLength(1);
 
-    // ---- RE-CLAIM: must REUSE the orphan, not add a second port ----
+    // ---- RE-CLAIM (at Mk2): must REUSE the orphan AND retune its ceiling ----
+    const claimFor2 = drawer.locator("section:has(h3:has-text('CLAIM FOR'))");
+    await claimFor2.locator("select").nth(1).selectOption("Build_MinerMk2_C");
     await page.getByTestId("btn-claim").click();
     await expect(claimsSection.locator(".drawer-row")).toHaveCount(1);
     h = await hydrate(request);
     const ports = inPortsOf(h, f, "Desc_Coal_C");
     expect(ports).toHaveLength(1); // regression: this was 2 (then 6 with 3 nodes)
     expect(ports[0].id).toBe(portId); // the SAME port — its belts relight
+    // ...retuned to the NEW claim's rate (Mk2 = 2× Mk1), not left stale
+    expect(ports[0].rateCeiling).toBeCloseTo(mk1Ceil * 2);
     expect(Object.values(h.plan.edges as object)).toHaveLength(1);
 
     // ---- unwired round-trip: release deletes the port outright ----
