@@ -128,9 +128,9 @@ test("release_node on an imported Built claim is rejected (built-immutable)", as
 // subsequent /api/redo restores factories[F].name=="NOOP2". A no-op must
 // neither truncate the redo tail nor commit an undoable step.
 //
-// KNOWN MISMATCH (documented, do NOT weaken): the current code commits an empty
-// entry — canRedo flips to false and the rename can no longer be redone — so
-// this probe is EXPECTED to fail at the "canRedo stays true" / redo assertions.
+// (Fixed by audit #122: Session::edit skips the journal for empty
+// transactions. This test is the permanent regression guard — if it fails,
+// the no-op/redo bug is BACK; it is not a known mismatch.)
 // ---------------------------------------------------------------------------
 
 test("a no-op command must not destroy the redo tail", async ({ request }) => {
