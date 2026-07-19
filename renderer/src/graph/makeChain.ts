@@ -115,6 +115,106 @@ export interface ChainBelt {
   tier: number;
 }
 
+export interface PortShare {
+  id: string;
+  rate: number;
+}
+
+/** Split one belt's raw demand across same-item source ports, consuming each
+ *  port's remaining headroom in order — the in-graph merge IS the "merger":
+ *  one belt per port that contributes. Mutates `pool[].left` so successive
+ *  calls (several consumers of the same raw) keep drawing from what's left.
+ *  Any remainder beyond total headroom piles onto the last contributing port:
+ *  the capacity guard blocks real overshoot before build, so this only absorbs
+ *  float dust — and a knowingly-overloaded port shows honestly as capped. */
+export function splitAcrossPorts(pool: { id: string; left: number }[], rate: number): PortShare[] {
+  const out: PortShare[] = [];
+  let need = rate;
+  for (const p of pool) {
+    if (need <= 1e-9) break;
+    const take = Math.min(p.left, need);
+    if (take > 1e-9) {
+      out.push({ id: p.id, rate: take });
+      p.left -= take;
+      need -= take;
+    }
+  }
+  if (need > 1e-9) {
+    if (out.length > 0) out[out.length - 1].rate += need;
+    else if (pool.length > 0) out.push({ id: pool[0].id, rate: need });
+  }
+  return out;
+}
+
+// ---- raw-supply wiring: real mergers/splitters, like a hand build ----------
+//
+// A raw drawn from several claims, or feeding several consumers, is wired
+// through the SAME junction entities a player would place: a chain of 3-in
+// mergers combines the claims into one stream, a chain of 3-out splitters
+// fans it out to the consumers. One port → one consumer stays a direct belt.
+
+export interface RawConsumer {
+  /** produced item whose group consumes this raw (unique per raw: demand is
+   *  summed per item, so each consuming group appears once). */
+  key: string;
+  rate: number;
+}
+export type WiringRef =
+  | { kind: "port"; id: string }
+  | { kind: "junction"; key: string }
+  | { kind: "consumer"; key: string };
+export interface RawWiring {
+  junctions: { key: string; kind: "merger" | "splitter" }[];
+  edges: { from: WiringRef; to: WiringRef; rate: number }[];
+}
+
+/** Wire `shares` (per-port supply of ONE raw) to `consumers` through game-cap
+ *  junctions (merger 3-in/1-out, splitter 1-in/3-out), chaining junctions
+ *  manifold-style when a single one is too small. Pure — the caller turns
+ *  junction keys into add_junction commands and consumer keys into group ids. */
+export function planRawWiring(shares: PortShare[], consumers: RawConsumer[]): RawWiring {
+  const junctions: RawWiring["junctions"] = [];
+  const edges: RawWiring["edges"] = [];
+  let seq = 0;
+  const newJunction = (kind: "merger" | "splitter") => {
+    const key = `${kind}-${seq++}`;
+    junctions.push({ key, kind });
+    return key;
+  };
+
+  // 1) merge the supply into one logical stream. Chain: the first merger takes
+  //    3 ports; each further merger takes the previous stream + 2 more ports.
+  let feed: { ref: WiringRef; rate: number };
+  if (shares.length === 1) {
+    feed = { ref: { kind: "port", id: shares[0].id }, rate: shares[0].rate };
+  } else {
+    const queue = shares.map((s) => ({ ref: { kind: "port", id: s.id } as WiringRef, rate: s.rate }));
+    feed = queue.shift()!;
+    while (queue.length) {
+      const m = newJunction("merger");
+      const ins = [feed, ...queue.splice(0, 2)]; // ≤3 inputs per merger
+      for (const i of ins) edges.push({ from: i.ref, to: { kind: "junction", key: m }, rate: i.rate });
+      feed = { ref: { kind: "junction", key: m }, rate: ins.reduce((s, x) => s + x.rate, 0) };
+    }
+  }
+
+  // 2) fan out to the consumers. Chain: each splitter feeds 2 consumers + the
+  //    next splitter; the last one feeds up to 3 consumers.
+  if (consumers.length === 1) {
+    edges.push({ from: feed.ref, to: { kind: "consumer", key: consumers[0].key }, rate: consumers[0].rate });
+  } else {
+    const rem = [...consumers];
+    while (rem.length) {
+      const s = newJunction("splitter");
+      edges.push({ from: feed.ref, to: { kind: "junction", key: s }, rate: feed.rate });
+      const take = rem.splice(0, rem.length <= 3 ? rem.length : 2);
+      for (const c of take) edges.push({ from: { kind: "junction", key: s }, to: { kind: "consumer", key: c.key }, rate: c.rate });
+      feed = { ref: { kind: "junction", key: s }, rate: rem.reduce((sum, c) => sum + c.rate, 0) };
+    }
+  }
+  return { junctions, edges };
+}
+
 export interface ChainPlan {
   target: string;
   rate: number;

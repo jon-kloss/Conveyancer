@@ -133,11 +133,23 @@ fn demand_pass(
                     .find(|g| &g.id == gid)
                     .map(|g| group_weight(g, item))
                     .unwrap_or(0.0),
+                // Input weight: the ceiling BOUNDED BY the edge's belt — and a
+                // ceiling-less port is open supply (bounded only by its belt),
+                // NEVER 0. Weight 0 on an open port sent 100% of a parallel
+                // same-item pull through the capped sibling, clamping the drag
+                // preview at one node's rate while the open port sat unused
+                // (MAKE's pooled wiring makes this topology routine). Weights
+                // stay static per snapshot — draw-aware weights would break
+                // the piecewise-linear/monotone contract the hard-stop
+                // bracketing above depends on; T1 settles the exact split.
                 NodeRef::Input(pid) => s
                     .inputs
                     .iter()
                     .find(|p| &p.id == pid)
-                    .and_then(|p| p.ceiling)
+                    .map(|p| match p.ceiling {
+                        Some(c) => c.min(s.edges[ei].capacity),
+                        None => s.edges[ei].capacity,
+                    })
                     .unwrap_or(0.0),
                 NodeRef::Output(_) => 0.0,
                 // junctions relay whatever feeds them; weight them equally

@@ -1094,3 +1094,88 @@ fn driven_generator_does_not_clobber_an_edited_targets_ceiling() {
         assert_close(tc.max_rate, 60.0, "ceiling is the full coal-limited rate");
     }
 }
+
+/// #118 regression topology: MAKE pools one raw from SEVERAL claims — two
+/// same-item input ports feeding one group in parallel (directly here; via a
+/// merger in the real wiring, which junction conservation makes equivalent).
+/// Port A is a capped claim; port B is open supply (no ceiling).
+fn pooled_inputs_snapshot(target: f64) -> FactorySnapshot {
+    FactorySnapshot {
+        groups: vec![group(
+            "smelt",
+            recipe(
+                "Recipe_IngotIron_C",
+                "smelter",
+                2.0,
+                &[("ore", 1.0)],
+                &[("ingot", 1.0)],
+                4.0,
+            ),
+        )],
+        edges: vec![
+            edge(
+                "e-a",
+                NodeRef::Input("in-a".into()),
+                g("smelt"),
+                "ore",
+                60.0,
+            ),
+            edge(
+                "e-b",
+                NodeRef::Input("in-b".into()),
+                g("smelt"),
+                "ore",
+                60.0,
+            ),
+            edge(
+                "e-out",
+                g("smelt"),
+                NodeRef::Output("out-ingot".into()),
+                "ingot",
+                780.0,
+            ),
+        ],
+        inputs: vec![
+            InputPortSpec {
+                id: "in-a".into(),
+                item: "ore".into(),
+                ceiling: Some(60.0),
+            },
+            InputPortSpec {
+                id: "in-b".into(),
+                item: "ore".into(),
+                ceiling: None,
+            },
+        ],
+        junctions: vec![],
+        outputs: vec![OutputPortSpec {
+            id: "out-ingot".into(),
+            item: "ingot".into(),
+            rate: target,
+        }],
+    }
+}
+
+#[test]
+fn t0_weights_open_input_by_its_belt_not_zero() {
+    // Before the fix a ceiling-less port weighed 0.0, so the whole 100/min
+    // pull routed through capped port A and clamped the preview at 60/min
+    // while B sat unused. Weighted min(ceiling, belt) / belt-for-open, the
+    // pull splits 50/50 — feasible, both ports working, target met.
+    let snap = pooled_inputs_snapshot(0.0);
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-ingot".into(),
+            rate: 100.0,
+        },
+    )
+    .unwrap();
+    assert!(
+        !r.clamped,
+        "100/min fits the pooled supply (60 capped + open)"
+    );
+    assert_close(r.edges["e-a"].flow, 50.0, "capped-port share");
+    assert_close(r.edges["e-b"].flow, 50.0, "open-port share");
+    assert_close(r.ports["out-ingot"], 100.0, "target met through the pool");
+}

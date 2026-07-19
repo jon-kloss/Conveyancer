@@ -5,6 +5,7 @@
 
 import { useEffect, useRef } from "react";
 import { useStore } from "../state/store";
+import { modKey } from "../lib/keys";
 
 export default function GraphSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,7 +32,7 @@ export default function GraphSearch() {
       <input
         ref={inputRef}
         value={graphFilter}
-        placeholder="⌘K — find machine, item…"
+        placeholder={`${modKey("K")} — find machine, item…`}
         onChange={(e) => setGraphFilter(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
