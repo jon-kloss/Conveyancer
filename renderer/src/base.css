@@ -251,6 +251,13 @@ button {
   overflow: hidden;
 }
 .item-chip img { display: block; } /* vendored icon fills the tile, no baseline gap */
+/* MANIFOLD low-poly resource chunk: transparent-background art on plain
+   steel — no accent tint fighting the faceted material colors */
+.item-chip.item-chip-flat {
+  background: var(--steel-800);
+  border-color: var(--steel-600);
+}
+.item-chip.item-chip-flat svg { display: block; }
 .item-chip.s20 { width: 20px; height: 20px; font-size: 9px; }
 .item-chip.s28 { width: 28px; height: 28px; font-size: 11px; }
 .item-chip.s40 { width: 40px; height: 40px; font-size: 15px; }
@@ -349,4 +356,37 @@ select {
 input:focus,
 select:focus {
   border-color: var(--signal-500);
+}
+
+/* ---- MANIFOLD brand primitives (handoff §2/§4c) ---- */
+/* UI glyph: ink-300 body, orange only as the in-glyph accent */
+.glyph {
+  color: var(--ink-300);
+  flex-shrink: 0;
+  vertical-align: -3px;
+}
+/* Inline diamond spinner — the ONLY small-wait loader (never beside the
+   expanding-manifold loader on one surface). 9px hollow diamond = a square
+   rotated 45°; the rotation runs 45°→405° so the shape never squares up. */
+.diamond-spin {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--signal-500);
+  animation: diamond-spin 1.1s var(--ease) infinite;
+  flex-shrink: 0;
+}
+@keyframes diamond-spin {
+  from {
+    transform: rotate(45deg);
+  }
+  to {
+    transform: rotate(405deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .diamond-spin {
+    animation: none;
+    transform: rotate(45deg);
+  }
 }

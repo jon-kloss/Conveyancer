@@ -3,6 +3,7 @@
 // The full rail/truck/drone math block arrives in Phase 4.
 
 import { useStore } from "../state/store";
+import Glyph from "../lib/glyphs";
 import { fmtClockS, fmtKm, fmtPercent, fmtPower, fmtRate, flowBand, routeBottleneck, itemLabel } from "../lib/format";
 import { DEFAULT_DRONE_SPEC, DEFAULT_RAIL_SPEC, DEFAULT_TRUCK_SPEC } from "../state/types";
 import type { RailSpec, Route, RouteKind } from "../state/types";
@@ -48,7 +49,9 @@ export default function RouteDrawer({ route }: { route: Route }) {
           <div className="icon-ph s40" />
         )}
         <div className="drawer-title-block">
-          <div className="t-title">BELT ROUTE</div>
+          <div className="t-title" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Glyph name={route.kind.kind} size={16} /> BELT ROUTE
+          </div>
           <div className="mono drawer-sub">
             {dr ? fmtKm(dr.lengthM) : "—"} · MK.{tier} · {fmtRate(dr?.capacity ?? 0)}/min CAP
           </div>

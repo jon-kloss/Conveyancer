@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../state/store";
+import Glyph from "../lib/glyphs";
 import { fmtPower, bottleneckEdges, circuitHeadroom, powerLevel, type PowerLevel } from "../lib/format";
 
 export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
@@ -119,7 +120,7 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   return (
     <footer className="statusbar">
       <span className={`sb-item mono ${powerClass}`} data-testid="sb-power" title={power.title}>
-        PWR {fmtPower(derived.totalPowerMw)}
+        <Glyph name="power" size={12} /> PWR {fmtPower(derived.totalPowerMw)}
         {derived.totalGenerationMw > 0 && <span className="sb-gen"> / {fmtPower(derived.totalGenerationMw)}</span>}
         <span className="sb-powerbar" aria-hidden>
           <span

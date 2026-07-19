@@ -1,6 +1,6 @@
-# FICSIT Planner
+# MANIFOLD
 
-A desktop factory & logistics planner for Satisfactory. Tauri 2 shell, React 19
+A desktop factory & logistics planner for Satisfactory (formerly FICSIT Planner). Tauri 2 shell, React 19
 renderer, Rust core owning canonical state, solvers, and persistence. **The map
 is the source of truth** — factories are placed entities claiming real resource
 nodes, connected by routes with real distances; power is a second network on
@@ -76,7 +76,7 @@ factory (N), run the wizard (P), or import a save (S). The plan persists to
 
 ### Windows: download the exe
 
-Every merge to `main` publishes a portable **FICSIT-Planner.exe** as a GitHub
+Every merge to `main` publishes a portable **MANIFOLD.exe** as a GitHub
 Release (auto-tagged `v0.1.<build#>`) — grab it from the repo's Releases page
 and double-click. Branch pushes upload the same exe as a run artifact instead.
 The renderer is embedded in the binary; the only runtime dependency is

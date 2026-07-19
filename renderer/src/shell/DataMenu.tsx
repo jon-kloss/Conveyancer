@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../state/store";
+import Glyph from "../lib/glyphs";
 import ImportModal from "../import/ImportModal";
 import {
   fsAccessSupported,
@@ -250,7 +251,7 @@ export default function DataMenu() {
               data-testid="btn-import"
             >
               <span className="data-menu-item-label">
-                {__WASM_BACKEND__ && !catalogLoaded ? "② Import save" : "Import save"}
+                <Glyph name="import" size={14} /> {__WASM_BACKEND__ && !catalogLoaded ? "② Import save" : "Import save"}
               </span>
               <span className="data-menu-item-sub">
                 {__WASM_BACKEND__ && !catalogLoaded

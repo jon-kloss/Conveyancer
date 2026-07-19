@@ -12,6 +12,7 @@ import { attachSmoothWheelZoom } from "./smoothZoom";
 import type { CanvasLayerData, NodeRenderState } from "./CanvasLayer";
 import { fromLatLng, toLatLng } from "./maputil";
 import { useStore } from "../state/store";
+import Glyph from "../lib/glyphs";
 import { isEditableTarget } from "../lib/keys";
 import type { WorldNode } from "../state/types";
 import SummaryDrawer from "./SummaryDrawer";
@@ -894,7 +895,7 @@ export default function MapView() {
             + FACTORY <span className="key-hint">N</span>
           </button>
           <button className="btn btn-primary" onClick={() => setWizard({ open: true })} data-testid="btn-wizard">
-            PLAN SUPPLY CHAIN <span className="key-hint">P</span>
+            <Glyph name="wizard" size={14} /> PLAN SUPPLY CHAIN <span className="key-hint">P</span>
           </button>
           <div className="zoom-ctl mono">
             <button onClick={() => zoomBy(-0.5)} aria-label="Zoom out">

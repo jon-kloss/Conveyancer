@@ -27,8 +27,24 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
 
   return (
     <header className="titlebar" data-tauri-drag-region>
+      {/* MANIFOLD mark (brand handoff §1, titlebar-20 geometry): the
+          header-pipe manifold in on-signal dark on the container's existing
+          signal-500 square — one source diamond feeds a bus, three taps
+          deliver to sinks. Diamond = factory, square = infrastructure. */}
       <div className="titlebar-logo" aria-hidden>
-        ◆
+        <svg viewBox="0 0 64 64" width="14" height="14">
+          <path
+            d="M32 14 V26 M14 26 H50 M14 26 V40 M32 26 V40 M50 26 V40"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="6"
+            opacity="0.6"
+          />
+          <path d="M32 0 L42 10 L32 20 L22 10 Z" fill="currentColor" />
+          <path d="M14 37 L22 45 L14 53 L6 45 Z" fill="currentColor" />
+          <path d="M32 37 L40 45 L32 53 L24 45 Z" fill="currentColor" />
+          <path d="M50 37 L58 45 L50 53 L42 45 Z" fill="currentColor" />
+        </svg>
       </div>
       {/* #117: no wordmark — the user knows what the tool is. The crumb stays
           (WORLD MAP is the way home from a factory), search sits CENTERED in

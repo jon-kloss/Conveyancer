@@ -88,8 +88,9 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
         </header>
         <div className="wizard-body import-body">
           {phase?.step === "parsing" && (
-            <div className="mono" style={{ color: "var(--ink-500)" }}>
-              PARSING {phase.name}… (community-reverse-engineered format, in a worker)
+            <div className="mono" style={{ color: "var(--ink-500)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="diamond-spin" aria-hidden /> PARSING {phase.name}… (community-reverse-engineered format,
+              in a worker)
             </div>
           )}
 
