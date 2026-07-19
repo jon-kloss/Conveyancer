@@ -15,7 +15,17 @@ import { useStore } from "../state/store";
 import { fmtRate, itemLabel } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
 import { POWER_ITEM, effClock, effCount, type Command, type EdgeEnd, type Id } from "../state/types";
-import { makeableItems, planChain, splitAcrossPorts, type ChainGroup, type ChainPlan } from "./makeChain";
+import {
+  makeableItems,
+  planChain,
+  planRawWiring,
+  splitAcrossPorts,
+  type ChainGroup,
+  type ChainPlan,
+  type RawConsumer,
+  type RawWiring,
+  type WiringRef,
+} from "./makeChain";
 import { minBeltTier } from "./logistics";
 
 export default function MakeFromResources({
@@ -185,8 +195,7 @@ export default function MakeFromResources({
       // ALL ports carrying each raw, with their remaining headroom — a factory
       // with two claims of the same resource must draw from BOTH (the guard
       // sums them; wiring everything to the first port would starve the chain
-      // at one node's ceiling while the second sits idle). splitAcrossPorts
-      // consumes this pool belt by belt.
+      // at one node's ceiling while the second sits idle).
       const df = derived.factories[factoryId];
       const portPool = new Map<string, { id: Id; left: number }[]>();
       for (const p of inPorts) {
@@ -199,6 +208,23 @@ export default function MakeFromResources({
       for (const item of reuseItems) {
         const prod = existingProducers.get(item);
         if (prod) reuseGroupOf.set(item, prod.id);
+      }
+
+      // Raw supply wiring: allocate each raw's TOTAL demand across its ports,
+      // then route through real merger/splitter junctions (#94/#97) exactly as
+      // a hand build would — mergers combine multiple claims into one stream,
+      // splitters fan one stream out to multiple consumers. A genuine 1:1
+      // stays a plain belt.
+      const rawConsumers = new Map<string, RawConsumer[]>();
+      for (const b of buildCp.belts) {
+        if (!b.fromRaw || reuseGroupOf.has(b.fromItem) || b.toItem === "OUT") continue;
+        rawConsumers.set(b.fromItem, [...(rawConsumers.get(b.fromItem) ?? []), { key: b.toItem, rate: b.rate }]);
+      }
+      const rawWirings = new Map<string, RawWiring>();
+      for (const [item, consumers] of rawConsumers) {
+        const total = consumers.reduce((s, c) => s + c.rate, 0);
+        const shares = splitAcrossPorts(portPool.get(item) ?? [], total);
+        if (shares.length) rawWirings.set(item, planRawWiring(shares, consumers));
       }
 
       // column layout by topological depth, anchored right of the input ports.
@@ -233,11 +259,31 @@ export default function MakeFromResources({
         graphPos: { x: baseX + maxDepth * 300, y: 80 },
       };
 
-      const ids = await dispatch([...groupCmds, outCmd]);
+      // Junctions for the raw manifolds — created with the groups so the edge
+      // pass can reference their ids. Rough positions between the ports and
+      // the first machine column; tidy_layout re-places everything at the end.
+      const junctionMeta: { item: string; key: string }[] = [];
+      const junctionCmds: Command[] = [];
+      for (const [item, w] of rawWirings) {
+        for (const j of w.junctions) {
+          junctionMeta.push({ item, key: j.key });
+          junctionCmds.push({
+            type: "add_junction",
+            factory: factoryId,
+            kind: j.kind,
+            graphPos: { x: baseX - (j.kind === "merger" ? 180 : 90), y: 80 + junctionCmds.length * 110 },
+            floor: 0,
+          });
+        }
+      }
+
+      const ids = await dispatch([...groupCmds, outCmd, ...junctionCmds]);
       if (!ids) return;
       const groupId = new Map<string, Id>();
       buildCp.groups.forEach((g, i) => groupId.set(g.item, ids[i]));
       const outPortId = ids[buildCp.groups.length];
+      const junctionId = new Map<string, Id>();
+      junctionMeta.forEach((m, i) => junctionId.set(`${m.item}:${m.key}`, ids[buildCp.groups.length + 1 + i]));
 
       // Scale reused groups only when their spare capacity can't absorb the new
       // draw: committed output (what they already feed) + the new demand vs the
@@ -306,25 +352,38 @@ export default function MakeFromResources({
         ...[...needCountByGid].map((entry): Command => ({ type: "set_group_count", id: entry[0], count: entry[1] })),
       ];
 
-      const edgeCmds: Command[] = buildCp.belts.flatMap((b): Command[] => {
-        const to: EdgeEnd =
-          b.toItem === "OUT" ? { kind: "port", id: outPortId } : { kind: "group", id: groupId.get(b.toItem)! };
-        if (b.fromRaw && !reuseGroupOf.has(b.fromItem)) {
-          // true raw: split across every port carrying it, by headroom.
-          return splitAcrossPorts(portPool.get(b.fromItem) ?? [], b.rate).map((s) => ({
-            type: "add_edge",
-            factory: factoryId,
-            from: { kind: "port", id: s.id },
-            to,
-            item: b.item,
-            tier: minBeltTier(s.rate),
-          }));
-        }
-        const from: EdgeEnd = b.fromRaw
-          ? { kind: "group", id: reuseGroupOf.get(b.fromItem)! }
-          : { kind: "group", id: groupId.get(b.fromItem)! };
-        return [{ type: "add_edge", factory: factoryId, from, to, item: b.item, tier: b.tier }];
-      });
+      const refEnd = (item: string, r: WiringRef): EdgeEnd =>
+        r.kind === "port"
+          ? { kind: "port", id: r.id }
+          : r.kind === "junction"
+            ? { kind: "junction", id: junctionId.get(`${item}:${r.key}`)! }
+            : { kind: "group", id: groupId.get(r.key)! };
+      const edgeCmds: Command[] = [
+        // raw supply, through the planned merger/splitter manifolds
+        ...[...rawWirings].flatMap(([item, w]) =>
+          w.edges.map(
+            (e): Command => ({
+              type: "add_edge",
+              factory: factoryId,
+              from: refEnd(item, e.from),
+              to: refEnd(item, e.to),
+              item,
+              tier: minBeltTier(e.rate),
+            }),
+          ),
+        ),
+        // produced intermediates, reused feeds, and the final OUT belt
+        ...buildCp.belts
+          .filter((b) => !(b.fromRaw && !reuseGroupOf.has(b.fromItem)))
+          .map((b): Command => {
+            const from: EdgeEnd = b.fromRaw
+              ? { kind: "group", id: reuseGroupOf.get(b.fromItem)! }
+              : { kind: "group", id: groupId.get(b.fromItem)! };
+            const to: EdgeEnd =
+              b.toItem === "OUT" ? { kind: "port", id: outPortId } : { kind: "group", id: groupId.get(b.toItem)! };
+            return { type: "add_edge", factory: factoryId, from, to, item: b.item, tier: b.tier };
+          }),
+      ];
       await dispatch([...scaleCmds, ...edgeCmds]);
       await dispatch([{ type: "tidy_layout", factory: factoryId }]).catch(() => {});
 

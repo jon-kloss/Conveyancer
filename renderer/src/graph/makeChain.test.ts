@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { GameData } from "../state/types";
-import { makeableItems, planChain, splitAcrossPorts } from "./makeChain";
+import { makeableItems, planChain, planRawWiring, splitAcrossPorts } from "./makeChain";
 
 // Minimal synthetic catalog: Iron Ore (raw) → Iron Ingot → {Iron Plate, Iron Rod},
 // plus Water (fluid) → Fake item to prove fluids are excluded.
@@ -114,17 +114,106 @@ describe("splitAcrossPorts", () => {
     expect(pool[0].left).toBe(Infinity);
   });
 
-  it("piles float dust / overshoot onto the last contributing port instead of dropping it", () => {
+  it("piles float dust / overshoot onto the LAST contributing port — never the first", () => {
     const pool = [
       { id: "a", left: 30 },
       { id: "b", left: 30 },
     ];
-    const shares = splitAcrossPorts(pool, 70); // guard would block this; wiring must not drop 10
-    expect(shares.reduce((s, x) => s + x.rate, 0)).toBeCloseTo(70);
-    expect(shares[shares.length - 1].id).toBe("b");
+    // guard would block this; wiring must not drop the 10 — and the overload
+    // must land on b so the UI caps the RIGHT port
+    expect(splitAcrossPorts(pool, 70)).toEqual([
+      { id: "a", rate: 30 },
+      { id: "b", rate: 40 },
+    ]);
+  });
+
+  it("wires residual demand to the first port when the whole pool is exhausted", () => {
+    // reachable through the guard's 1e-6 vs the splitter's 1e-9 tolerance gap:
+    // an earlier belt drains the pool exactly, float dust remains on the next.
+    const pool = [
+      { id: "a", left: 0 },
+      { id: "b", left: 0 },
+    ];
+    expect(splitAcrossPorts(pool, 10)).toEqual([{ id: "a", rate: 10 }]);
+  });
+
+  it("skips a zero-headroom port at the head of the pool", () => {
+    // port a is fully drawn by existing lines — the demand belongs to b
+    const pool = [
+      { id: "a", left: 0 },
+      { id: "b", left: 60 },
+    ];
+    expect(splitAcrossPorts(pool, 30)).toEqual([{ id: "b", rate: 30 }]);
+    expect(pool[1].left).toBeCloseTo(30);
   });
 
   it("returns empty for an empty pool (no port to wire)", () => {
     expect(splitAcrossPorts([], 10)).toEqual([]);
+  });
+});
+
+describe("planRawWiring", () => {
+  const share = (id: string, rate: number) => ({ id, rate });
+  const cons = (key: string, rate: number) => ({ key, rate });
+
+  it("1 port → 1 consumer: a plain belt, no junctions", () => {
+    const w = planRawWiring([share("p1", 45)], [cons("rod", 45)]);
+    expect(w.junctions).toEqual([]);
+    expect(w.edges).toEqual([{ from: { kind: "port", id: "p1" }, to: { kind: "consumer", key: "rod" }, rate: 45 }]);
+  });
+
+  it("2 ports → 1 consumer: one merger (the 2-SAM-node case)", () => {
+    const w = planRawWiring([share("p1", 60), share("p2", 40)], [cons("sam", 100)]);
+    expect(w.junctions).toEqual([{ key: "merger-0", kind: "merger" }]);
+    expect(w.edges).toEqual([
+      { from: { kind: "port", id: "p1" }, to: { kind: "junction", key: "merger-0" }, rate: 60 },
+      { from: { kind: "port", id: "p2" }, to: { kind: "junction", key: "merger-0" }, rate: 40 },
+      { from: { kind: "junction", key: "merger-0" }, to: { kind: "consumer", key: "sam" }, rate: 100 },
+    ]);
+  });
+
+  it("1 port → 2 consumers: one splitter", () => {
+    const w = planRawWiring([share("p1", 90)], [cons("a", 60), cons("b", 30)]);
+    expect(w.junctions).toEqual([{ key: "splitter-0", kind: "splitter" }]);
+    expect(w.edges).toEqual([
+      { from: { kind: "port", id: "p1" }, to: { kind: "junction", key: "splitter-0" }, rate: 90 },
+      { from: { kind: "junction", key: "splitter-0" }, to: { kind: "consumer", key: "a" }, rate: 60 },
+      { from: { kind: "junction", key: "splitter-0" }, to: { kind: "consumer", key: "b" }, rate: 30 },
+    ]);
+  });
+
+  it("2 ports → 2 consumers: merger then splitter (manifold)", () => {
+    const w = planRawWiring([share("p1", 60), share("p2", 60)], [cons("a", 70), cons("b", 50)]);
+    expect(w.junctions.map((j) => j.kind)).toEqual(["merger", "splitter"]);
+    const mergerOut = w.edges.find((e) => e.from.kind === "junction" && e.to.kind === "junction")!;
+    expect(mergerOut.rate).toBeCloseTo(120);
+  });
+
+  it("4 ports → 1 consumer: chained mergers respect the 3-in cap", () => {
+    const w = planRawWiring(
+      [share("p1", 30), share("p2", 30), share("p3", 30), share("p4", 30)],
+      [cons("x", 120)],
+    );
+    expect(w.junctions.filter((j) => j.kind === "merger")).toHaveLength(2);
+    // no merger receives more than 3 inputs
+    for (const j of w.junctions) {
+      const ins = w.edges.filter((e) => e.to.kind === "junction" && e.to.key === j.key).length;
+      expect(ins).toBeLessThanOrEqual(3);
+    }
+    // conservation: consumer receives the full 120
+    const last = w.edges.find((e) => e.to.kind === "consumer")!;
+    expect(last.rate).toBeCloseTo(120);
+  });
+
+  it("1 port → 4 consumers: chained splitters respect the 3-out cap", () => {
+    const w = planRawWiring([share("p1", 100)], [cons("a", 25), cons("b", 25), cons("c", 25), cons("d", 25)]);
+    expect(w.junctions.filter((j) => j.kind === "splitter")).toHaveLength(2);
+    for (const j of w.junctions) {
+      const outs = w.edges.filter((e) => e.from.kind === "junction" && e.from.key === j.key).length;
+      expect(outs).toBeLessThanOrEqual(3);
+    }
+    // every consumer is fed exactly once
+    const fed = w.edges.filter((e) => e.to.kind === "consumer").map((e) => (e.to as { key: string }).key);
+    expect(fed.sort()).toEqual(["a", "b", "c", "d"]);
   });
 });
