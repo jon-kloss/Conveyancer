@@ -2,7 +2,7 @@
 // TAB toggles it as a HUD. Tabs carry live count badges; rows re-audit on
 // every change (the store is already event-sourced, so rows are always live).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Glyph from "../lib/glyphs";
 import { useStore } from "../state/store";
 import {
@@ -180,6 +180,31 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
   const setWizard = useStore((s) => s.setWizard);
   const [tab, setTab] = useState<Tab>("saturation");
   const [pinned, setPinned] = useState(false);
+  // ---- MANIFOLD motion (§5) ----
+  const reducedMotion =
+    typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // 7f — a recompute landing while the drawer is open sweeps the rows (2px
+  // orange bar, RE-AUDITING tag) and lets the values settle. Keyed on
+  // planHash: the honest "the audit really re-ran" signal.
+  const drawerPlanHash = useStore((s) => s.planHash);
+  const [reauditAt, setReauditAt] = useState(0);
+  const prevHashRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevHashRef.current;
+    prevHashRef.current = drawerPlanHash;
+    if (!open || reducedMotion || prev === null || prev === drawerPlanHash) return;
+    setReauditAt(Date.now());
+    const t = window.setTimeout(() => setReauditAt(0), 1200);
+    return () => window.clearTimeout(t);
+  }, [drawerPlanHash, open, reducedMotion]);
+  // 7i — the brownout TRACE playback: which circuit is tracing, since when.
+  const [traceSim, setTraceSim] = useState<{ circuit: string; at: number } | null>(null);
+  useEffect(() => {
+    if (!traceSim) return;
+    const steps = derived.circuits.find((c) => c.name === traceSim.circuit)?.switches.length ?? 0;
+    const t = window.setTimeout(() => setTraceSim(null), steps * 700 + 1200);
+    return () => window.clearTimeout(t);
+  }, [traceSim, derived.circuits]);
 
   // PR 9 openAudit action: consume a store-level tab request (App has already
   // opened the drawer for it) and clear it so it fires once.
@@ -330,7 +355,9 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
           </button>
         ))}
         <span className="mono audit-live">
-          LIVE — re-audits on every change · {(derived.recomputeUs / 1000).toFixed(1)}ms
+          {/* 7f: the tag narrates a real recompute for the sweep's window */}
+          {reauditAt > 0 ? "RE-AUDITING" : "LIVE — re-audits on every change"} ·{" "}
+          {(derived.recomputeUs / 1000).toFixed(1)}ms
         </span>
         <button className={`btn btn-ghost audit-pin ${pinned ? "active" : ""}`} onClick={() => setPinned(!pinned)}>
           PIN
@@ -340,7 +367,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         </button>
       </header>
 
-      <div className="audit-body">
+      <div className={`audit-body ${reauditAt > 0 ? "reauditing" : ""}`}>
         {tab === "saturation" && (
           <>
             {satRows.length === 0 && <div className="drawer-empty">No routes yet.</div>}
@@ -564,21 +591,29 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
                       <span className="mono audit-trend">—</span>
                       <span className="audit-actions">
                         <button
-                          className="chip"
-                          onClick={() => {
-                            const first = c.switches[0];
-                            if (first) {
-                              setView({ mode: "map" });
-                              setSelection({ kind: "switch", id: first.id });
-                            }
-                          }}
+                          className={`chip ${traceSim?.circuit === c.name ? "warn" : ""}`}
+                          // Motion 7i: the circuit-level TRACE plays the shed
+                          // order IN PLACE, down the priority list — each row
+                          // flashes flow-crit then dims, in sequence. The
+                          // per-switch TRACE chips below still jump to the map.
+                          onClick={() => setTraceSim({ circuit: c.name, at: Date.now() })}
+                          data-testid={`brownout-trace-${c.name}`}
                         >
                           TRACE
                         </button>
                       </span>
                     </div>
-                    {c.switches.map((sw) => (
-                      <div className="audit-row" key={sw.id} data-testid="switch-row">
+                    {c.switches.map((sw, swi) => (
+                      <div
+                        className={`audit-row ${traceSim?.circuit === c.name && !reducedMotion ? "shed-step" : ""}`}
+                        style={
+                          traceSim?.circuit === c.name && !reducedMotion
+                            ? ({ "--shed-i": swi } as CSSProperties)
+                            : undefined
+                        }
+                        key={sw.id}
+                        data-testid="switch-row"
+                      >
                         <span className="audit-name">
                           {c.name} switch · sheds {fmtPower(sw.downstreamMw)}
                         </span>

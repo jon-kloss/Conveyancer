@@ -9,6 +9,15 @@ import { flowBand } from "../lib/format";
 import { RESOURCE_POLYS, type ResourcePrim } from "../lib/resourcePolys";
 import { RESOURCE_ICON_BY_ITEM } from "../lib/resourceIcons";
 import { toLatLng } from "./maputil";
+import {
+  CONVERGE_MS,
+  ROUTE_DRAW_MS,
+  TETHER_DRAW_MS,
+  easeOut,
+  partialPath,
+  tetherKey,
+  type MapMotion,
+} from "./mapMotion";
 
 export interface NodeRenderState {
   claims: number;
@@ -90,6 +99,9 @@ export interface CanvasLayerData {
     modifyRings: { x: number; y: number }[];
     lines: { from: { x: number; y: number }; to: { x: number; y: number }; power: boolean }[];
   } | null;
+  /** MANIFOLD motion (§5: 7a/7c/7e) — transient draw-in choreography. Null
+   *  under prefers-reduced-motion (MapView never sets it there). */
+  motion: MapMotion | null;
 }
 
 const css = (name: string) =>
@@ -244,13 +256,22 @@ export class MapCanvasLayer extends L.Layer {
     return this.data.routes.filter((r) => r.flow > 0);
   }
 
+  /** MANIFOLD motion (§5): a transient draw-in window is live. Entities the
+   *  static canvas defers (born tethers/routes) are hidden ONLY while the
+   *  loop actually runs — under reduced motion / hidden tab the loop never
+   *  starts and everything renders instantly. */
+  private motionLive(): boolean {
+    return this.animRaf != null && this.data.motion != null && Date.now() < this.data.motion.until;
+  }
+
   /** Start/stop the RAF loop so the animation never burns background CPU:
-   *  it runs only with ≥1 flowing route, a visible document, and no
-   *  reduced-motion preference. */
+   *  it runs only with ≥1 flowing route (or a live motion window), a visible
+   *  document, and no reduced-motion preference. */
   private syncAnimLoop = () => {
+    const motionWanted = this.data.motion != null && Date.now() < this.data.motion.until;
     const want =
       this.animCanvas != null &&
-      this.flowingRoutes().length > 0 &&
+      (this.flowingRoutes().length > 0 || motionWanted) &&
       document.visibilityState === "visible" &&
       !this.reduceMotion?.matches;
     if (want && this.animRaf == null) {
@@ -260,6 +281,8 @@ export class MapCanvasLayer extends L.Layer {
       this.animRaf = null;
       const ctx = this.animCanvas?.getContext("2d");
       if (ctx && this.animCanvas) ctx.clearRect(0, 0, this.animCanvas.width, this.animCanvas.height);
+      // restore anything the motion window deferred on the static canvas
+      this.redraw();
     }
   };
 
@@ -317,6 +340,79 @@ export class MapCanvasLayer extends L.Layer {
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;
     ctx.globalAlpha = 1;
+    this.drawMotion(ctx, map);
+  }
+
+  /** MANIFOLD §5 draw-in overlays (7a tethers, 7e routes, 7c converges) —
+   *  rendered on the anim layer while their windows run; the static canvas
+   *  defers the same entities (see drawRoutes/drawClaimLinks) so the draw-in
+   *  is the only copy on screen. On expiry the loop stops and syncAnimLoop's
+   *  cancel branch repaints the static canvas with everything restored. */
+  private drawMotion(ctx: CanvasRenderingContext2D, map: L.Map) {
+    const motion = this.data.motion;
+    if (!motion) return;
+    const now = Date.now();
+    if (now >= motion.until) {
+      this.syncAnimLoop();
+      return;
+    }
+    // 7a — claim tethers draw node → factory (dash-clip via partialPath)
+    for (const link of this.data.claimLinks) {
+      const born = motion.tetherBorn[tetherKey(link.node)];
+      if (born === undefined) continue;
+      const t = easeOut((now - born) / TETHER_DRAW_MS);
+      if (t <= 0) continue;
+      const a = map.latLngToContainerPoint(toLatLng(link.node));
+      const b = map.latLngToContainerPoint(toLatLng(link.factory));
+      const pts = partialPath([a, b], t);
+      if (pts.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(pts[1].x, pts[1].y);
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = css("--bp-400");
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.9;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+    // 7e — a just-bound route draws A → B along its real path
+    for (const r of this.data.routes) {
+      const born = motion.routeBorn[r.id];
+      if (born === undefined) continue;
+      const t = easeOut((now - born) / ROUTE_DRAW_MS);
+      if (t <= 0) continue;
+      const pts = partialPath(
+        this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes),
+        t,
+      );
+      if (pts.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+      ctx.setLineDash([8, 6]);
+      ctx.strokeStyle = css("--bp-400");
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // 7c — parsed-machine dots (iron-tint grays) converge on the ◆ centroid
+    for (const cl of motion.clusters) {
+      const t = (now - cl.startAt) / CONVERGE_MS;
+      if (t <= 0 || t >= 1.1) continue;
+      const c = map.latLngToContainerPoint(toLatLng({ x: cl.x, y: cl.y }));
+      const pull = easeOut(t);
+      const fade = t > 0.9 ? 1 - (t - 0.9) / 0.2 : 1;
+      ctx.fillStyle = css("--ink-500");
+      ctx.globalAlpha = 0.85 * Math.max(0, fade);
+      for (const d of cl.dots) {
+        ctx.beginPath();
+        ctx.arc(c.x + d.dx * (1 - pull), c.y + d.dy * (1 - pull), 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
   }
 
   /** Hit-test nodes in container-pixel space: NEAREST node within 12px, with
@@ -542,6 +638,9 @@ export class MapCanvasLayer extends L.Layer {
     // pass 1: every line, with map-notation kind glyphs — the line itself
     // states direction and transport kind even when its label chip is culled
     for (const r of this.data.routes) {
+      // motion 7e: while a just-born route's draw-in runs on the anim layer,
+      // the static copy stays off — only while the loop truly runs.
+      if (this.motionLive() && this.data.motion!.routeBorn[r.id] !== undefined) continue;
       const pts = this.lanePts(r.path.map((p) => map.latLngToContainerPoint(toLatLng(p))), r.lane, r.lanes);
       if (pts.length < 2) continue;
       // efficiency grammar: green = good (incl. FULL meeting demand), amber
@@ -782,6 +881,8 @@ export class MapCanvasLayer extends L.Layer {
   private drawClaimLinks(ctx: CanvasRenderingContext2D, map: L.Map) {
     const signal = css("--signal-500");
     for (const link of this.data.claimLinks) {
+      // motion 7a: a just-born tether draws in on the anim layer instead.
+      if (this.motionLive() && this.data.motion!.tetherBorn[tetherKey(link.node)] !== undefined) continue;
       const a = map.latLngToContainerPoint(toLatLng(link.node));
       const b = map.latLngToContainerPoint(toLatLng(link.factory));
       const color = link.conflict
