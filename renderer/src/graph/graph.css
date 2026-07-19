@@ -1232,3 +1232,50 @@
 .ctx-floor.new {
   color: var(--flow-ok);
 }
+
+/* ---- MAKE POWER (#119): generator-bank rows in the MFR modal ---- */
+.mfr-power {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--steel-700);
+}
+.mfr-power-head {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--flow-warn);
+}
+.mfr-power-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mfr-power-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.mfr-power-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-100);
+}
+.mfr-power-sub {
+  font-size: 10.5px;
+  color: var(--ink-500);
+}
+.mfr-power-mw {
+  width: 72px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  background: var(--steel-800);
+  text-align: right;
+}
+.mfr-power-note {
+  font-size: 10px;
+  color: var(--ink-faint);
+}
