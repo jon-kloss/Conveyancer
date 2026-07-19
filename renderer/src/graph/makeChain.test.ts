@@ -278,3 +278,63 @@ describe("powerOptions / sizePowerBank", () => {
     expect(s.fuelNeed).toBeCloseTo(30);
   });
 });
+
+describe("powerOptions exclusions + clock floor (review hardening)", () => {
+  const gen = (over: object) => ({
+    className: "Recipe_Power_X",
+    displayName: "X",
+    durationS: 60,
+    ingredients: [["Desc_Coal_C", 15]],
+    products: [["__PowerMW", 75]],
+    producedIn: ["Build_GeneratorCoal_C"],
+    alternate: false,
+    ...over,
+  });
+  const cat = (recipeOver: object, itemsOver: object = {}) =>
+    ({
+      items: {
+        Desc_Coal_C: { className: "Desc_Coal_C", displayName: "Coal", form: "RF_SOLID", stackSize: "" },
+        Desc_LiquidFuel_C: { className: "Desc_LiquidFuel_C", displayName: "Fuel", form: "RF_LIQUID", stackSize: "" },
+        Desc_Water_C: { className: "Desc_Water_C", displayName: "Water", form: "RF_LIQUID", stackSize: "" },
+        ...itemsOver,
+      },
+      machines: {
+        Build_GeneratorCoal_C: { className: "Build_GeneratorCoal_C", displayName: "Coal Generator", kind: "generator", powerMw: 75 },
+        Build_Constructor_C: { className: "Build_Constructor_C", displayName: "Constructor", kind: "manufacturer", powerMw: 4 },
+      },
+      recipes: { Recipe_Power_X: gen(recipeOver) },
+    }) as unknown as GameData;
+
+  it("excludes a FLUID fuel even when it's an assigned input (no pipes)", () => {
+    const g = cat({ ingredients: [["Desc_LiquidFuel_C", 20]] });
+    expect(powerOptions(g, new Set(["Desc_LiquidFuel_C"]))).toEqual([]);
+  });
+
+  it("excludes a __PowerMW recipe produced in a NON-generator machine", () => {
+    const g = cat({ producedIn: ["Build_Constructor_C"] });
+    expect(powerOptions(g, new Set(["Desc_Coal_C"]))).toEqual([]);
+  });
+
+  it("excludes multi-ingredient burns (nuclear-style fuel + water)", () => {
+    const g = cat({ ingredients: [["Desc_Coal_C", 15], ["Desc_Water_C", 45]] });
+    expect(powerOptions(g, new Set(["Desc_Coal_C", "Desc_Water_C"]))).toEqual([]);
+  });
+
+  it("excludes multi-product burns (waste output not modeled)", () => {
+    const g = cat({ products: [["__PowerMW", 2500], ["Desc_NuclearWaste_C", 10]] });
+    expect(powerOptions(g, new Set(["Desc_Coal_C"]))).toEqual([]);
+  });
+
+  it("still offers the plain solid single-fuel burn (control)", () => {
+    const g = cat({});
+    expect(powerOptions(g, new Set(["Desc_Coal_C"]))).toHaveLength(1);
+  });
+
+  it("clock floors at the game's 1% minimum; fuel follows the real clock", () => {
+    // 1 MW on a 150 MW nameplate would be 0.67% — impossible in game.
+    const s = sizePowerBank({ recipe: "r", machine: "m", fuel: "f", mwPer: 150, fuelPer: 30 }, 1);
+    expect(s.count).toBe(1);
+    expect(s.clock).toBeCloseTo(0.01);
+    expect(s.fuelNeed).toBeCloseTo(0.3); // 1 gen × 1% × 30/min
+  });
+});

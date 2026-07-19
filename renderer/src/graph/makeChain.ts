@@ -183,11 +183,14 @@ export function powerOptions(g: GameData, available: ReadonlySet<string>): Power
 }
 
 /** Size a bank for `mw`: fewest generators, evenly under-clocked to hit the
- *  target exactly (same shape planChain uses for item groups). */
+ *  target exactly (same shape planChain uses for item groups). Clock floors
+ *  at the game's 1% minimum — a tiny MW ask on a big nameplate builds one
+ *  generator at 1% (slightly over target) rather than an impossible clock;
+ *  fuel follows the ACTUAL clock so the belts match what really burns. */
 export function sizePowerBank(opt: PowerOption, mw: number): { count: number; clock: number; fuelNeed: number } {
   const count = Math.max(1, Math.ceil(mw / opt.mwPer));
-  const clock = mw / (count * opt.mwPer);
-  return { count, clock, fuelNeed: (mw / opt.mwPer) * opt.fuelPer };
+  const clock = Math.max(0.01, mw / (count * opt.mwPer));
+  return { count, clock, fuelNeed: count * clock * opt.fuelPer };
 }
 
 // ---- raw-supply wiring: real mergers/splitters, like a hand build ----------

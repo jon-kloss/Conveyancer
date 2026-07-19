@@ -58,14 +58,55 @@ test("MAKE POWER builds a coal generator bank from pooled coal claims", async ({
     expect(edges.some((e) => e.from.kind === "port" && e.from.id === portA)).toBe(true);
     expect(edges.some((e) => e.from.kind === "port" && e.from.id === portB)).toBe(true);
 
-    // the empire power ledger sees the new generation (statusbar "PWR" is
-    // DRAW — a generators-only factory draws ~0, so assert generation)
+    // The bank actually RUNS: coal genuinely flows down the merger→bank belt
+    // at the pooled 60/min. (totalGenerationMw alone is vacuous here — it
+    // deliberately falls back to nameplate for unsolved factories, so it goes
+    // positive even for a mis-wired bank. Real belt flow can't be faked.)
+    const mergerOutId = (Object.entries(hydrated.plan.edges) as [string, (typeof edges)[number]][]).find(
+      ([, e]) => e.from.kind === "junction" && e.from.id === merger!.id,
+    )![0];
     await expect
       .poll(async () => {
         const h = await (await page.request.get(`${API}/hydrate`)).json();
-        return h.derived?.totalGenerationMw ?? 0;
+        return h.derived?.factories?.[f]?.edges?.[mergerOutId]?.flow ?? 0;
       })
-      .toBeGreaterThan(0);
+      .toBeGreaterThan(59);
+    // ...and the empire ledger sees the generation.
+    const h = await (await page.request.get(`${API}/hydrate`)).json();
+    expect(h.derived?.totalGenerationMw ?? 0).toBeGreaterThan(0);
+
+    // ---- UNCAPPED port (rateCeiling null — a hand-added + IN PORT) ----
+    // Display defaults to ONE generator's nameplate; an untouched BUILD must
+    // build exactly that (regression: the build-side default was
+    // MAX_SAFE_INTEGER MW ≈ 1.2e14 generators while the field showed "75").
+    const f2 = (await edit(request, [{ type: "create_factory", name: "OPEN COAL", position: { x: -2900, y: 2700 }, region: "GRASS FIELDS" }])).created[0];
+    await edit(request, [{ type: "add_port", factory: f2, direction: "in", item: "Desc_Coal_C", rate: 0, rateCeiling: null, graphPos: { x: 0, y: 100 } }]);
+    try {
+      // API edits mid-session don't stream to the client — reset the view
+      // (else the persisted factory mode boots us into f1's graph) and reload
+      await resetView(request);
+      await page.goto("/");
+      await expect(page.getByTestId("map-root")).toBeVisible();
+      await page.locator(".searchbox input").fill("OPEN COAL");
+      await page.keyboard.press("Enter");
+      await page.getByTestId("btn-open-factory").click();
+      await page.getByTestId("btn-make-from-resources").click();
+      const modal2 = page.getByTestId("make-from-resources");
+      const mwField = modal2.getByTestId("mfr-power-mw-Desc_Coal_C");
+      const shown = Number(await mwField.inputValue());
+      await modal2.getByTestId("mfr-power-build-Desc_Coal_C").click();
+      await expect(modal2).toBeHidden();
+      const h2 = await (await page.request.get(`${API}/hydrate`)).json();
+      const bank2 = (Object.values(h2.plan.groups) as { factory: string; machine: string; count: number }[]).find(
+        (g) => g.factory === f2 && g.machine.toLowerCase().includes("generator"),
+      )!;
+      expect(bank2).toBeTruthy();
+      // built exactly what the field showed: nameplate MW → a single generator
+      expect(bank2.count).toBe(Math.ceil(shown / 75));
+      expect(bank2.count).toBeLessThan(10);
+    } finally {
+      await edit(request, [{ type: "delete_factory", id: f2 }]).catch(() => {});
+    }
   } finally {
     await edit(request, [{ type: "delete_factory", id: f }]).catch(() => {});
   }
