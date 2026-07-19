@@ -2177,8 +2177,16 @@ impl Session {
                 // (first.rate > max_rate while the edited target was met) and
                 // mis-scaled `needed` by the wrong target (audit #125).
                 let requested = match trigger {
+                    // Out-direction guard mirrors trigger_for_factory exactly:
+                    // an In-port SetPortRate (raw command API; no shipped UI
+                    // emits one) falls through to the sole-Out-port arm, like
+                    // the synthesized solve it sizes against — its typed rate
+                    // is in INPUT units and must never scale an output-unit
+                    // max_rate.
                     T0Edit::SetTarget { port, rate }
-                        if self.state.ports.get(port).is_some_and(|p| p.factory == fid) =>
+                        if self.state.ports.get(port).is_some_and(|p| {
+                            p.factory == fid && p.direction == PortDirection::Out
+                        }) =>
                     {
                         *rate
                     }

@@ -3434,3 +3434,144 @@ fn multi_output_deficit_scales_by_edited_output_not_first_port() {
         row.needed
     );
 }
+
+/// PR #49 review: a raw In-port SetPortRate (reachable only via the command
+/// API — no shipped UI emits one) must NOT feed its input-unit rate into the
+/// clamped-channel deficit sizing. The Out-direction guard makes it fall to
+/// the sole-Out-port arm, matching trigger_for_factory's synthesized solve:
+/// with the sole Out target fully met by the supply, no deficit row at all.
+#[test]
+fn in_port_rate_edit_does_not_fabricate_a_deficit() {
+    let mut s = Session::in_memory(None).unwrap();
+    // Upstream rod source shipping 40 rods/min.
+    let rod_fid = mk_factory(&mut s, "ROD SRC 2", 0.0);
+    let rod_in = mk_port(
+        &mut s,
+        &rod_fid,
+        PortDirection::In,
+        "Desc_OreIron_C",
+        Some(240.0),
+    );
+    let rod_out = mk_port(&mut s, &rod_fid, PortDirection::Out, "Desc_IronRod_C", None);
+    let smelt = add_group(
+        &mut s,
+        &rod_fid,
+        "Build_SmelterMk1_C",
+        "Recipe_IngotIron_C",
+        gp(200.0, 100.0),
+    );
+    let rods = add_group(
+        &mut s,
+        &rod_fid,
+        "Build_ConstructorMk1_C",
+        "Recipe_IronRod_C",
+        gp(400.0, 100.0),
+    );
+    let g = EdgeEnd::Group;
+    connect_in(
+        &mut s,
+        &rod_fid,
+        EdgeEnd::Port(rod_in),
+        g(smelt.clone()),
+        "Desc_OreIron_C",
+        6,
+    );
+    connect_in(
+        &mut s,
+        &rod_fid,
+        g(smelt),
+        g(rods.clone()),
+        "Desc_IronIngot_C",
+        6,
+    );
+    connect_in(
+        &mut s,
+        &rod_fid,
+        g(rods),
+        EdgeEnd::Port(rod_out.clone()),
+        "Desc_IronRod_C",
+        6,
+    );
+    // Downstream single-output screw factory.
+    let screw_fid = mk_factory(&mut s, "SCREW SINK", 900.0);
+    let screw_in = mk_port(
+        &mut s,
+        &screw_fid,
+        PortDirection::In,
+        "Desc_IronRod_C",
+        None,
+    );
+    let screw_out = mk_port(
+        &mut s,
+        &screw_fid,
+        PortDirection::Out,
+        "Desc_IronScrew_C",
+        None,
+    );
+    let screws = add_group(
+        &mut s,
+        &screw_fid,
+        "Build_ConstructorMk1_C",
+        "Recipe_Screw_C",
+        gp(300.0, 100.0),
+    );
+    connect_in(
+        &mut s,
+        &screw_fid,
+        EdgeEnd::Port(screw_in.clone()),
+        g(screws.clone()),
+        "Desc_IronRod_C",
+        6,
+    );
+    connect_in(
+        &mut s,
+        &screw_fid,
+        g(screws),
+        EdgeEnd::Port(screw_out.clone()),
+        "Desc_IronScrew_C",
+        6,
+    );
+    s.edit(vec![Command::AddRoute {
+        kind: RouteKind::Belt { tier: 6 },
+        from: rod_out.clone(),
+        to: screw_in.clone(),
+        path: vec![
+            MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            MapPos {
+                x: 900.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        ],
+    }])
+    .unwrap();
+    s.edit(vec![Command::SetPortRate {
+        id: rod_out,
+        rate: 40.0,
+    }])
+    .unwrap();
+    // Out target 160 screws = 40 rods — exactly met by the supply.
+    s.edit(vec![Command::SetPortRate {
+        id: screw_out,
+        rate: 160.0,
+    }])
+    .unwrap();
+
+    // Raw In-port rate edit with an arbitrary figure: the response must not
+    // fabricate a deficit (the sole Out target is fully supplied).
+    let resp = s
+        .edit(vec![Command::SetPortRate {
+            id: screw_in,
+            rate: 999.0,
+        }])
+        .unwrap();
+    assert!(
+        resp.derived.deficits.is_empty(),
+        "met sole-Out target: no deficit despite the In-port 999 edit; got {:?}",
+        resp.derived.deficits
+    );
+}
