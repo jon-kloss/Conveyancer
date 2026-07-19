@@ -35,6 +35,9 @@ export interface BeltEdgeData {
   portal: LiftPortal | null;
   onJumpFloor?: (floor: number, edgeId: string) => void;
   dimmed: boolean;
+  /** MANIFOLD motion 7l/7m: freshly-created edge extends from its neighbor
+   *  (scaleX 0→1, 200ms) after this delay — undefined = no mount animation. */
+  mountDelayMs?: number;
   [key: string]: unknown;
 }
 
@@ -140,6 +143,20 @@ export default function BeltEdgeView(props: EdgeProps) {
       ? [data.geom.points[0], data.geom.points[data.geom.points.length - 1]]
       : [];
 
+  // Motion 7l/7m: a just-created belt extends from its neighbor — scaleX 0→1
+  // over 200ms after the choreographed delay (after its card in 7l; just
+  // before its card in a 7m chain). Inline so the delay can vary per edge;
+  // the keyframes live in graph.css and reduced-motion is enforced upstream
+  // (GraphView never sets mountDelayMs under prefers-reduced-motion).
+  const mountAnim: CSSProperties | undefined =
+    data.mountDelayMs !== undefined
+      ? {
+          transformBox: "fill-box",
+          transformOrigin: "left center",
+          animation: `mfd-edge-extend 200ms var(--ease) ${data.mountDelayMs}ms backwards`,
+        }
+      : undefined;
+
   return (
     <>
       <BaseEdge
@@ -153,11 +170,14 @@ export default function BeltEdgeView(props: EdgeProps) {
           strokeLinecap: "round",
           fill: "none",
           opacity: data.dimmed ? 0.15 : 1,
+          ...mountAnim,
         }}
       />
-      {flowing && (
+      {flowing && data.mountDelayMs === undefined && (
         // moving-highlight overlay: dashes travel source→target (negative
-        // dashoffset animation along the RF source→target path direction)
+        // dashoffset animation along the RF source→target path direction).
+        // Suppressed during the mount extend — its dash animation would fight
+        // the extend transform; it appears when the transient mount clears.
         <path
           d={path}
           className="edge-flowing"
@@ -188,7 +208,12 @@ export default function BeltEdgeView(props: EdgeProps) {
           className={`belt-label mono ${data.flowOverlay ? band : ""} ${compact ? "compact" : ""} ${
             data.projected ? "projected" : ""
           } ${data.settled ? "settle" : ""} ${props.selected ? "selected" : ""} ${data.dimmed ? "dimmed" : ""}`}
-          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+          style={{
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            ...(data.mountDelayMs !== undefined
+              ? { animation: `mfd-fade-in 150ms var(--ease) ${data.mountDelayMs + 200}ms backwards` }
+              : {}),
+          }}
           title={fullText}
           data-testid={`belt-label-${data.edge.id}`}
         >
