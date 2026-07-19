@@ -19,6 +19,8 @@ import {
   makeableItems,
   planChain,
   planRawWiring,
+  powerOptions,
+  sizePowerBank,
   splitAcrossPorts,
   type ChainGroup,
   type ChainPlan,
@@ -61,6 +63,9 @@ export default function MakeFromResources({
     () => makeableItems(gamedata, unlocked, available),
     [gamedata, unlocked, available],
   );
+  // MAKE POWER (#119): generator burns runnable from these raws (coal → coal
+  // power, etc.). Sized against the same pooled extraction headroom as items.
+  const power = useMemo(() => powerOptions(gamedata, available), [gamedata, available]);
 
   // Existing groups in THIS factory, indexed by the item they produce — the
   // reuse candidates. (First producer wins if several make the same item.)
@@ -176,6 +181,80 @@ export default function MakeFromResources({
   // changes (different target/rate, or no longer blocked) so a stale "confirm"
   // can never fire a destructive delete on a single click in a new situation.
   useEffect(() => setConfirmFree(false), [target, rate, blocked]);
+
+  // MAKE POWER: build a generator bank sized to the requested MW, fuel wired
+  // through the same merger manifolds as item builds. maxMw per option is
+  // what the pooled fuel headroom can burn.
+  const maxMwOf = (opt: (typeof power)[number]) => {
+    const h = headroom.get(opt.fuel) ?? 0;
+    return h === Infinity ? Infinity : Math.floor((h / opt.fuelPer) * opt.mwPer);
+  };
+  const [mwInput, setMwInput] = useState<Record<string, number>>({});
+  const buildPower = async (opt: (typeof power)[number]) => {
+    if (busy) return;
+    const maxMw = maxMwOf(opt);
+    const mw = Math.min(mwInput[opt.recipe] ?? maxMw, maxMw === Infinity ? Number.MAX_SAFE_INTEGER : maxMw);
+    if (!(mw > 0)) return;
+    setBusy(true);
+    try {
+      const { count, clock, fuelNeed } = sizePowerBank(opt, mw);
+      const df = derived.factories[factoryId];
+      const pool = inPorts
+        .filter((p) => p.item === opt.fuel)
+        .map((p) => ({
+          id: p.id,
+          left: p.rateCeiling == null ? Infinity : Math.max(0, p.rateCeiling - (df?.ports[p.id] ?? 0)),
+        }));
+      const shares = splitAcrossPorts(pool, fuelNeed);
+      if (!shares.length) return;
+      const wiring = planRawWiring(shares, [{ key: "bank", rate: fuelNeed }]);
+
+      const baseX = Math.max(0, ...inPorts.map((p) => p.graphPos.x)) + 300;
+      const cmds: Command[] = [
+        { type: "add_group", factory: factoryId, machine: opt.machine, recipe: opt.recipe, count, clock, graphPos: { x: baseX, y: 80 }, floor: 0 },
+        ...wiring.junctions.map(
+          (j, i): Command => ({
+            type: "add_junction",
+            factory: factoryId,
+            kind: j.kind,
+            graphPos: { x: baseX - 180, y: 80 + i * 110 },
+            floor: 0,
+          }),
+        ),
+      ];
+      const ids = await dispatch(cmds);
+      if (!ids) return;
+      const bankId = ids[0];
+      const junctionId = new Map(wiring.junctions.map((j, i) => [j.key, ids[1 + i]]));
+      const end = (r: WiringRef): EdgeEnd =>
+        r.kind === "port"
+          ? { kind: "port", id: r.id }
+          : r.kind === "junction"
+            ? { kind: "junction", id: junctionId.get(r.key)! }
+            : { kind: "group", id: bankId };
+      await dispatch(
+        wiring.edges.map(
+          (e): Command => ({
+            type: "add_edge",
+            factory: factoryId,
+            from: end(e.from),
+            to: end(e.to),
+            item: opt.fuel,
+            tier: minBeltTier(e.rate),
+          }),
+        ),
+      );
+      await dispatch([{ type: "tidy_layout", factory: factoryId }]).catch(() => {});
+      setSelection(null);
+      pushToast(
+        `Built ${count} × ${gamedata.machines[opt.machine]?.displayName ?? "generator"} — ⚡ ${Math.round(mw)} MW from ${name(opt.fuel)}.`,
+        "success",
+      );
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const freeUp = async () => {
     if (!freeable.length) return;
@@ -401,6 +480,60 @@ export default function MakeFromResources({
     }
   };
 
+  // MAKE POWER rows: one per burnable fuel — MW input defaults to what the
+  // pooled nodes can feed; over-typing offers "build at max" instead of a
+  // silent clamp. Rendered whether or not any ITEM is makeable (a coal-only
+  // factory makes nothing, but it burns).
+  const powerSection =
+    power.length > 0 ? (
+      <div className="mfr-power" data-testid="mfr-power">
+        <div className="mfr-power-head mono">⚡ MAKE POWER</div>
+        {power.map((opt) => {
+          const maxMw = maxMwOf(opt);
+          const mw = mwInput[opt.recipe] ?? (maxMw === Infinity ? opt.mwPer : maxMw);
+          const over = maxMw !== Infinity && mw > maxMw;
+          return (
+            <div key={opt.recipe} className="mfr-power-row" data-testid={`mfr-power-${opt.fuel}`}>
+              <ItemIcon item={opt.fuel} displayName={name(opt.fuel)} size={28} />
+              <div className="mfr-power-info">
+                <span className="mfr-power-name">
+                  {gamedata.machines[opt.machine]?.displayName ?? opt.machine}
+                </span>
+                <span className="mfr-power-sub mono">
+                  ⚡ {opt.mwPer} MW · {fmtRate(opt.fuelPer)}/min {name(opt.fuel)} each
+                  {maxMw !== Infinity ? ` · your nodes feed up to ${maxMw} MW` : ""}
+                </span>
+              </div>
+              <input
+                type="number"
+                min={1}
+                className="mono mfr-power-mw"
+                value={Math.round(mw)}
+                onChange={(e) =>
+                  setMwInput((m) => ({ ...m, [opt.recipe]: Math.max(1, Number(e.target.value) || 1) }))
+                }
+                data-testid={`mfr-power-mw-${opt.fuel}`}
+              />
+              <span className="unit mono">MW</span>
+              <button
+                className="btn btn-primary"
+                disabled={busy || maxMw < 1}
+                onClick={() => void buildPower(opt)}
+                data-testid={`mfr-power-build-${opt.fuel}`}
+                title={maxMw < 1 ? "No fuel headroom left on these nodes" : undefined}
+              >
+                {over ? `BUILD AT ${maxMw} MW` : "BUILD"}
+              </button>
+            </div>
+          );
+        })}
+        <div className="mfr-power-note">
+          In-game coal/fuel plants also need piped water — pipes aren't modeled here, so plan
+          extractors separately.
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="mfr-scrim" data-testid="make-from-resources" onClick={onClose}>
       <div className="mfr-modal" onClick={(e) => e.stopPropagation()}>
@@ -420,10 +553,14 @@ export default function MakeFromResources({
             pick what to make.
           </div>
         ) : makeable.length === 0 ? (
-          <div className="mfr-empty">
-            Nothing is fully makeable from these inputs alone. Add more raw resources (e.g. another ore)
-            to unlock recipes.
-          </div>
+          <>
+            <div className="mfr-empty">
+              {power.length > 0
+                ? "No items are fully makeable from these inputs alone — but they can BURN. Build power below, or add more raws (e.g. another ore) to unlock recipes."
+                : "Nothing is fully makeable from these inputs alone. Add more raw resources (e.g. another ore) to unlock recipes."}
+            </div>
+            {powerSection}
+          </>
         ) : (
           <>
             <div className="mfr-grid" data-testid="mfr-grid">
@@ -450,6 +587,8 @@ export default function MakeFromResources({
                 </span>
               </label>
             )}
+
+            {powerSection}
 
             {blocked && (
               <div className="mfr-warn" data-testid="mfr-warn">

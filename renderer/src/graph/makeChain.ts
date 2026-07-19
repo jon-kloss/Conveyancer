@@ -146,6 +146,50 @@ export function splitAcrossPorts(pool: { id: string; left: number }[], rate: num
   return out;
 }
 
+// ---- MAKE POWER: generator banks from claimed fuel -------------------------
+//
+// Fuel-burn recipes are synthesized by gamedata (product = __PowerMW at the
+// nameplate MW, duration-normalized), so "what power can these raws make?"
+// is the same catalog scan as items — just aimed at generators.
+
+export interface PowerOption {
+  recipe: string;
+  machine: string;
+  fuel: string;
+  /** nameplate MW per generator (the burn recipe's __PowerMW out-rate). */
+  mwPer: number;
+  /** fuel items/min per generator at 100% clock. */
+  fuelPer: number;
+}
+
+/** Generator burn recipes runnable from `available` raws: solid single-fuel
+ *  burns whose fuel is one of the factory's inputs. Fuel-less generators
+ *  (geothermal) and fluid fuels are excluded — no pipes. */
+export function powerOptions(g: GameData, available: ReadonlySet<string>): PowerOption[] {
+  const out: PowerOption[] = [];
+  for (const r of Object.values(g.recipes)) {
+    if (r.products.length !== 1 || r.products[0][0] !== POWER_ITEM) continue;
+    if (r.ingredients.length !== 1) continue;
+    const [fuel] = r.ingredients[0];
+    if (!available.has(fuel) || !isBeltable(g, fuel)) continue;
+    const machine = r.producedIn.find((m) => g.machines[m]?.kind === "generator");
+    if (!machine) continue;
+    const mwPer = perMachineOut(r, POWER_ITEM);
+    const fuelPer = r.durationS > 0 ? (r.ingredients[0][1] * 60) / r.durationS : 0;
+    if (mwPer <= 0 || fuelPer <= 0) continue;
+    out.push({ recipe: r.className, machine, fuel, mwPer, fuelPer });
+  }
+  return out.sort((a, b) => b.mwPer - a.mwPer || a.recipe.localeCompare(b.recipe));
+}
+
+/** Size a bank for `mw`: fewest generators, evenly under-clocked to hit the
+ *  target exactly (same shape planChain uses for item groups). */
+export function sizePowerBank(opt: PowerOption, mw: number): { count: number; clock: number; fuelNeed: number } {
+  const count = Math.max(1, Math.ceil(mw / opt.mwPer));
+  const clock = mw / (count * opt.mwPer);
+  return { count, clock, fuelNeed: (mw / opt.mwPer) * opt.fuelPer };
+}
+
 // ---- raw-supply wiring: real mergers/splitters, like a hand build ----------
 //
 // A raw drawn from several claims, or feeding several consumers, is wired

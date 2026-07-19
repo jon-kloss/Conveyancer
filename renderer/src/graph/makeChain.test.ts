@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { GameData } from "../state/types";
-import { makeableItems, planChain, planRawWiring, splitAcrossPorts } from "./makeChain";
+import { makeableItems, planChain, planRawWiring, powerOptions, sizePowerBank, splitAcrossPorts } from "./makeChain";
 
 // Minimal synthetic catalog: Iron Ore (raw) → Iron Ingot → {Iron Plate, Iron Rod},
 // plus Water (fluid) → Fake item to prove fluids are excluded.
@@ -215,5 +215,66 @@ describe("planRawWiring", () => {
     // every consumer is fed exactly once
     const fed = w.edges.filter((e) => e.to.kind === "consumer").map((e) => (e.to as { key: string }).key);
     expect(fed.sort()).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+describe("powerOptions / sizePowerBank", () => {
+  // Synthetic burn recipe, shaped like gamedata's synthesis: duration 60s,
+  // product = __PowerMW at nameplate, ingredient = fuel/min.
+  const GP = {
+    items: {
+      ...((G as unknown as { items: object }).items as object),
+      Desc_Coal_C: { className: "Desc_Coal_C", displayName: "Coal", form: "RF_SOLID", stackSize: "" },
+    },
+    machines: {
+      ...((G as unknown as { machines: object }).machines as object),
+      Build_GeneratorCoal_C: { className: "Build_GeneratorCoal_C", displayName: "Coal Generator", kind: "generator", powerMw: 75 },
+    },
+    recipes: {
+      ...((G as unknown as { recipes: object }).recipes as object),
+      Recipe_Power_Coal: {
+        className: "Recipe_Power_Coal",
+        displayName: "Coal Generator — Coal",
+        durationS: 60,
+        ingredients: [["Desc_Coal_C", 15]],
+        products: [["__PowerMW", 75]],
+        producedIn: ["Build_GeneratorCoal_C"],
+        alternate: false,
+      },
+    },
+  } as unknown as GameData;
+
+  it("offers a burn for a fuel the factory has, none otherwise", () => {
+    const opts = powerOptions(GP, new Set(["Desc_Coal_C"]));
+    expect(opts).toHaveLength(1);
+    expect(opts[0]).toMatchObject({
+      recipe: "Recipe_Power_Coal",
+      machine: "Build_GeneratorCoal_C",
+      fuel: "Desc_Coal_C",
+      mwPer: 75,
+      fuelPer: 15,
+    });
+    // iron ore in, coal not assigned → no burn offered
+    expect(powerOptions(GP, new Set(["Desc_OreIron_C"]))).toEqual([]);
+  });
+
+  it("burn recipes never leak into the item picker or item chains", () => {
+    expect(makeableItems(GP, NONE, new Set(["Desc_Coal_C"]))).not.toContain("__PowerMW");
+    expect(planChain(GP, NONE, new Set(["Desc_Coal_C"]), "__PowerMW", 10)).toBeNull();
+  });
+
+  it("sizes the bank: fewest generators, evenly under-clocked, exact fuel", () => {
+    // 180 MW on 75 MW gens → 3 gens at 80% clock, burning 36 coal/min
+    const s = sizePowerBank({ recipe: "r", machine: "m", fuel: "f", mwPer: 75, fuelPer: 15 }, 180);
+    expect(s.count).toBe(3);
+    expect(s.clock).toBeCloseTo(0.8);
+    expect(s.fuelNeed).toBeCloseTo(36);
+  });
+
+  it("nameplate target lands exactly on 100% clocks", () => {
+    const s = sizePowerBank({ recipe: "r", machine: "m", fuel: "f", mwPer: 75, fuelPer: 15 }, 150);
+    expect(s.count).toBe(2);
+    expect(s.clock).toBeCloseTo(1.0);
+    expect(s.fuelNeed).toBeCloseTo(30);
   });
 });
