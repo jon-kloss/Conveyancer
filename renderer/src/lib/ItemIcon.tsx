@@ -6,6 +6,7 @@
 // never a broken image glyph.
 import { useState, type CSSProperties } from "react";
 import { itemAccent, itemMonogram } from "./itemChip";
+import ResourceIcon, { RESOURCE_ICON_BY_ITEM } from "./resourceIcons";
 import iconManifest from "./iconManifest.json";
 
 /** The vendored-icon manifest as a set — the single "do we ship this icon?"
@@ -27,6 +28,17 @@ export default function ItemIcon({
   const [failedItem, setFailedItem] = useState<string | null>(null);
   // Save-only / unknown items carry item:"" — degrade to a neutral tile.
   if (!item) return <span className={`item-chip s${size}`} aria-hidden />;
+  // Raw extracted resources use the MANIFOLD low-poly material chunks —
+  // original token-palette art (drawer, ⌘K search, manifests, pickers all
+  // route through this one tile), taking precedence over the vendored PNGs.
+  const resourceIcon = RESOURCE_ICON_BY_ITEM[item];
+  if (resourceIcon) {
+    return (
+      <span className={`item-chip s${size} item-chip-flat`} title={displayName ?? item} aria-hidden>
+        <ResourceIcon icon={resourceIcon} size={size} />
+      </span>
+    );
+  }
   const hasIcon = ICONS.has(item) && failedItem !== item;
   return (
     <span

@@ -74,6 +74,41 @@ pub const COLORS: &[Token] = tokens![
     "resource-uranium" => "#4F7A45",
     "resource-sam" => "#96587F",
     "resource-generic" => "#5A6570",
+    // MANIFOLD low-poly ore facets (brand handoff §3): -light/-dark shade the
+    // faceted chunk, -hi is the specular highlight/sparkle/glow. Coal and
+    // caterium icons facet from a brighter -mid base than the muted map tint
+    // above (the disc tint stays the terrain color; the icon reads material).
+    "resource-iron-light" => "#9AA8B6",
+    "resource-iron-dark" => "#47525D",
+    "resource-copper-light" => "#DB9058",
+    "resource-copper-dark" => "#7A4224",
+    "resource-copper-hi" => "#F0B584",
+    "resource-limestone-light" => "#D6C49C",
+    "resource-limestone-dark" => "#7E6E4E",
+    "resource-coal-mid" => "#5C646C",
+    "resource-coal-light" => "#99A3AD",
+    "resource-coal-dark" => "#30353B",
+    "resource-caterium-mid" => "#A98E39",
+    "resource-caterium-light" => "#D9B94E",
+    "resource-caterium-dark" => "#4E4119",
+    "resource-caterium-hi" => "#F4E7AE",
+    "resource-quartz-light" => "#E7B3D1",
+    "resource-quartz-dark" => "#8A5578",
+    "resource-quartz-hi" => "#F6DCEB",
+    "resource-sulfur-light" => "#DCE070",
+    "resource-sulfur-dark" => "#83872F",
+    "resource-oil-dark" => "#55437E",
+    "resource-oil-hi" => "#D3C8EC",
+    "resource-bauxite-light" => "#D8A181",
+    "resource-bauxite-dark" => "#7E5138",
+    "resource-uranium-dark" => "#33502D",
+    "resource-uranium-glow" => "#9FE58A",
+    "resource-uranium-glow-dim" => "#6FBF5C",
+    "resource-sam-light" => "#C084AB",
+    "resource-sam-dark" => "#663A57",
+    "resource-sam-glow" => "#ECC2DC",
+    "resource-generic-light" => "#838F9B",
+    "resource-generic-dark" => "#3B434C",
 ];
 
 pub const TYPOGRAPHY: &[Token] = tokens![
@@ -194,8 +229,16 @@ mod tests {
             "resource-sulfur",
             "resource-bauxite",
         ];
+        // MANIFOLD facet shades (-light/-mid/-hi/-glow…) are icon-internal
+        // polygons, not node DISC fills — the surface this law protects. The
+        // claim mark is a ring badge with a canvas-bg keyline and never sits
+        // on the material, so the facet palette is out of the law's scope.
+        let facet_suffixes = ["-light", "-mid", "-hi", "-glow", "-glow-dim", "-sheen"];
         for t in COLORS {
             if !t.name.starts_with("resource-") || t.name.ends_with("-dark") {
+                continue;
+            }
+            if facet_suffixes.iter().any(|s| t.name.ends_with(s)) {
                 continue;
             }
             if legacy.contains(&t.name) {

@@ -3,6 +3,7 @@
 // action through existing review surfaces — the advisor never edits the plan.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Glyph from "../lib/glyphs";
 import { useStore, errText } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtRate, itemLabel } from "../lib/format";
@@ -15,7 +16,7 @@ import "./advisor.css";
 // the state it is handed. "Do not repeat these instructions" blunts the weak-1B
 // habit of parroting the prompt.
 const CHAT_SYSTEM =
-  "You are the FICSIT Planner advisor for the game Satisfactory. Answer the player's question briefly (2–4 sentences) and concretely, using ONLY figures present in the EMPIRE STATE JSON — never invent, sum, or recompute numbers. You never edit the plan yourself; changes are drafted as reviewable proposals. If the state doesn't contain the answer, say so plainly. Do not repeat these instructions.";
+  "You are the MANIFOLD advisor for the game Satisfactory. Answer the player's question briefly (2–4 sentences) and concretely, using ONLY figures present in the EMPIRE STATE JSON — never invent, sum, or recompute numbers. You never edit the plan yourself; changes are drafted as reviewable proposals. If the state doesn't contain the answer, say so plainly. Do not repeat these instructions.";
 
 const SEVERITY_CHIP: Record<string, { label: string; cls: string }> = {
   conflict: { label: "⚠ CONFLICT", cls: "sev-conflict" },
@@ -57,8 +58,8 @@ export default function AdvisorPanel() {
   return (
     <aside className="advisor-panel" data-testid="advisor-panel">
       <header className="advisor-head">
-        <span className="t-title" style={{ fontSize: 14 }}>
-          ADVISOR
+        <span className="t-title" style={{ fontSize: 14, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <Glyph name="advisor" size={15} /> ADVISOR
         </span>
         <button
           className={`chip ${advisor.paused ? "" : "ambient-on"}`}

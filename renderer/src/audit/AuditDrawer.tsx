@@ -3,6 +3,7 @@
 // every change (the store is already event-sourced, so rows are always live).
 
 import { useEffect, useMemo, useState } from "react";
+import Glyph from "../lib/glyphs";
 import { useStore } from "../state/store";
 import {
   fmtPercent,
@@ -305,7 +306,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
   if (!open) {
     return (
       <button className="audit-handle mono" onClick={onToggle} data-testid="audit-handle">
-        ▲ AUDIT (TAB)
+        <Glyph name="audit" size={13} /> AUDIT (TAB)
         {alarmCount + deficitCount > 0 && <span className="audit-badge">{alarmCount + deficitCount}</span>}
       </button>
     );

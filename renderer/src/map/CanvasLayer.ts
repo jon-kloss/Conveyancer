@@ -6,6 +6,8 @@
 import L from "leaflet";
 import type { World, WorldNode } from "../state/types";
 import { flowBand } from "../lib/format";
+import { RESOURCE_POLYS, type ResourcePrim } from "../lib/resourcePolys";
+import { RESOURCE_ICON_BY_ITEM } from "../lib/resourceIcons";
 import { toLatLng } from "./maputil";
 
 export interface NodeRenderState {
@@ -92,6 +94,43 @@ export interface CanvasLayerData {
 
 const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/** One MANIFOLD resource-icon primitive at node (cx,cy), design grid 24x24
+ *  centered on 12,12 scaled by s. `tok` resolves a token name to a color
+ *  (memoized per redraw — icons repeat tokens across facets). */
+function drawResourcePrim(
+  ctx: CanvasRenderingContext2D,
+  p: ResourcePrim,
+  cx: number,
+  cy: number,
+  s: number,
+  tok: (t: string) => string,
+) {
+  const X = (v: number) => cx + (v - 12) * s;
+  const Y = (v: number) => cy + (v - 12) * s;
+  if (p.kind === "line") {
+    ctx.beginPath();
+    ctx.moveTo(X(p.pts[0][0]), Y(p.pts[0][1]));
+    ctx.lineTo(X(p.pts[1][0]), Y(p.pts[1][1]));
+    ctx.lineWidth = Math.max(0.75, p.w * s);
+    ctx.strokeStyle = tok(p.token);
+    ctx.stroke();
+    return;
+  }
+  if (p.kind === "circle") {
+    ctx.beginPath();
+    ctx.arc(X(p.pts[0][0]), Y(p.pts[0][1]), p.r * s, 0, Math.PI * 2);
+    ctx.fillStyle = tok(p.token);
+    ctx.fill();
+    return;
+  }
+  ctx.beginPath();
+  ctx.moveTo(X(p.pts[0][0]), Y(p.pts[0][1]));
+  for (let i = 1; i < p.pts.length; i++) ctx.lineTo(X(p.pts[i][0]), Y(p.pts[i][1]));
+  ctx.closePath();
+  ctx.fillStyle = tok(p.token);
+  ctx.fill();
+}
 
 // Real-world terrain calibration (community render; provenance in NOTICE).
 // Standard map bounds: X -324,698.83..+425,301.83 cm, Y ±375,000 cm → meters.
@@ -999,6 +1038,17 @@ export class MapCanvasLayer extends L.Layer {
     // Resource identity fill (map data, not a UI signal): read type at a glance.
     // Palette resolved once per redraw, indexed by extracted resource class.
     const resourceGeneric = css("--resource-generic");
+    // Token resolver for the material icons, memoized per redraw (facet
+    // shades repeat across the 459-node pass; css() hits getComputedStyle).
+    const tokCache = new Map<string, string>();
+    const tok = (t: string): string => {
+      let v = tokCache.get(t);
+      if (v === undefined) {
+        v = css(`--${t}`);
+        tokCache.set(t, v);
+      }
+      return v;
+    };
     const resourceFill: Record<string, string> = {
       Desc_OreIron_C: css("--resource-iron"),
       Desc_OreCopper_C: css("--resource-copper"),
@@ -1045,6 +1095,21 @@ export class MapCanvasLayer extends L.Layer {
       ctx.fillStyle = resourceFill[node.item] ?? resourceGeneric;
       ctx.fill();
       ctx.globalAlpha = 1;
+
+      // MANIFOLD low-poly material chunk over the tint disc — close zoom or
+      // hover/selected only (r >= 6); below that the flat disc stays (459
+      // world-zoom nodes must not pay per-node polygon costs). ≤6 primitives
+      // per icon; same polygon source as the DOM ResourceIcon.
+      if (r >= 6) {
+        const iconName = RESOURCE_ICON_BY_ITEM[node.item];
+        const prims = iconName ? RESOURCE_POLYS[iconName] : undefined;
+        if (prims) {
+          const s = (2 * r * 0.92) / 24; // 24-grid onto the disc, slight inset
+          ctx.globalAlpha = state.claimed ? 1 : 0.85;
+          for (const pr of prims) drawResourcePrim(ctx, pr, p.x, p.y, s, tok);
+          ctx.globalAlpha = 1;
+        }
+      }
 
       // Claimed nodes (a factory is extracting here) get a soft signal halo so
       // "in use" reads at a glance against the wall of free nodes.
@@ -1111,13 +1176,17 @@ export class MapCanvasLayer extends L.Layer {
         }
       }
 
-      // claimed = orange center dot; free = hollow
+      // claimed = orange RING BADGE at the upper-left (≈315° bearing) — moved
+      // off the disc center (brand handoff §3) so it never covers the
+      // material icon; free = hollow
       if (state.claimed) {
+        const bx = p.x - r * 0.7071;
+        const by = p.y - r * 0.7071;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, Math.min(3, r - 1.5), 0, Math.PI * 2);
+        ctx.arc(bx, by, 2.4, 0, Math.PI * 2);
         ctx.fillStyle = state.conflict ? crit : signal;
         ctx.fill();
-        // 1px canvas-bg outline on the same path: the dot keeps an edge on
+        // 1px canvas-bg outline on the same path: the badge keeps an edge on
         // resource fills whose luminance sits near the mark's (gold, green)
         ctx.lineWidth = 1;
         ctx.strokeStyle = canvasBg;
