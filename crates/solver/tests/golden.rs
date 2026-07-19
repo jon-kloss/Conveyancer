@@ -1179,3 +1179,69 @@ fn t0_weights_open_input_by_its_belt_not_zero() {
     assert_close(r.edges["e-b"].flow, 50.0, "open-port share");
     assert_close(r.ports["out-ingot"], 100.0, "target met through the pool");
 }
+
+/// Audit #123 regression: a sibling output whose FIXED target already violates
+/// its own input ceiling must not zero the EDITED chain's preview. Before the
+/// fix, the t=0 base probe saw in-b over its ceiling (out-y=30 > 10), declared
+/// the whole edit infeasible, clamped out-x to 0 and named in-b's constraint.
+#[test]
+fn t0_sibling_infeasibility_does_not_zero_independent_chain() {
+    // out-y fixed at 30 with in-b capped at 10 — a standing sibling violation.
+    let snap = dual_chain_snapshot(0.0, 30.0, Some(10.0));
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-x".into(),
+            rate: 50.0,
+        },
+    )
+    .unwrap();
+    // The independent chain runs at the requested rate…
+    assert_close(r.ports["out-x"], 50.0, "edited chain at its requested rate");
+    assert!(!r.clamped, "50/min is far below chain A's own belt caps");
+    // …and any reported ceiling belongs to chain A, never to in-b.
+    if let Some(c) = &r.target_ceiling {
+        assert!(c.max_rate > 50.0, "own ceiling is chain A's belt, not 0");
+        match &c.binding {
+            Constraint::InputCeiling { port, .. } => {
+                assert_ne!(
+                    port, "in-b",
+                    "sibling's violated ceiling must not be blamed"
+                )
+            }
+            _ => {}
+        }
+    }
+    // The sibling's demanded flow is untouched by the edit (T0 shows demand;
+    // the violated in-b ceiling surfaces as saturation > 1, and T1 owns the
+    // shortfall story on release).
+    assert_close(
+        r.edges["e-b"].flow,
+        30.0,
+        "sibling demand unchanged by the edit",
+    );
+}
+
+/// Same graph, sane siblings: the edited chain's OWN ceiling is still found
+/// exactly (belt cap 780 on e-a/e-x → ceiling 780) — the relative-feasibility
+/// rework must not change the healthy-baseline path.
+#[test]
+fn t0_own_ceiling_unchanged_when_siblings_healthy() {
+    let snap = dual_chain_snapshot(0.0, 5.0, Some(10.0));
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-x".into(),
+            rate: 10_000.0,
+        },
+    )
+    .unwrap();
+    assert!(r.clamped, "10k/min exceeds the 780 belt");
+    let c = r.target_ceiling.as_ref().expect("ceiling reported");
+    assert_close(c.max_rate, 780.0, "belt-cap ceiling exact");
+    assert!(
+        matches!(&c.binding, Constraint::BeltCapacity { edge, .. } if edge == "e-a" || edge == "e-x"),
+        "binding is chain A's own belt, got {:?}",
+        c.binding
+    );
+}

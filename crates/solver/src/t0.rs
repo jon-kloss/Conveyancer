@@ -320,7 +320,6 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         }
         best
     };
-    let feasible = |flows: &[f64]| min_slack(flows).is_none_or(|(_, s)| s >= -REL_TOL);
 
     // Ceiling analysis for the edited target. Flows are convex nondecreasing
     // piecewise-linear in the target (see module header), so a two-point
@@ -345,17 +344,49 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
             demand_pass(&graph, &order, &probe_targets).map(|(flows, _)| flows)
         };
         let f0 = probe(0.0)?;
-        let ceiling: Option<(f64, CapKey)> = 'ceiling: {
-            let Some((worst0, slack0)) = min_slack(&f0) else {
-                break 'ceiling None; // no caps anywhere — unbounded
-            };
-            if slack0 < -REL_TOL {
-                // Sibling fixed targets alone violate a cap: the edited
-                // target has no feasible room. Ceiling 0, named at the most
-                // violated constraint.
-                base_feasible = false;
-                break 'ceiling Some((0.0, worst0));
+        // Per-cap slack with the edited target at ZERO. A violation here is
+        // owned by SIBLING fixed targets — it exists with this edit
+        // contributing nothing, so it must not zero the edited port (the old
+        // behavior collapsed an independent chain to 0/min and blamed the
+        // sibling's constraint). The search below uses RELATIVE feasibility:
+        // no cap may fall below its own baseline (or -REL_TOL, whichever is
+        // lower) — the edit may coexist with a sibling's violation but never
+        // deepen one. Flows are nondecreasing in t, so each cap's slack is
+        // nonincreasing and relative feasibility stays monotone — the
+        // bracket/bisect machinery is unchanged.
+        let base_slack: Vec<f64> = cap_keys
+            .iter()
+            .map(|&k| {
+                let cap = cap_bound(k);
+                (cap - cap_flow(k, &f0)) / (1.0 + cap)
+            })
+            .collect();
+        let floor_of = |i: usize| (-REL_TOL).min(base_slack[i] - REL_TOL);
+        let feasible_rel = |flows: &[f64]| -> bool {
+            cap_keys.iter().enumerate().all(|(i, &k)| {
+                let cap = cap_bound(k);
+                (cap - cap_flow(k, flows)) / (1.0 + cap) >= floor_of(i)
+            })
+        };
+        // Binding selection by slack RELATIVE to baseline: a sibling-violated
+        // cap sits at large negative absolute slack forever — the cap that
+        // binds the EDIT is the one closest to its own floor.
+        let min_rel_slack = |flows: &[f64]| -> Option<(CapKey, f64)> {
+            let mut best: Option<(CapKey, f64)> = None;
+            for (i, &k) in cap_keys.iter().enumerate() {
+                let cap = cap_bound(k);
+                let rel = (cap - cap_flow(k, flows)) / (1.0 + cap) - base_slack[i].min(0.0);
+                if best.is_none_or(|(_, s)| rel < s) {
+                    best = Some((k, rel));
+                }
             }
+            best
+        };
+        let ceiling: Option<(f64, CapKey)> = 'ceiling: {
+            if min_slack(&f0).is_none() {
+                break 'ceiling None; // no caps anywhere — unbounded
+            }
+            base_feasible = base_slack.iter().all(|s| *s >= -REL_TOL);
             // Seed the upper bracket from the [0,1] affine crossings — exact
             // for single-output graphs, so the common case brackets with no
             // extra doubling.
@@ -376,7 +407,7 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
             }
             let mut f_hi = probe(hi)?;
             let mut doublings = 0;
-            while feasible(&f_hi) {
+            while feasible_rel(&f_hi) {
                 if doublings >= 32 {
                     break 'ceiling None; // no cap ever binds — no finite ceiling
                 }
@@ -393,7 +424,7 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
                 }
                 let mid = 0.5 * (lo + hi);
                 let f_mid = probe(mid)?;
-                if feasible(&f_mid) {
+                if feasible_rel(&f_mid) {
                     lo = mid;
                     f_lo = f_mid;
                 } else {
@@ -401,8 +432,8 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
                     f_hi = f_mid;
                 }
             }
-            // The binding is the minimum-slack cap at the feasible end.
-            let Some((key, _)) = min_slack(&f_lo) else {
+            // The binding is the minimum RELATIVE-slack cap at the feasible end.
+            let Some((key, _)) = min_rel_slack(&f_lo) else {
                 break 'ceiling None;
             };
             // Secant polish: the final bracket lies inside a single linear
