@@ -35,6 +35,13 @@ export default function DataMenu() {
     const bv = s.gamedata.buildVersion;
     return !!bv && bv !== "fixture";
   });
+  // "Sync from save" re-reads a previously imported save to reconcile — with
+  // no imported save in the plan there is nothing to sync against, so the
+  // control stays disabled until an import has landed (import-provenance
+  // factories; syncMeta below also counts once a first sync recorded one).
+  const hasImportedSave = useStore((s) =>
+    Object.values(s.plan.factories).some((f) => f.createdBy?.kind === "import"),
+  );
   const autoSync = useStore((s) => s.autoSync);
   const setAutoSync = useStore((s) => s.setAutoSync);
   const autoPull = useStore((s) => s.autoPull);
@@ -95,8 +102,9 @@ export default function DataMenu() {
     // never a dead end.
     if (__WASM_BACKEND__) void getSyncMeta().then(setSyncMetaState).catch(() => {});
   }, []);
+  const syncReady = catalogLoaded && (hasImportedSave || !!syncMeta);
   const onSync = useCallback(async () => {
-    if (!catalogLoaded || syncing) return; // defensive; the button is disabled too
+    if (!syncReady || syncing) return; // defensive; the button is disabled too
     if (!fsAccessSupported()) {
       // No File System Access here — reuse the classic picker + ImportModal.
       fileRef.current?.click();
@@ -119,14 +127,14 @@ export default function DataMenu() {
     } finally {
       setSyncing(false);
     }
-  }, [catalogLoaded, syncing, syncImport, pushToast]);
+  }, [syncReady, syncing, syncImport, pushToast]);
 
   // Sync Phase 3: auto-pull. Needs both the Docs.json gate AND File System
   // Access (the timer re-reads the retained handle with no user gesture, so it
   // is Chrome/Edge-only). Option B (in store.autoPull): conflict-free drift
   // applies silently; real conflicts open review. Mounted at titlebar level,
   // the timer now keeps running inside factory views too.
-  const autoSyncReady = catalogLoaded && fsAccessSupported();
+  const autoSyncReady = syncReady && fsAccessSupported();
   const autoPullBusy = useRef(false);
   const recordSync = useCallback(async (name: string) => {
     const meta = { name, lastSyncedAt: Date.now() };
@@ -222,12 +230,23 @@ export default function DataMenu() {
                 <span className="data-menu-item-sub">start here — the recipe catalog for your game version</span>
               </button>
             )}
+            {/* The order is ENFORCED on web, not suggested: without a real
+                catalog most save classes can't resolve, so step ② stays
+                disabled (aria-disabled keeps the how-to tooltip on hover)
+                until step ① lands. Desktop is unaffected. */}
             <button
               className="data-menu-item"
               onClick={() => {
+                if (__WASM_BACKEND__ && !catalogLoaded) return;
                 setDataMenu(false);
                 fileRef.current?.click();
               }}
+              aria-disabled={__WASM_BACKEND__ && !catalogLoaded}
+              title={
+                __WASM_BACKEND__ && !catalogLoaded
+                  ? "Upload your Docs.json first (step ① above) — then import your save"
+                  : undefined
+              }
               data-testid="btn-import"
             >
               <span className="data-menu-item-label">
@@ -235,7 +254,7 @@ export default function DataMenu() {
               </span>
               <span className="data-menu-item-sub">
                 {__WASM_BACKEND__ && !catalogLoaded
-                  ? "upload your Docs.json above first for full recipe matching"
+                  ? "unlocks after step ① — your Docs.json resolves the save's recipes"
                   : ".sav — your factories as a Built layer"}
               </span>
             </button>
@@ -249,17 +268,19 @@ export default function DataMenu() {
                   <button
                     className="data-menu-item sync-main"
                     onClick={() => {
-                      if (!catalogLoaded || syncing || autoSync.enabled) return;
+                      if (!syncReady || syncing || autoSync.enabled) return;
                       setDataMenu(false);
                       void onSync();
                     }}
-                    aria-disabled={!catalogLoaded || syncing || autoSync.enabled}
+                    aria-disabled={!syncReady || syncing || autoSync.enabled}
                     title={
                       !catalogLoaded
-                        ? "Upload your Docs.json first (DATA ▸ Upload Docs.json) to enable save sync"
-                        : autoSync.enabled
-                          ? "Auto-sync is on — turn it off to sync manually"
-                          : undefined
+                        ? "Upload your Docs.json first (step ① above) to enable save sync"
+                        : !syncReady
+                          ? "Import your save first — sync re-reads it to reconcile changes"
+                          : autoSync.enabled
+                            ? "Auto-sync is on — turn it off to sync manually"
+                            : undefined
                     }
                     data-testid="btn-sync-save"
                   >
@@ -268,14 +289,16 @@ export default function DataMenu() {
                     </span>
                     <span className="data-menu-item-sub">
                       {!catalogLoaded
-                        ? "needs your Docs.json — upload it below to enable"
-                        : autoSync.enabled
-                          ? `every ${autoSync.intervalMin} min · applies safe changes, asks on conflicts`
-                          : syncMeta
-                            ? `re-read ${syncMeta.name} · synced ${relTime(syncMeta.lastSyncedAt)}`
-                            : fsAccessSupported()
-                              ? "re-read your save & reconcile — no re-pick next time"
-                              : "re-read your save & reconcile"}
+                        ? "needs your Docs.json — upload it above to enable"
+                        : !syncReady
+                          ? "needs an imported save — import yours above to enable"
+                          : autoSync.enabled
+                            ? `every ${autoSync.intervalMin} min · applies safe changes, asks on conflicts`
+                            : syncMeta
+                              ? `re-read ${syncMeta.name} · synced ${relTime(syncMeta.lastSyncedAt)}`
+                              : fsAccessSupported()
+                                ? "re-read your save & reconcile — no re-pick next time"
+                                : "re-read your save & reconcile"}
                     </span>
                   </button>
                   <button
@@ -291,8 +314,10 @@ export default function DataMenu() {
                           ? "Auto-sync on — click to turn off"
                           : "Auto-sync: re-read on a timer (Chrome/Edge, this tab open)"
                         : !catalogLoaded
-                          ? "Upload your Docs.json first (DATA ▸ Upload Docs.json) to enable save sync"
-                          : "Auto-sync needs the File System Access API — use Chrome or Edge"
+                          ? "Upload your Docs.json first (step ① above) to enable save sync"
+                          : !syncReady
+                            ? "Import your save first — sync re-reads it to reconcile changes"
+                            : "Auto-sync needs the File System Access API — use Chrome or Edge"
                     }
                     data-testid="btn-auto-sync"
                   >
@@ -363,24 +388,26 @@ export default function DataMenu() {
                 </span>
               </button>
             )}
+            {/* Path hints mirror the enforced load order on web: Docs.json
+                rows lead, the save row follows (desktop shows save only). */}
             <div className="data-menu-hint">
               <div className="data-menu-hint-head">Or drag &amp; drop a file anywhere</div>
-              <div className="data-menu-hint-row">
-                <span className="data-menu-hint-key">Save</span>
-                <code>%LOCALAPPDATA%\FactoryGame\Saved\SaveGames\</code>
-              </div>
               {__WASM_BACKEND__ && (
                 <>
                   <div className="data-menu-hint-row">
-                    <span className="data-menu-hint-key">Docs (Steam)</span>
+                    <span className="data-menu-hint-key">{catalogLoaded ? "Docs (Steam)" : "① Docs (Steam)"}</span>
                     <code>…\steamapps\common\Satisfactory\CommunityResources\Docs\en-US.json</code>
                   </div>
                   <div className="data-menu-hint-row">
-                    <span className="data-menu-hint-key">Docs (Epic)</span>
+                    <span className="data-menu-hint-key">{catalogLoaded ? "Docs (Epic)" : "① Docs (Epic)"}</span>
                     <code>…\Epic Games\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json</code>
                   </div>
                 </>
               )}
+              <div className="data-menu-hint-row">
+                <span className="data-menu-hint-key">{__WASM_BACKEND__ && !catalogLoaded ? "② Save" : "Save"}</span>
+                <code>%LOCALAPPDATA%\FactoryGame\Saved\SaveGames\</code>
+              </div>
             </div>
           </div>
         </>

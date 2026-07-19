@@ -147,12 +147,23 @@ export default function MapView() {
   const acceptFiles = useCallback((files: File[]) => {
     const sav = files.find((f) => f.name.toLowerCase().endsWith(".sav"));
     const docs = files.find((f) => f.name.toLowerCase().endsWith(".json"));
-    if (sav) useStore.getState().setImportFile(sav);
-    if (docs && __WASM_BACKEND__)
-      void (async () => {
+    void (async () => {
+      const s = useStore.getState();
+      if (docs && __WASM_BACKEND__) {
         const bytes = new Uint8Array(await docs.arrayBuffer());
-        await useStore.getState().uploadDocs(bytes);
-      })();
+        // awaited so a docs+save drop processes in the required order
+        await s.uploadDocs(bytes);
+      }
+      if (!sav) return;
+      // The Docs→save order is ENFORCED on web (a fixture-catalog import
+      // quarantines most recipes): refuse the save until a catalog is loaded.
+      const bv = useStore.getState().gamedata.buildVersion;
+      if (__WASM_BACKEND__ && (!bv || bv === "fixture")) {
+        s.pushToast("Load your Docs.json first (DATA ▾ step ①) — then drop your save", "error");
+        return;
+      }
+      useStore.getState().setImportFile(sav);
+    })();
   }, []);
   const routeDraftRef = useRef<typeof routeDraft>(null);
   routeDraftRef.current = routeDraft;
@@ -764,8 +775,8 @@ export default function MapView() {
         else setSelection(null);
       } else if (e.key === "1") setOverlay("flows", !overlays.flows);
       else if (e.key === "2") setOverlay("power", !overlays.power);
-      else if (e.key === "4") setOverlay("nodes", !overlays.nodes);
-      else if (e.key === "3") setOverlay("terrain", !overlays.terrain);
+      else if (e.key === "3") setOverlay("nodes", !overlays.nodes);
+      else if (e.key === "4") setOverlay("terrain", !overlays.terrain);
       else if (e.key === "f" || e.key === "F") {
         const pts = Object.values(plan.factories).map((f) => toLatLng(f.position));
         if (pts.length && map) map.fitBounds(L.latLngBounds(pts as L.LatLngExpression[]).pad(0.4));
@@ -861,16 +872,17 @@ export default function MapView() {
           <button
             className={`btn btn-ghost overlay-chip ${overlays.nodes ? "active" : ""}`}
             onClick={() => setOverlay("nodes", !overlays.nodes)}
-            title="Resource nodes (4)"
+            title="Resource nodes (3)"
           >
-            NODES <span className="key-hint">4</span>
+            NODES <span className="key-hint">3</span>
           </button>
           <button
             className={`btn btn-ghost overlay-chip ${overlays.terrain ? "active" : ""}`}
             onClick={() => setOverlay("terrain", !overlays.terrain)}
+            title="Terrain (4)"
             data-testid="btn-overlay-terrain"
           >
-            TERRAIN <span className="key-hint">3</span>
+            TERRAIN <span className="key-hint">4</span>
           </button>
         </div>
         <div className="map-actions">

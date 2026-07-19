@@ -1179,3 +1179,162 @@ fn t0_weights_open_input_by_its_belt_not_zero() {
     assert_close(r.edges["e-b"].flow, 50.0, "open-port share");
     assert_close(r.ports["out-ingot"], 100.0, "target met through the pool");
 }
+
+/// Audit #123 regression: a sibling output whose FIXED target already violates
+/// its own input ceiling must not zero the EDITED chain's preview. Before the
+/// fix, the t=0 base probe saw in-b over its ceiling (out-y=30 > 10), declared
+/// the whole edit infeasible, clamped out-x to 0 and named in-b's constraint.
+#[test]
+fn t0_sibling_infeasibility_does_not_zero_independent_chain() {
+    // out-y fixed at 30 with in-b capped at 10 — a standing sibling violation.
+    let snap = dual_chain_snapshot(0.0, 30.0, Some(10.0));
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-x".into(),
+            rate: 50.0,
+        },
+    )
+    .unwrap();
+    // The independent chain runs at the requested rate…
+    assert_close(r.ports["out-x"], 50.0, "edited chain at its requested rate");
+    assert!(!r.clamped, "50/min is far below chain A's own belt caps");
+    // …and any reported ceiling belongs to chain A: structurally the only
+    // caps out-x can push are its own belts, so assert the binding IS one of
+    // them (a positive check — an InputCeiling(in-b) binding would fail here).
+    if let Some(c) = &r.target_ceiling {
+        assert!(c.max_rate > 50.0, "own ceiling is chain A's belt, not 0");
+        assert!(
+            matches!(&c.binding, Constraint::BeltCapacity { edge, .. } if edge == "e-a" || edge == "e-x"),
+            "binding must be chain A's own belt, got {:?}",
+            c.binding
+        );
+    }
+    // The sibling's demanded flow is untouched by the edit (T0 shows demand;
+    // the violated in-b ceiling surfaces as saturation > 1, and T1 owns the
+    // shortfall story on release).
+    assert_close(
+        r.edges["e-b"].flow,
+        30.0,
+        "sibling demand unchanged by the edit",
+    );
+}
+
+/// Same standing sibling violation, but the edited chain's OWN input is now
+/// capped tighter than its belts: the clamp lands on in-a's ceiling — an
+/// InputCeiling binding naming chain A's port, never the sibling's violated
+/// in-b. This makes the anti-blame guard live on the InputCeiling arm (the
+/// dual-chain test above can only ever bind on chain A's belts).
+#[test]
+fn t0_sibling_infeasibility_blames_own_input_ceiling_only() {
+    let mut snap = dual_chain_snapshot(0.0, 30.0, Some(10.0));
+    snap.inputs[0].ceiling = Some(40.0); // cap chain A's own input below its 780 belts
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-x".into(),
+            rate: 10_000.0,
+        },
+    )
+    .unwrap();
+    assert!(r.clamped, "10k/min exceeds in-a's 40 ceiling");
+    let c = r.target_ceiling.as_ref().expect("ceiling reported");
+    assert_close(c.max_rate, 40.0, "clamped at chain A's own input ceiling");
+    match &c.binding {
+        Constraint::InputCeiling { port, .. } => {
+            assert_eq!(port, "in-a", "own ceiling named, never the sibling's in-b")
+        }
+        other => panic!("expected InputCeiling binding, got {other:?}"),
+    }
+}
+
+/// PR #47 review follow-up: `driven_cycles` must be honored by T0 ITSELF, not
+/// only T1 — an un-wired generator holds its nameplate cycles in the drag
+/// preview (its power output is demanded by nothing, so demand alone would
+/// idle it to 0 and every drag frame would read "GENERATES 0 MW").
+#[test]
+fn t0_driven_generator_holds_nameplate_in_preview() {
+    // Dual-chain graph plus an un-wired coal generator: 3 machine-equivalents,
+    // burn recipe 15 coal -> 75 "__PowerMW" per cycle-minute (duration 60s).
+    let mut snap = dual_chain_snapshot(15.0, 0.0, None);
+    snap.groups.push(GroupSpec {
+        driven_cycles: Some(3.0),
+        ..group(
+            "gen",
+            recipe(
+                "Recipe_Power_C",
+                "generator",
+                60.0,
+                &[("coal", 15.0)],
+                &[("__PowerMW", 75.0)],
+                0.0,
+            ),
+        )
+    });
+    snap.inputs.push(InputPortSpec {
+        id: "in-coal".into(),
+        item: "coal".into(),
+        ceiling: None,
+    });
+    snap.edges.push(edge(
+        "e-coal",
+        NodeRef::Input("in-coal".into()),
+        g("gen"),
+        "coal",
+        780.0,
+    ));
+
+    // Plain recompute: nameplate generation and fuel draw.
+    let r = solver::t0::solve(&snap, &T0Edit::Recompute).unwrap();
+    assert_close(
+        r.groups["gen"].out_rates["__PowerMW"],
+        225.0,
+        "3 machine-equivalents x 75 MW nameplate",
+    );
+    assert_close(r.edges["e-coal"].flow, 45.0, "fuel pulled at nameplate");
+
+    // Mid-drag on the unrelated chain: the generator stays at nameplate and
+    // neither clamps nor perturbs the edited port.
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-x".into(),
+            rate: 50.0,
+        },
+    )
+    .unwrap();
+    assert_close(
+        r.groups["gen"].out_rates["__PowerMW"],
+        225.0,
+        "preview keeps nameplate mid-drag",
+    );
+    assert!(
+        !r.clamped,
+        "generator fuel does not clamp the unrelated edit"
+    );
+    assert_close(r.ports["out-x"], 50.0, "edited chain unaffected");
+}
+
+/// Same graph, sane siblings: the edited chain's OWN ceiling is still found
+/// exactly (belt cap 780 on e-a/e-x → ceiling 780) — the relative-feasibility
+/// rework must not change the healthy-baseline path.
+#[test]
+fn t0_own_ceiling_unchanged_when_siblings_healthy() {
+    let snap = dual_chain_snapshot(0.0, 5.0, Some(10.0));
+    let r = solver::t0::solve(
+        &snap,
+        &T0Edit::SetTarget {
+            port: "out-x".into(),
+            rate: 10_000.0,
+        },
+    )
+    .unwrap();
+    assert!(r.clamped, "10k/min exceeds the 780 belt");
+    let c = r.target_ceiling.as_ref().expect("ceiling reported");
+    assert_close(c.max_rate, 780.0, "belt-cap ceiling exact");
+    assert!(
+        matches!(&c.binding, Constraint::BeltCapacity { edge, .. } if edge == "e-a" || edge == "e-x"),
+        "binding is chain A's own belt, got {:?}",
+        c.binding
+    );
+}
