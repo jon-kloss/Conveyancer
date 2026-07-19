@@ -224,6 +224,12 @@ export interface AppStore {
    *  the ticker narrates these verbatim and the expanding bus follows
    *  `fraction`; no synthetic timers anywhere in this model. */
   boot: { stage: string; fraction: number };
+  /** Verb of the last plan mutation (MANIFOLD motion 7h/7k/7l/7m): the graph
+   *  diffs entity ids itself; this only says WHICH grammar the change plays —
+   *  blueprint-build for edits, ghost/pop for undo/redo. `at` keys freshness
+   *  so stale verbs never animate a later render. Visual-only — never gates
+   *  data. */
+  motion: { kind: "edit" | "undo" | "redo"; at: number; hash: string } | null;
   /** last refused backend command — status-bar chip, NOT the full-screen
       BACKEND UNREACHABLE card (that is `error`, set only by a failed FIRST
       boot; live re-hydrate failures route here instead). */
@@ -594,6 +600,7 @@ export const useStore = create<AppStore>((set, get) => ({
   uploadingDocs: false,
   projected: null,
   settled: new Set(),
+  motion: null,
   placingFactory: false,
   viewState: {},
   planHash: "",
@@ -662,6 +669,9 @@ export const useStore = create<AppStore>((set, get) => ({
         },
         ready: true,
         error: null,
+        // A hydrate (boot or live re-projection) is never an edit/undo/redo —
+        // clear any verb so its diff can only ever play neutral grammar.
+        motion: null,
         plan: init.plan,
         derived: init.derived,
         gamedata: init.gamedata,
@@ -711,6 +721,7 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       projected: null,
       settled,
+      motion: { kind: "edit", at: Date.now(), hash: resp.planHash },
       cmdError: null,
     }));
     if (opts?.select && resp.created.length > 0) {
@@ -743,6 +754,7 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
+      motion: { kind: "undo", at: Date.now(), hash: resp.planHash },
       cmdError: null,
     }));
   },
@@ -766,6 +778,7 @@ export const useStore = create<AppStore>((set, get) => ({
       advisor: resp.advisor,
       projected: null,
       settled: new Set(resp.patches.map((p) => p.path)),
+      motion: { kind: "redo", at: Date.now(), hash: resp.planHash },
       cmdError: null,
     }));
   },

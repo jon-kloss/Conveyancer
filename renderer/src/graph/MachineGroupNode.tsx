@@ -2,7 +2,7 @@
 // chip), recipe row, footer IN n / OUT n / power. Status grammar on the card
 // frame; selected = 2px orange border + corner cut.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { useStore } from "../state/store";
 import { fmtClock, fmtPower, fmtRate, itemLabel } from "../lib/format";
@@ -14,6 +14,12 @@ export interface GroupNodeData {
   group: MachineGroup;
   factoryId: string;
   showFloorBadge?: boolean;
+  /** MANIFOLD motion (§5): transient mount grammar — "mount-build" (7l
+   *  blueprint materialize) or "mount-pop" (7h redo return). */
+  motionCls?: string;
+  /** 7m chain build: 0-based construction index (left → right) — drives the
+   *  900ms-per-group stagger via the --build-i CSS var. */
+  buildIdx?: number;
   [key: string]: unknown;
 }
 
@@ -83,6 +89,9 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
   const clockClass = clockPct < 1 ? "clock-under" : clockPct > 1 ? "clock-over" : "";
   const justSettled = settled.has(`/groups/${group.id}`);
   const numCls = `${isProjected || group.status === "planned" ? "projected" : ""} ${justSettled ? "settle" : ""}`;
+  // 7d settle ripple: values stagger DOWN the card (count → clock → rate →
+  // power), 120ms apart, via the --settle-i var the keyframe delay reads.
+  const settleAt = (i: number) => (justSettled ? ({ "--settle-i": i } as CSSProperties) : undefined);
 
   const outRate = recipe?.products?.[0] ? dg?.outRates[recipe.products[0][0]] ?? 0 : 0;
 
@@ -95,12 +104,26 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
   const fuelName = fuelItem ? itemLabel(gamedata.items, fuelItem) : "";
 
   return (
-    <div className={`group-card frame-${group.status} ${selected ? "selected" : ""}`} data-testid={`group-${group.recipe}`}>
+    <div
+      className={`group-card frame-${group.status} ${selected ? "selected" : ""} ${data.motionCls ?? ""}`}
+      style={data.buildIdx !== undefined ? ({ "--build-i": data.buildIdx } as CSSProperties) : undefined}
+      data-testid={`group-${group.recipe}`}
+    >
       <Handle type="target" position={Position.Left} className="belt-handle" />
       <header className="group-card-head">
         <ItemIcon item={group.machine} displayName={machine} size={20} />
         <span className="group-card-name">
-          {machine.toUpperCase()} <span className={`mono ${numCls}`}>×{group.count}</span>
+          {/* 7l/status grammar: a planned (or projected) card carries the ◇
+              in its title — it reads as blueprint from the first frame. */}
+          {(group.status === "planned" || isProjected) && (
+            <span className="status-glyph status-planned" aria-hidden>
+              ◇{" "}
+            </span>
+          )}
+          {machine.toUpperCase()}{" "}
+          <span className={`mono ${numCls}`} style={settleAt(0)}>
+            ×{group.count}
+          </span>
           {deltaCount !== null && <span className="mono projected"> ➜ ×{deltaCount}</span>}
         </span>
         <span
@@ -108,7 +131,9 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
           title={deltaClock !== null ? `Clock — built at ${fmtClock(group.clock)}` : "Clock"}
         >
           {clockPct < 1 ? "↓" : clockPct > 1 ? "↑" : ""}
-          <span className={deltaClock !== null ? `projected ${numCls}` : numCls}>{fmtClock(clockPct)}</span>
+          <span className={deltaClock !== null ? `projected ${numCls}` : numCls} style={settleAt(1)}>
+            {fmtClock(clockPct)}
+          </span>
         </span>
       </header>
       {isGen ? (
@@ -122,7 +147,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
             ⚡
           </span>
           <span>GENERATES</span>
-          <span className={`t-data-12 gen-mw ${numCls}`} style={{ marginLeft: "auto" }}>
+          <span className={`t-data-12 gen-mw ${numCls}`} style={{ marginLeft: "auto", ...settleAt(2) }}>
             {fmtPower(outRate)}
           </span>
         </div>
@@ -130,7 +155,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
         <div className="group-card-recipe">
           <ItemIcon item={recipe?.products?.[0]?.[0] ?? ""} size={20} />
           <span>{recipe?.displayName ?? group.recipe}</span>
-          <span className={`t-data-12 ${numCls}`} style={{ marginLeft: "auto" }}>
+          <span className={`t-data-12 ${numCls}`} style={{ marginLeft: "auto", ...settleAt(2) }}>
             {fmtRate(outRate)}
             <span className="unit">/min</span>
           </span>
@@ -141,7 +166,7 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
         <footer className="group-card-foot mono">
           <span>GENERATOR</span>
           {fuelItem && (
-            <span className={numCls} style={{ marginLeft: "auto" }}>
+            <span className={numCls} style={{ marginLeft: "auto", ...settleAt(3) }}>
               BURNS {fmtRate(fuelRate)}/min {fuelName.toUpperCase()}
             </span>
           )}
@@ -152,7 +177,9 @@ export default function MachineGroupNode({ data, selected }: { data: GroupNodeDa
           <span>IN {recipe?.ingredients.length ?? 0}</span>
           <span>OUT {recipe?.products.length ?? 0}</span>
           {data.showFloorBadge && <span className="floor-badge-foot">F{group.floor}</span>}
-          <span className={numCls}>{fmtPower(dg?.powerMw ?? 0)}</span>
+          <span className={numCls} style={settleAt(3)}>
+            {fmtPower(dg?.powerMw ?? 0)}
+          </span>
         </footer>
       )}
       <Handle type="source" position={Position.Right} className="belt-handle" />

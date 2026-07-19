@@ -15,6 +15,8 @@ export interface JunctionNodeData {
   junction: Junction;
   factoryId: string;
   showFloorBadge?: boolean;
+  /** MANIFOLD motion (§5): transient mount grammar ("mount-pop"). */
+  motionCls?: string;
   [key: string]: unknown;
 }
 
@@ -57,7 +59,7 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
     // are drawn from edgeLayout anchors, so these handles are the connection
     // affordance + side nubs that agree with where the belts run.
     <div
-      className={`junction-card frame-${junction.status} ${selected ? "selected" : ""}`}
+      className={`junction-card frame-${junction.status} ${selected ? "selected" : ""} ${data.motionCls ?? ""}`}
       data-testid={`junction-${junction.kind}-${junction.id}`}
       title={`${name} — in ${inUsed}/${inCap} · out ${outUsed}/${outCap}${item ? ` · ${item.toUpperCase()}` : ""}`}
     >

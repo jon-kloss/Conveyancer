@@ -11,6 +11,8 @@ import ItemIcon from "../lib/ItemIcon";
 export interface PortNodeData {
   port: Port;
   factoryId: string;
+  /** MANIFOLD motion (§5): transient mount grammar ("mount-pop"). */
+  motionCls?: string;
   [key: string]: unknown;
 }
 
@@ -46,7 +48,7 @@ export default function BoundaryPortNode({ data, selected }: { data: PortNodeDat
   // between them. Direction is also carried by ring colour and column side.
   return (
     <div
-      className={`port-node ${port.direction} frame-${port.status} ${selected ? "selected" : ""}`}
+      className={`port-node ${port.direction} frame-${port.status} ${selected ? "selected" : ""} ${data.motionCls ?? ""}`}
       data-testid={`port-${port.direction}-${port.item}`}
       title={`${port.direction === "in" ? "INPUT" : "OUTPUT"}: ${item}`}
     >

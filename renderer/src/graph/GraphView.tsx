@@ -13,6 +13,7 @@ import {
   BackgroundVariant,
   MiniMap,
   SelectionMode,
+  ViewportPortal,
   applyNodeChanges,
   type Connection,
   type Edge,
@@ -37,6 +38,16 @@ import { fmtPower } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
 import { isEditableTarget } from "../lib/keys";
 import { computeEdgeLayout, type JunctionShape, type LabelSize, type NodeGeom } from "./edgeLayout";
+import {
+  EDGE_RETRACT_MS,
+  buildOrder,
+  diffIds,
+  ghostTtlMs,
+  motionKind,
+  pruneGhosts,
+  type EdgeGhost,
+  type NodeGhost,
+} from "./graphMotion";
 import FloorPlates from "./FloorPlates";
 import { fmtRate, fmtPercent, bottleneckEdges, itemLabel } from "../lib/format";
 import GraphSearch from "./GraphSearch";
@@ -344,6 +355,26 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     return seen.size > 1 ? seen : null;
   }, [factory, selection, plan.edges, factoryId]);
 
+  // ---- MANIFOLD interaction motion (handoff §5: 7h undo/redo, 7k delete,
+  // 7l create, 7m chain build). The graph diffs its own entity ids between
+  // commits; the store's `motion` verb only picks WHICH grammar plays.
+  // Everything here is visual-only and skipped under prefers-reduced-motion.
+  const reducedMotion =
+    typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [nodeGhosts, setNodeGhosts] = useState<NodeGhost[]>([]);
+  const [edgeGhosts, setEdgeGhosts] = useState<EdgeGhost[]>([]);
+  // id → mount class: "mount-build" (7l blueprint) | "mount-pop" (7h return)
+  const [mountCls, setMountCls] = useState<ReadonlyMap<string, string>>(new Map());
+  // 7m: id → 0-based construction index (left → right); set only for batches
+  const [buildIdx, setBuildIdx] = useState<ReadonlyMap<string, number>>(new Map());
+  // edge id → draw-in delay ms (7l: after its card; 7m: just before its card)
+  const [edgeDraw, setEdgeDraw] = useState<ReadonlyMap<string, number>>(new Map());
+  // 7m is interruptible: any input jumps the whole chain build to end state
+  const [motionSkip, setMotionSkip] = useState(false);
+  const prevIdsRef = useRef<{ factoryId: string; nodeIds: Set<string>; edgeIds: Set<string> } | null>(null);
+  const nodeGeomSnapRef = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map());
+  const edgePathSnapRef = useRef<Map<string, { d: string; from: string; to: string }>>(new Map());
+
   // ---- nodes (positions locally tracked while dragging; committed on drop) ----
   const buildNodes = useCallback((): Node[] => {
     if (!factory) return [];
@@ -371,7 +402,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         id: gid,
         type: "group",
         position: { x: g.graphPos.x, y: g.graphPos.y },
-        data: { group: g, factoryId, showFloorBadge: floors.length > 1 } satisfies GroupNodeData as unknown as Record<string, unknown>,
+        data: {
+          group: g,
+          factoryId,
+          showFloorBadge: floors.length > 1,
+          motionCls: mountCls.get(gid),
+          buildIdx: buildIdx.get(gid),
+        } satisfies GroupNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "group" && selection.id === gid,
         // ghosts of other floors: visible context, but never interactive. Trace
         // dimming (off-chain when something is selected) stays clickable so you
@@ -395,7 +432,12 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         id: j.id,
         type: "junction",
         position: { x: j.graphPos.x, y: j.graphPos.y },
-        data: { junction: j, factoryId, showFloorBadge: floors.length > 1 } satisfies JunctionNodeData as unknown as Record<string, unknown>,
+        data: {
+          junction: j,
+          factoryId,
+          showFloorBadge: floors.length > 1,
+          motionCls: mountCls.get(j.id),
+        } satisfies JunctionNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "junction" && selection.id === j.id,
         style: dimmed
           ? { opacity: 0.22, pointerEvents: "none" as const }
@@ -415,13 +457,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         id: pid,
         type: "boundaryPort",
         position: { x: p.graphPos.x, y: p.graphPos.y },
-        data: { port: p, factoryId } satisfies PortNodeData as unknown as Record<string, unknown>,
+        data: { port: p, factoryId, motionCls: mountCls.get(pid) } satisfies PortNodeData as unknown as Record<string, unknown>,
         selected: selection?.kind === "port" && selection.id === pid,
         style: filterDim ? { opacity: 0.15 } : traceDim ? { opacity: 0.3 } : undefined,
       });
     }
     return out;
-  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet, graphFilter, gamedata]);
+  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet, graphFilter, gamedata, mountCls, buildIdx]);
 
   const [nodes, setNodes] = useState<Node[]>(buildNodes);
   // Plan/selection changes rebuild the node array — but xyflow adopts user
@@ -468,7 +510,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           pd.junction === fd.junction &&
           pd.port === fd.port &&
           pd.factoryId === fd.factoryId &&
-          pd.showFloorBadge === fd.showFloorBadge;
+          pd.showFloorBadge === fd.showFloorBadge &&
+          pd.motionCls === fd.motionCls &&
+          pd.buildIdx === fd.buildIdx;
         if (unchanged) {
           if (p !== prev[i]) identical = false;
           return p;
@@ -622,10 +666,153 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
           portal,
           onJumpFloor: jumpFloor,
           dimmed,
+          mountDelayMs: edgeDraw.get(e.id),
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
-  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet]);
+  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet, edgeDraw]);
+
+  // Diff plan-entity ids between commits → play removal/creation grammar.
+  useEffect(() => {
+    if (!factory) return;
+    const nodeIds = new Set<string>();
+    for (const gid of factory.groups) if (plan.groups[gid]) nodeIds.add(gid);
+    for (const j of Object.values(plan.junctions)) if (j.factory === factoryId) nodeIds.add(j.id);
+    for (const pid of factory.ports) if (plan.ports[pid]) nodeIds.add(pid);
+    const edgeIds = new Set<string>();
+    for (const e of Object.values(plan.edges)) if (e.factory === factoryId) edgeIds.add(e.id);
+    const prev = prevIdsRef.current;
+    prevIdsRef.current = { factoryId, nodeIds, edgeIds };
+    // Opening a factory view (or switching factories) is never a mutation.
+    if (!prev || prev.factoryId !== factoryId || reducedMotion) return;
+    const now = Date.now();
+    // The verb must be stamped for THIS plan commit (hash match) — hydrate,
+    // sync-import, auto-pull and proposal-accept advance planHash without
+    // stamping, so their diffs never inherit a stale edit/undo/redo grammar.
+    const st = useStore.getState();
+    const kind = motionKind(st.motion, now, st.planHash);
+    if (!kind) return;
+    const nodesDiff = diffIds(prev.nodeIds, nodeIds);
+    const edgesDiff = diffIds(prev.edgeIds, edgeIds);
+
+    // Removals → transient afterimages (7h undo flash / 7k deconstruct); the
+    // geometry refs still hold the PREVIOUS commit's positions (their update
+    // effects are declared below this one).
+    if (nodesDiff.removed.length || edgesDiff.removed.length) {
+      const ghostKind: NodeGhost["kind"] = kind === "undo" ? "undo" : "delete";
+      const born: NodeGhost[] = [];
+      for (const id of nodesDiff.removed) {
+        const g = nodeGeomSnapRef.current.get(id);
+        if (g) born.push({ id, kind: ghostKind, ...g, at: now });
+      }
+      const removedSet = new Set(nodesDiff.removed);
+      const bornEdges: EdgeGhost[] =
+        ghostKind === "delete"
+          ? edgesDiff.removed.flatMap((id) => {
+              const snap = edgePathSnapRef.current.get(id);
+              if (!snap) return [];
+              // 7k: retract INTO the survivor — when the path's source end
+              // was the deleted node, collapse toward the start's opposite.
+              return [{ id, d: snap.d, rev: removedSet.has(snap.to), at: now }];
+            })
+          : [];
+      if (born.length) setNodeGhosts((gs) => [...pruneGhosts(gs, now, (g) => ghostTtlMs(g.kind)), ...born]);
+      if (bornEdges.length) setEdgeGhosts((gs) => [...pruneGhosts(gs, now, () => EDGE_RETRACT_MS), ...bornEdges]);
+    }
+
+    // Additions → mount grammar (7h redo pop, 7l blueprint build, 7m chain).
+    if (nodesDiff.added.length || edgesDiff.added.length) {
+      const cls = new Map<string, string>();
+      const idx = new Map<string, number>();
+      const draw = new Map<string, number>();
+      if (kind === "edit") {
+        const newGroups = nodesDiff.added.filter((id) => plan.groups[id]);
+        for (const id of nodesDiff.added) cls.set(id, plan.groups[id] ? "mount-build" : "mount-pop");
+        if (newGroups.length > 1) {
+          for (const [id, i] of buildOrder(
+            newGroups.map((id) => ({ id, x: plan.groups[id].graphPos.x, y: plan.groups[id].graphPos.y })),
+          ))
+            idx.set(id, i);
+        }
+        for (const id of edgesDiff.added) {
+          // 7l: the edge extends AFTER its card materializes (ghost 150ms +
+          // card 200ms); 7m: it extends just before its target constructs.
+          const i = idx.get(plan.edges[id]?.to.id ?? "");
+          draw.set(id, i !== undefined ? i * 900 + 100 : 350);
+        }
+      } else {
+        for (const id of nodesDiff.added) cls.set(id, "mount-pop");
+      }
+      setMountCls(cls);
+      setBuildIdx(idx);
+      setEdgeDraw(draw);
+      // A fresh batch un-latches a previous 7m interrupt — otherwise one
+      // skip would silently mute every later batch's choreography.
+      setMotionSkip(false);
+    }
+  }, [factory, plan.groups, plan.junctions, plan.ports, plan.edges, factoryId, reducedMotion]);
+
+  // Geometry snapshots for ghosts — declared AFTER the diff effect so a
+  // removal's diff still reads the previous commit's geometry.
+  useEffect(() => {
+    const snap = new Map<string, { x: number; y: number; w: number; h: number }>();
+    for (const n of nodes) {
+      const m = (n as { measured?: { width?: number; height?: number } }).measured;
+      snap.set(n.id, {
+        x: n.position.x,
+        y: n.position.y,
+        w: m?.width ?? (n.type === "group" ? 248 : 84),
+        h: m?.height ?? (n.type === "group" ? 150 : 84),
+      });
+    }
+    nodeGeomSnapRef.current = snap;
+  }, [nodes]);
+  useEffect(() => {
+    const snap = new Map<string, { d: string; from: string; to: string }>();
+    for (const e of edges) {
+      const be = e.data as BeltEdgeData | undefined;
+      const d = be?.geom?.path;
+      if (d && be) snap.set(e.id, { d, from: be.edge.from.id, to: be.edge.to.id });
+    }
+    edgePathSnapRef.current = snap;
+  }, [edges]);
+
+  // Ghosts and mount classes are transient — clear once fully played out.
+  useEffect(() => {
+    if (!nodeGhosts.length && !edgeGhosts.length) return;
+    const t = window.setTimeout(() => {
+      const now = Date.now();
+      setNodeGhosts((gs) => pruneGhosts(gs, now, (g) => ghostTtlMs(g.kind)));
+      setEdgeGhosts((gs) => pruneGhosts(gs, now, () => EDGE_RETRACT_MS));
+    }, 320);
+    return () => window.clearTimeout(t);
+  }, [nodeGhosts, edgeGhosts]);
+  useEffect(() => {
+    if (!mountCls.size && !edgeDraw.size) return;
+    const maxDelay = Math.max(0, ...[...buildIdx.values()].map((i) => i * 900), ...edgeDraw.values());
+    const t = window.setTimeout(() => {
+      setMountCls(new Map());
+      setBuildIdx(new Map());
+      setEdgeDraw(new Map());
+      setMotionSkip(false);
+    }, maxDelay + 700);
+    return () => window.clearTimeout(t);
+  }, [mountCls, buildIdx, edgeDraw]);
+  // 7m interruptible: while a chain build staggers, any input jumps to end.
+  useEffect(() => {
+    if (buildIdx.size === 0 || motionSkip) return;
+    const skip = () => {
+      setMotionSkip(true);
+      setNodeGhosts([]);
+      setEdgeGhosts([]);
+    };
+    window.addEventListener("pointerdown", skip, true);
+    window.addEventListener("keydown", skip, true);
+    return () => {
+      window.removeEventListener("pointerdown", skip, true);
+      window.removeEventListener("keydown", skip, true);
+    };
+  }, [buildIdx, motionSkip]);
 
   // Card geometry for the floor plates (same source as the edge layout).
   const plateGeoms = useMemo(() => {
@@ -821,7 +1008,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const statusGlyph = factory.status === "planned" ? "◇" : factory.status === "built" ? "◆" : "◈";
 
   return (
-    <div className="graph-root" data-testid="graph-root">
+    <div className={`graph-root ${motionSkip ? "motion-skip" : ""}`} data-testid="graph-root">
       {/* context-aware header search (titlebar center slot) */}
       {searchSlot && createPortal(<GraphSearch />, searchSlot)}
       {/* context bar (36px) */}
@@ -1064,6 +1251,27 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1.5} color="var(--graph-dot)" />
           <FloorPlates groups={factoryGroups} edges={factoryEdges} geoms={plateGeoms} activeFloor={floorFilter} />
+          {(nodeGhosts.length > 0 || edgeGhosts.length > 0) && (
+            // Removal afterimages in flow coordinates (7h undo flash / 7k
+            // deconstruct): dashed bp outlines + retracting edge stubs.
+            <ViewportPortal>
+              {nodeGhosts.map((g) => (
+                <div
+                  key={g.id}
+                  className={`mfd-ghost-node ${g.kind}`}
+                  style={{ left: g.x, top: g.y, width: g.w, height: g.h }}
+                  data-testid={`ghost-${g.id}`}
+                />
+              ))}
+              {edgeGhosts.length > 0 && (
+                <svg className="mfd-ghost-edges" aria-hidden>
+                  {edgeGhosts.map((g) => (
+                    <path key={g.id} d={g.d} pathLength={1} className={g.rev ? "rev" : ""} />
+                  ))}
+                </svg>
+              )}
+            </ViewportPortal>
+          )}
           <MiniMap
             position="bottom-left"
             className="graph-minimap"

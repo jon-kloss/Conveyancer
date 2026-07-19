@@ -1279,3 +1279,191 @@
   font-size: 10px;
   color: var(--ink-faint);
 }
+
+/* ---- MANIFOLD interaction motion pack (handoff §5: 7h/7k/7l/7m) ----
+   All timings from the spec table; every animation dies under
+   prefers-reduced-motion (and GraphView never spawns ghosts there). */
+
+/* 7l machine create — blueprint first: a bp-400 dashed footprint sketches
+   in (150ms), the card materializes inside it (scale 0.94 → 1, 200ms). In a
+   7m chain build the whole sequence shifts by --build-i × 900ms;
+   `backwards` keeps the card invisible until its construction slot. */
+@keyframes mfd-build-card {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes mfd-build-sketch {
+  0% {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  45% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+.mount-build {
+  position: relative; /* anchors the ::after sketch to the card itself */
+  animation: mfd-build-card 200ms var(--ease) calc(var(--build-i, 0) * 900ms + 150ms) backwards;
+}
+.mount-build::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1.5px dashed var(--bp-400);
+  border-radius: 8px;
+  pointer-events: none;
+  animation: mfd-build-sketch 350ms var(--ease) calc(var(--build-i, 0) * 900ms) both;
+}
+
+/* 7h redo — the entity returns with a 1.12× micro-pop (200ms). */
+@keyframes mfd-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.mount-pop {
+  animation: mfd-pop 200ms var(--ease);
+}
+
+/* 7l/7m — a just-created belt extends from its neighbor (scaleX 0 → 1,
+   200ms; keyframes referenced inline from BeltEdgeView so the delay can
+   vary per edge), and its label chip fades in after. */
+@keyframes mfd-edge-extend {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+@keyframes mfd-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 7h undo / 7k delete — removal afterimages rendered in flow coordinates
+   (ViewportPortal). Undo: a bp-400 dashed ghost outline flashes ~120ms —
+   reversal you can see. Delete: deconstruct, don't vanish — the card
+   collapses (scale 0.92 + fade, 150ms) leaving the same dashed ghost. */
+@keyframes mfd-ghost-fade {
+  from {
+    opacity: 0.95;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes mfd-del-collapse {
+  from {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0.4;
+    transform: scale(0.92);
+  }
+}
+.mfd-ghost-node {
+  position: absolute;
+  border: 1.5px dashed var(--bp-400);
+  border-radius: 6px;
+  pointer-events: none;
+}
+.mfd-ghost-node.undo {
+  animation: mfd-ghost-fade 120ms var(--ease) both;
+}
+.mfd-ghost-node.delete {
+  background: color-mix(in srgb, var(--steel-800) 55%, transparent);
+  animation:
+    mfd-del-collapse 150ms var(--ease) both,
+    mfd-ghost-fade 120ms var(--ease) 150ms both;
+}
+/* 7k — removed belts retract INTO their surviving neighbor (200ms): the
+   ghost path replays the edge's last geometry in the real belt color
+   (a7-deledge retracts flow-ok green, not blueprint blue) and pulls back
+   via dashoffset — .rev flips the collapse direction when the survivor is
+   the path's source end. */
+.mfd-ghost-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+@keyframes mfd-edge-retract {
+  from {
+    stroke-dashoffset: 0;
+    opacity: 0.9;
+  }
+  to {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+}
+@keyframes mfd-edge-retract-rev {
+  from {
+    stroke-dashoffset: 0;
+    opacity: 0.9;
+  }
+  to {
+    stroke-dashoffset: -1;
+    opacity: 0;
+  }
+}
+.mfd-ghost-edges path {
+  fill: none;
+  stroke: var(--flow-ok);
+  stroke-width: 2;
+  stroke-dasharray: 1;
+  animation: mfd-edge-retract 200ms var(--ease) both;
+}
+.mfd-ghost-edges path.rev {
+  animation-name: mfd-edge-retract-rev;
+}
+
+/* 7m is interruptible: any input while a chain build staggers jumps every
+   card/edge to its end state (the natural render). */
+.motion-skip .mount-build,
+.motion-skip .mount-build::after,
+.motion-skip .mount-pop,
+.motion-skip .react-flow__edge path,
+.motion-skip .belt-label,
+.motion-skip .mfd-ghost-node,
+.motion-skip .mfd-ghost-edges path {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mount-build,
+  .mount-build::after,
+  .mount-pop,
+  .mfd-ghost-node,
+  .mfd-ghost-edges path {
+    animation: none;
+  }
+  .mount-build::after {
+    display: none;
+  }
+}

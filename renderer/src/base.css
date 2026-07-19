@@ -200,17 +200,33 @@ button {
   clip-path: var(--corner-cut);
 }
 
-/* ---- settle flash: changed numbers flash amber → ink over 300ms ---- */
-@keyframes settle-flash {
+/* ---- T1 settle ripple (MANIFOLD motion 7d): every value a solve changed
+   goes italic (skewX −10°) + flow-warn amber while projected, then settles
+   upright + ink. Values stagger DOWN the card 120ms apart via --settle-i
+   (assigned top-to-bottom where a surface has several); `backwards` holds
+   the italic-amber frame through the delay so the ripple reads as a wave. */
+@keyframes settle-ripple {
   0% {
     color: var(--flow-warn);
+    transform: skewX(-10deg);
   }
   100% {
     color: inherit;
+    transform: skewX(0deg);
   }
 }
 .settle {
-  animation: settle-flash var(--dur-settle) var(--ease);
+  display: inline-block; /* transform needs a box on these inline spans */
+  animation: settle-ripple 120ms var(--ease) backwards;
+  /* --build-i shifts a 7m chain-built card's ripple to its ~900ms
+     construction slot — otherwise the settle plays while the card is still
+     held invisible by mount-build and is never seen. 0 everywhere else. */
+  animation-delay: calc(var(--settle-i, 0) * 120ms + var(--build-i, 0) * 900ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .settle {
+    animation: none;
+  }
 }
 
 /* ---- icon placeholder: 45° diagonal stripes (runtime-asset grammar) ---- */

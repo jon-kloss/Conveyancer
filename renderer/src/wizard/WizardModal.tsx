@@ -353,8 +353,10 @@ export default function WizardModal() {
               {PHASES.map((p) => {
                 const st = phaseState(p);
                 return (
+                  // Motion 7g: the marker trails the name so the width-reveal
+                  // typing lands the ✓ as the LAST character of the line.
                   <div key={p} className={`wizard-phase mono ${st}`}>
-                    {st === "done" ? "✓" : st === "active" ? "▸" : "·"} {p}
+                    {p} {st === "done" ? "✓" : st === "active" ? "▸" : "·"}
                   </div>
                 );
               })}
