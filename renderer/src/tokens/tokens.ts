@@ -32,6 +32,7 @@ export const tokens = {
   /** color */ flow_crit_dark: "#7A2622",
   /** color */ underclock: "#5BC8C0",
   /** color */ underclock_dark: "#2A5F57",
+  /** color */ signal_comet: "#FFD9AE",
   /** color */ resource_iron: "#6E7D8C",
   /** color */ resource_copper: "#B0663C",
   /** color */ resource_limestone: "#B3A078",

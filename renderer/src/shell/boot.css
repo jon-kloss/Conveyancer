@@ -1,0 +1,106 @@
+/* MANIFOLD boot screen (handoff §4a/§7). The overlay sits on the SAME
+   map-canvas + 24px map-grid the world map uses, so the splash → map
+   crossfade (motion 7j) never changes the background — no cut. */
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  background-color: var(--map-canvas);
+  background-image:
+    linear-gradient(var(--map-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--map-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.boot-stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.boot-center {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  z-index: 1;
+}
+/* choreographed variant: sits under the manifold (wordmark row ≈ y 508/720) */
+.boot-under {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 68%;
+  gap: 12px;
+}
+
+.boot-wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 40px;
+  letter-spacing: 0.3em;
+  padding-left: 0.3em; /* recenter: tracking adds a trailing gap */
+  color: var(--ink-100);
+  text-align: center;
+}
+
+.boot-ticker {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  color: var(--ink-500);
+  text-align: center;
+}
+.boot-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--signal-500);
+  margin-left: 8px;
+  vertical-align: -2px;
+}
+
+.boot-survey-chip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(33% + 56px);
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--ink-500);
+}
+
+.boot-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 52%, rgba(0, 0, 0, 0.42) 100%);
+  pointer-events: none;
+}
+
+/* Motion 7j — the live app scales 1.05 → 1 and fades in while the splash
+   layer fades out above it; the shared grid background never moves. */
+.boot-reveal {
+  animation: boot-map-in 400ms var(--ease) both;
+}
+@keyframes boot-map-in {
+  from {
+    opacity: 0;
+    transform: scale(1.05);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-reveal {
+    animation: none;
+  }
+}

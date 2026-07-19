@@ -220,6 +220,10 @@ const emptyDerived: Derived = {
 export interface AppStore {
   ready: boolean;
   error: string | null;
+  /** MANIFOLD boot progress (handoff §4a/§7): REAL loader stages only —
+   *  the ticker narrates these verbatim and the expanding bus follows
+   *  `fraction`; no synthetic timers anywhere in this model. */
+  boot: { stage: string; fraction: number };
   /** last refused backend command — status-bar chip, NOT the full-screen
       BACKEND UNREACHABLE card (that is `error`, set only by hydrate). */
   cmdError: { message: string; at: number } | null;
@@ -568,6 +572,7 @@ async function rankOnDevice(model: string): Promise<RankResponse> {
 
 export const useStore = create<AppStore>((set, get) => ({
   ready: false,
+  boot: { stage: "CONNECTING BACKEND", fraction: 0 },
   error: null,
   cmdError: null,
   toasts: [],
@@ -627,9 +632,26 @@ export const useStore = create<AppStore>((set, get) => ({
     lastMergedHash = "";
     set({ rank: null, rankEpoch: 0 });
     try {
+      // Boot stages are the REAL awaits: the hydrate round-trip (on web this
+      // spans worker spin-up + IndexedDB docs restore + the wasm session
+      // rebuild), then applying the payload. The fractions are stage weights
+      // of known work; the BootScreen smoother animates through the bursts.
+      set({ boot: { stage: "READING PLAN FILE", fraction: 0.06 } });
       const init = await backend.hydrate();
+      const nFactories = Object.keys(init.plan.factories).length;
+      const nRoutes = Object.keys(init.plan.routes).length;
+      set({
+        boot: {
+          stage: `HYDRATING FACTORIES — ${nFactories}` + (nRoutes ? ` · ROUTES — ${nRoutes}` : ""),
+          fraction: 0.82,
+        },
+      });
       const openFactory = init.viewState?.openFactory;
       set({
+        boot: {
+          stage: `EMPIRE ONLINE — ${nFactories} ${nFactories === 1 ? "FACTORY" : "FACTORIES"}`,
+          fraction: 1,
+        },
         ready: true,
         plan: init.plan,
         derived: init.derived,

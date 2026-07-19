@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import BootScreen, { type BootPhase } from "./shell/BootScreen";
 import Titlebar from "./shell/Titlebar";
 import StatusBar from "./shell/StatusBar";
 import { useLayoutMode } from "./shell/useLayoutMode";
@@ -20,6 +21,12 @@ export default function App() {
   const { mode } = useLayoutMode();
   useAutoZoom(); // shell only: shrink CSS px on low-logical-res displays (4K TV at 300% scaling)
   const [auditOpen, setAuditOpen] = useState(false);
+  // MANIFOLD boot overlay lifecycle: "load" while the expanding manifold
+  // tracks real hydrate progress, "reveal" during the 0.5s splash → map
+  // crossfade (the app frame plays .boot-reveal beneath), "done" once the
+  // overlay is gone for good. Never re-enters — hydrate() re-runs (plan
+  // switches) patch the live app, only the first boot gets the choreography.
+  const [bootPhase, setBootPhase] = useState<BootPhase>("load");
   const ready = useStore((s) => s.ready);
   const error = useStore((s) => s.error);
   const view = useStore((s) => s.view);
@@ -192,16 +199,14 @@ export default function App() {
     );
   }
 
-  if (!ready) {
-    return screen(
-      <div className="mono" style={{ color: "var(--ink-500)" }}>
-        HYDRATING…
-      </div>,
-    );
-  }
-
+  // Single return so the BootScreen keeps ONE component identity across the
+  // ready flip — an early `!ready` return would remount it at a different
+  // tree position mid-choreography, resetting the sim (and misreading a slow
+  // boot as the fast path).
   return (
-    <div className="app-frame" data-layout={mode}>
+    <>
+      {ready && (
+        <div className={`app-frame ${bootPhase === "reveal" ? "boot-reveal" : ""}`} data-layout={mode}>
       <Titlebar overlayMode={mode === "overlay"} />
       <main className="app-canvas">
         {view.mode === "map" || reviewing ? (
@@ -219,7 +224,10 @@ export default function App() {
         {dashboardOpen && !reviewing && !emptyPlan && <Dashboard />}
         <ToastHost />
       </main>
-      <StatusBar overlayMode={mode === "overlay"} />
-    </div>
+          <StatusBar overlayMode={mode === "overlay"} />
+        </div>
+      )}
+      {bootPhase !== "done" && <BootScreen phase={bootPhase} setPhase={setBootPhase} />}
+    </>
   );
 }
