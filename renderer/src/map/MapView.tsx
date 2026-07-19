@@ -3,7 +3,7 @@
 // factories; placeholder treatment for world imagery (runtime asset — see
 // DECISIONS.md on tile licensing).
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -11,6 +11,8 @@ import { MapCanvasLayer } from "./CanvasLayer";
 import { attachSmoothWheelZoom } from "./smoothZoom";
 import type { CanvasLayerData, NodeRenderState } from "./CanvasLayer";
 import { fromLatLng, toLatLng } from "./maputil";
+import { motionKind } from "../graph/graphMotion";
+import { CLUSTER_CAP, CLUSTER_STEP_MS, CONVERGE_MS, scatter, tetherKey, type MapMotion } from "./mapMotion";
 import { useStore } from "../state/store";
 import Glyph from "../lib/glyphs";
 import { isEditableTarget } from "../lib/keys";
@@ -318,6 +320,7 @@ export default function MapView() {
       showPower: true,
       ghost: null,
       review: null,
+      motion: null,
     });
     layer.addTo(map);
     layerRef.current = layer;
@@ -381,6 +384,204 @@ export default function MapView() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---- MANIFOLD map motion (§5: 7a accept sweep, 7b placement drop, 7c
+  // import cluster converge, 7e route draw, map half of 7h). The detector
+  // diffs plan entities between commits; the store's hash-pinned verb picks
+  // the grammar (accepts/imports don't stamp one — they're recognized by the
+  // reviewing transition / verb-less built additions). Skipped wholesale
+  // under prefers-reduced-motion. ----
+  const reducedMotion =
+    typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // fresh pin id → mount class + delay, consumed by the marker-sync effect
+  const pinMotionRef = useRef<Map<string, { cls: string; delayMs: number }>>(new Map());
+  const mapMotionRef = useRef<MapMotion | null>(null);
+  const [motionTick, setMotionTick] = useState(0);
+  const [acceptChip, setAcceptChip] = useState<{ count: number; at: number; delayMs: number } | null>(null);
+  const [pinGhosts, setPinGhosts] = useState<{ id: string; left: number; top: number }[]>([]);
+  const prevPlanRef = useRef<{
+    factories: Set<string>;
+    claims: Set<string>;
+    routes: Set<string>;
+    reviewing: boolean;
+  } | null>(null);
+  const ghostTimerRef = useRef<number | null>(null);
+
+  // Spec State-Management note: 7a/7c sequences "interrupt cleanly if the
+  // user interacts (jump to end state)". Flushing = strip every pin's motion
+  // class (the natural render IS the end state), drop queued classes, end
+  // the canvas window, repaint static.
+  const flushMapMotion = useCallback(() => {
+    pinMotionRef.current.clear();
+    for (const marker of markersRef.current.values()) {
+      const el = marker.getElement();
+      if (!el) continue;
+      el.classList.remove("pin-motion-drop", "pin-motion-land", "pin-motion-cluster", "pin-motion-pop");
+      el.style.removeProperty("--pin-delay");
+    }
+    if (mapMotionRef.current) {
+      mapMotionRef.current = null;
+      setMotionTick((n) => n + 1);
+    }
+  }, []);
+  // Arm the interrupt only while a sequenced window is live — the triggering
+  // interaction itself never flushes (listeners attach after the commit).
+  useEffect(() => {
+    const m = mapMotionRef.current;
+    const map = mapRef.current;
+    if (!m || !map || Date.now() >= m.until) return;
+    const flush = () => flushMapMotion();
+    map.on("movestart zoomstart mousedown", flush);
+    window.addEventListener("keydown", flush, true);
+    return () => {
+      map.off("movestart zoomstart mousedown", flush);
+      window.removeEventListener("keydown", flush, true);
+    };
+  }, [motionTick, flushMapMotion]);
+
+  useEffect(() => {
+    const cur = {
+      factories: new Set(Object.keys(plan.factories)),
+      claims: new Set(Object.keys(plan.nodeClaims)),
+      routes: new Set(Object.keys(plan.routes)),
+      reviewing: !!reviewingProposal,
+    };
+    const prev = prevPlanRef.current;
+    prevPlanRef.current = cur;
+    // First commit (boot hydrate) is never a mutation.
+    if (!prev || reducedMotion) return;
+    const now = Date.now();
+    const st = useStore.getState();
+    const fAdd = [...cur.factories].filter((id) => !prev.factories.has(id));
+    const fRem = [...prev.factories].filter((id) => !cur.factories.has(id));
+    const cAdd = [...cur.claims].filter((id) => !prev.claims.has(id));
+    const rAdd = [...cur.routes].filter((id) => !prev.routes.has(id));
+    if (!fAdd.length && !fRem.length && !cAdd.length && !rAdd.length) return;
+    const verb = motionKind(st.motion, now, st.planHash);
+    const claimTethers = (ids: string[], offsetMs: number) => {
+      const born: Record<string, number> = {};
+      for (const id of ids) {
+        const n = world.nodes.find((w) => w.id === plan.nodeClaims[id]?.node);
+        if (n) born[tetherKey(n)] = now + offsetMs;
+      }
+      return born;
+    };
+    // A later mutation MERGES into a still-live window instead of replacing
+    // it — an in-flight draw-in is never truncated by the next edit.
+    const mergeMotion = (m: MapMotion) => {
+      const live = mapMotionRef.current && now < mapMotionRef.current.until ? mapMotionRef.current : null;
+      mapMotionRef.current = live
+        ? {
+            until: Math.max(live.until, m.until),
+            tetherBorn: { ...live.tetherBorn, ...m.tetherBorn },
+            routeBorn: { ...live.routeBorn, ...m.routeBorn },
+            clusters: [...live.clusters, ...m.clusters],
+          }
+        : m;
+      setMotionTick((n) => n + 1);
+    };
+    if (prev.reviewing && !cur.reviewing && (fAdd.length || cAdd.length || rAdd.length)) {
+      // 7a — accepted rows sweep onto the map: pins land in sequence (40ms
+      // stagger, left → right), tethers/routes draw in, the summary chip
+      // rises last. Exactly one undo step — acceptProposal is one command.
+      const sorted = fAdd.map((id) => plan.factories[id]).sort((a, b) => a.position.x - b.position.x);
+      sorted.forEach((f, i) => pinMotionRef.current.set(f.id, { cls: "pin-motion-land", delayMs: i * 40 }));
+      mergeMotion({
+        until: now + 1200 + sorted.length * 40,
+        tetherBorn: claimTethers(cAdd, 250),
+        routeBorn: Object.fromEntries(rAdd.map((id) => [id, now + 300])),
+        clusters: [],
+      });
+      // the chip rises LAST — after the pin sweep and the tether draw
+      setAcceptChip({
+        count: fAdd.length + cAdd.length + rAdd.length,
+        at: now,
+        delayMs: sorted.length * 40 + 300 + 200,
+      });
+    } else if (verb === "edit") {
+      // 7b — a placed pin drops in; 7e — a bound route draws A → B; a fresh
+      // claim's tether draws node → factory.
+      for (const id of fAdd) pinMotionRef.current.set(id, { cls: "pin-motion-drop", delayMs: 0 });
+      if (rAdd.length || cAdd.length) {
+        mergeMotion({
+          until: now + 700,
+          tetherBorn: claimTethers(cAdd, 0),
+          routeBorn: Object.fromEntries(rAdd.map((id) => [id, now])),
+          clusters: [],
+        });
+      }
+    } else if (verb === "undo" || verb === "redo") {
+      // 7h — a returning pin pops 1.12×; an undo-removed pin leaves a dashed
+      // ghost where it stood (position read from the still-mounted marker —
+      // the marker-sync effect below runs after this one).
+      for (const id of fAdd) pinMotionRef.current.set(id, { cls: "pin-motion-pop", delayMs: 0 });
+      if (verb === "undo" && fRem.length) {
+        const map = mapRef.current;
+        const gs = fRem.flatMap((id) => {
+          const m = markersRef.current.get(id);
+          if (!m || !map) return [];
+          const p = map.latLngToContainerPoint(m.getLatLng());
+          return [{ id, left: p.x, top: p.y }];
+        });
+        if (gs.length) {
+          setPinGhosts(gs);
+          // rapid successive undos must not cut a live ghost short
+          if (ghostTimerRef.current) window.clearTimeout(ghostTimerRef.current);
+          ghostTimerRef.current = window.setTimeout(() => setPinGhosts([]), 300);
+        }
+      }
+    } else if (!verb) {
+      // 7c — verb-less BUILT additions only ever come from a save import:
+      // per cluster, machine dots converge on the ◆ centroid, the pin pops,
+      // clusters play sequentially left → right (capped — a giant import
+      // animates its first CLUSTER_CAP clusters and the rest just appear).
+      const sorted = fAdd
+        .map((id) => plan.factories[id])
+        .filter((f) => f && f.status === "built")
+        .sort((a, b) => a.position.x - b.position.x)
+        .slice(0, CLUSTER_CAP);
+      if (!sorted.length) return;
+      // A background auto-pull the user never initiated gets the QUICK land
+      // sweep, not the multi-second cluster cinematic — that belongs to
+      // imports the user is watching for.
+      if (st.syncAppliedAt && now - st.syncAppliedAt < 5000) {
+        sorted.forEach((f, i) => pinMotionRef.current.set(f.id, { cls: "pin-motion-land", delayMs: i * 40 }));
+        mergeMotion({ until: now + 800 + sorted.length * 40, tetherBorn: {}, routeBorn: {}, clusters: [] });
+        return;
+      }
+      sorted.forEach((f, i) =>
+        pinMotionRef.current.set(f.id, {
+          cls: "pin-motion-cluster",
+          delayMs: i * CLUSTER_STEP_MS + CONVERGE_MS - 150,
+        }),
+      );
+      mergeMotion({
+        until: now + (sorted.length - 1) * CLUSTER_STEP_MS + CONVERGE_MS + 400,
+        tetherBorn: {},
+        routeBorn: {},
+        clusters: sorted.map((f, i) => ({
+          x: f.position.x,
+          y: f.position.y,
+          dots: scatter(f.id, Math.max(4, Math.min(12, f.groups.length)), 110),
+          startAt: now + i * CLUSTER_STEP_MS,
+        })),
+      });
+    }
+  }, [plan.factories, plan.nodeClaims, plan.routes, reviewingProposal, world.nodes, reducedMotion, plan]);
+
+  // The accept chip clears itself after its delayed rise + hold.
+  useEffect(() => {
+    if (!acceptChip) return;
+    const t = window.setTimeout(() => setAcceptChip(null), 2600 + acceptChip.delayMs);
+    return () => window.clearTimeout(t);
+  }, [acceptChip]);
+  // Ghost timer hygiene on unmount.
+  useEffect(
+    () => () => {
+      if (ghostTimerRef.current) window.clearTimeout(ghostTimerRef.current);
+    },
+    [],
+  );
 
   // ---- canvas layer data sync ----
   useEffect(() => {
@@ -504,8 +705,9 @@ export default function MapView() {
       showPower: overlays.power,
       ghost: src && routeDraft ? { from: src.position, to: routeDraft.cursor } : null,
       review,
+      motion: mapMotionRef.current && Date.now() < mapMotionRef.current.until ? mapMotionRef.current : null,
     });
-  }, [resolvedWorld, nodeStates, claimLinks, replacesLinks, hoveredNode, selection, overlays, nodeFilter, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal]);
+  }, [resolvedWorld, nodeStates, claimLinks, replacesLinks, hoveredNode, selection, overlays, nodeFilter, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal, motionTick]);
 
   // ---- pointer interactions (hover + click on canvas nodes, placement) ----
   useEffect(() => {
@@ -670,6 +872,17 @@ export default function MapView() {
         });
         marker.addTo(map);
         armPinElement(marker);
+        // MANIFOLD motion: a fresh pin the detector tagged plays its mount
+        // grammar (7a land / 7b drop / 7c cluster pop / 7h return pop).
+        const mm = pinMotionRef.current.get(f.id);
+        if (mm) {
+          pinMotionRef.current.delete(f.id);
+          const el = marker.getElement();
+          if (el) {
+            el.style.setProperty("--pin-delay", `${mm.delayMs}ms`);
+            el.classList.add(mm.cls);
+          }
+        }
         pinHtmlRef.current.set(f.id, html);
         markers.set(f.id, marker);
       } else if (!(marker.dragging as unknown as { _draggable?: { _moving?: boolean } })?._draggable?._moving) {
@@ -934,6 +1147,27 @@ export default function MapView() {
         />
       )}
       {routeDraft && <div className="map-placing-hint mono">RELEASE OVER A FACTORY TO BIND THE ROUTE</div>}
+
+      {/* Motion 7a — the accept summary chip rises last (bp grammar). */}
+      {acceptChip && (
+        <div
+          className="map-accept-chip mono"
+          style={{ "--chip-delay": `${acceptChip.delayMs}ms` } as CSSProperties}
+          data-testid="map-accept-chip"
+        >
+          +{acceptChip.count} {acceptChip.count === 1 ? "ENTITY" : "ENTITIES"} — 1 UNDO STEP
+        </div>
+      )}
+      {/* Motion 7h — undo-removed pins flash a dashed ghost where they stood. */}
+      {pinGhosts.map((g) => (
+        <div
+          key={g.id}
+          className="map-pin-ghost"
+          style={{ left: g.left, top: g.top }}
+          data-testid={`pin-ghost-${g.id}`}
+          aria-hidden
+        />
+      ))}
     </div>
   );
 }
