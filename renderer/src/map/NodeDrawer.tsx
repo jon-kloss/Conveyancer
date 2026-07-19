@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { useStore } from "../state/store";
 import { extractionRate, EXTRACTORS } from "./maputil";
+import { pickReusePort } from "./claimPorts";
 import { fmtRate, itemLabel } from "../lib/format";
 import type { WorldNode } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
@@ -36,8 +37,53 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   // in place instead — idempotent per factory.
   const existingForFactory = claims.find((c) => c.factory === factoryId);
 
+  // A port is wired once any belt touches it — such ports are never deleted
+  // (the cascade would take the belts) and are first pick for reuse.
+  const portWired = (pid: string) =>
+    Object.values(plan.edges).some(
+      (e) => (e.from.kind === "port" && e.from.id === pid) || (e.to.kind === "port" && e.to.id === pid),
+    );
+
+  // #120 — reuse before add: releasing a claim keeps its WIRED port so the
+  // belts survive; the next claim for that factory/item reattaches to the
+  // orphan (retuning its ceiling) instead of stacking a duplicate. All the
+  // safety rules (never touch a live claim's port, wizard aggregate ports,
+  // unresolvable save-only claims) live in pickReusePort.
+  const reusablePortFor = (targetFactory: string) => {
+    const candidates = Object.values(plan.ports)
+      .filter(
+        (p) =>
+          p.factory === targetFactory &&
+          p.direction === "in" &&
+          p.item === node.item &&
+          p.boundRoute === null &&
+          p.rateCeiling != null,
+      )
+      .map((p) => ({ id: p.id, rateCeiling: p.rateCeiling, wired: portWired(p.id) }));
+    const nodeOf = (nid: string) => (nid === node.id ? node : world.nodes.find((n) => n.id === nid));
+    const liveRates = Object.values(plan.nodeClaims)
+      .filter((c) => {
+        if (c.factory !== targetFactory) return false;
+        const n = nodeOf(c.node);
+        return n == null || n.item === node.item; // unresolvable stays in (as null)
+      })
+      .map((c) => {
+        const n = nodeOf(c.node);
+        return n ? extractionRate(gamedata.machines[c.extractor], n.purity, c.clock) : null;
+      });
+    return pickReusePort(candidates, liveRates);
+  };
+
   const claim = () => {
     if (!factoryId) return;
+    const reuse = reusablePortFor(factoryId);
+    if (reuse) {
+      void dispatch([
+        { type: "claim_node", factory: factoryId, node: node.id, extractor, clock: 1.0 },
+        { type: "set_port_ceiling", id: reuse.id, rateCeiling: rate },
+      ]);
+      return;
+    }
     const portCount = Object.values(plan.ports).filter((p) => p.factory === factoryId && p.direction === "in").length;
     void dispatch([
       { type: "claim_node", factory: factoryId, node: node.id, extractor, clock: 1.0 },
@@ -51,6 +97,27 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
         graphPos: { x: 0, y: 80 + portCount * 120 },
       },
     ]);
+  };
+
+  // #120 — RELEASE retires the claim AND its port when the port is unwired
+  // (a bare release_node left orphan ports that duplicated on re-claim:
+  // 3 nodes released + re-added → 6 ports). A wired port is kept on purpose
+  // — deleting it would cascade its belts — and the claim() orphan path
+  // reattaches to it on the next claim.
+  const releaseClaim = (c: (typeof claims)[number]) => {
+    const claimRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock);
+    const cmds: Parameters<typeof dispatch>[0] = [{ type: "release_node", id: c.id }];
+    const port = Object.values(plan.ports).find(
+      (p) =>
+        p.factory === c.factory &&
+        p.direction === "in" &&
+        p.item === node.item &&
+        p.boundRoute === null &&
+        Math.abs((p.rateCeiling ?? -1) - claimRate) < 0.5 &&
+        !portWired(p.id),
+    );
+    if (port) cmds.push({ type: "delete_port", id: port.id });
+    void dispatch(cmds);
   };
 
   // Reassign a claim to another factory. Claiming afresh for a second factory
@@ -69,10 +136,6 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
     // to a machine and cascade-remove its belts. When only wired/ambiguous
     // matches remain, delete nothing — the claim still moves; the port just
     // becomes an unfed input (honest, non-destructive) the user can prune.
-    const portWired = (pid: string) =>
-      Object.values(plan.edges).some(
-        (e) => (e.from.kind === "port" && e.from.id === pid) || (e.to.kind === "port" && e.to.id === pid),
-      );
     const oldPort = Object.values(plan.ports).find(
       (p) =>
         p.factory === c.factory &&
@@ -83,10 +146,16 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
         !portWired(p.id),
     );
     if (oldPort) cmds.push({ type: "delete_port", id: oldPort.id });
-    const portCount = Object.values(plan.ports).filter((p) => p.factory === toFactory && p.direction === "in").length;
-    cmds.push(
-      { type: "claim_node", factory: toFactory, node: node.id, extractor: c.extractor, clock: c.clock },
-      {
+    // #120 — the TARGET side reuses an orphan too, same as claim(): moving a
+    // claim into a factory that holds a released-but-wired port must relight
+    // that port, not stack a duplicate beside it.
+    const reuse = reusablePortFor(toFactory);
+    cmds.push({ type: "claim_node", factory: toFactory, node: node.id, extractor: c.extractor, clock: c.clock });
+    if (reuse) {
+      cmds.push({ type: "set_port_ceiling", id: reuse.id, rateCeiling: claimRate });
+    } else {
+      const portCount = Object.values(plan.ports).filter((p) => p.factory === toFactory && p.direction === "in").length;
+      cmds.push({
         type: "add_port",
         factory: toFactory,
         direction: "in",
@@ -94,8 +163,8 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
         rate: 0,
         rateCeiling: claimRate,
         graphPos: { x: 0, y: 80 + portCount * 120 },
-      },
-    );
+      });
+    }
     void dispatch(cmds);
   };
 
@@ -117,10 +186,6 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
     // and when several claims of this factory feed indistinguishable ports,
     // prefer the one actually wired into the graph — bumping the belt-carrying
     // port, not an idle sibling (same disambiguation moveClaim uses).
-    const portWired = (pid: string) =>
-      Object.values(plan.edges).some(
-        (e) => (e.from.kind === "port" && e.from.id === pid) || (e.to.kind === "port" && e.to.id === pid),
-      );
     const candidates = Object.values(plan.ports).filter(
       (p) =>
         p.factory === c.factory &&
@@ -227,7 +292,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
               <button
                 className="btn btn-ghost"
                 style={{ height: 22, padding: "0 8px" }}
-                onClick={() => void dispatch([{ type: "release_node", id: c.id }])}
+                onClick={() => releaseClaim(c)}
               >
                 RELEASE
               </button>
