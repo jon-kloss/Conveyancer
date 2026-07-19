@@ -1,11 +1,20 @@
-/* MANIFOLD boot screen (handoff §4a/§7). The overlay sits on the SAME
-   map-canvas + 24px map-grid the world map uses, so the splash → map
-   crossfade (motion 7j) never changes the background — no cut. */
+/* MANIFOLD boot screen (handoff §4a/§7). The overlay's backdrop is the
+   map's BASE canvas color only — deliberately no grid: the real map draws a
+   world-anchored grid (~160px screen spacing, moving with pan/zoom) over a
+   terrain blit, so any viewport-locked lattice here would visibly crossfade
+   into a different one at reveal — the exact cut 7j forbids. On the flat
+   shared canvas color, terrain + grid appear once, riding the app's own 7j
+   fade-in, as a single dissolve. */
 
 .boot-screen {
   position: fixed;
   inset: 0;
   z-index: 4000;
+  /* Purely presentational: during load nothing interactive exists beneath
+     (app-frame is gated on ready), and during the reveal crossfade the live
+     map beneath must receive clicks — an opacity-fading overlay still
+     hit-tests, so without this every click in the 0.5s reveal is lost. */
+  pointer-events: none;
   /* Own compositor layer: without it the opaque overlay lets the compositor
      skip rasterizing the map beneath, and the unmount then pays the whole
      deferred raster/decode at once — a BeginFrame stall that froze rAF for
@@ -13,10 +22,6 @@
      anyway, so the layer is warranted. */
   will-change: opacity;
   background-color: var(--map-canvas);
-  background-image:
-    linear-gradient(var(--map-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--map-grid) 1px, transparent 1px);
-  background-size: 24px 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -91,7 +96,7 @@
 }
 
 /* Motion 7j — the live app scales 1.05 → 1 and fades in while the splash
-   layer fades out above it; the shared grid background never moves. */
+   layer fades out above it; the shared base canvas color never changes. */
 .boot-reveal {
   animation: boot-map-in 400ms var(--ease) both;
 }

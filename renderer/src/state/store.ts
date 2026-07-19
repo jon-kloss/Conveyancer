@@ -225,7 +225,8 @@ export interface AppStore {
    *  `fraction`; no synthetic timers anywhere in this model. */
   boot: { stage: string; fraction: number };
   /** last refused backend command — status-bar chip, NOT the full-screen
-      BACKEND UNREACHABLE card (that is `error`, set only by hydrate). */
+      BACKEND UNREACHABLE card (that is `error`, set only by a failed FIRST
+      boot; live re-hydrate failures route here instead). */
   cmdError: { message: string; at: number } | null;
   /** transient action-feedback toasts (auto-dismiss); newest last */
   toasts: Toast[];
@@ -646,6 +647,13 @@ export const useStore = create<AppStore>((set, get) => ({
           fraction: 0.82,
         },
       });
+      // Yield one macrotask so React commits the HYDRATING stage before the
+      // heavy synchronous payload set below — without it both sets land in
+      // the same microtask and the middle stage never renders. This is a
+      // scheduling yield, not synthetic progress: 0.82 fronts the real
+      // payload-application work that follows. (Not rAF — headless/fresh
+      // pages can park rAF for ~1.5s and would stall the boot.)
+      await new Promise((r) => setTimeout(r, 0));
       const openFactory = init.viewState?.openFactory;
       set({
         boot: {
@@ -653,6 +661,7 @@ export const useStore = create<AppStore>((set, get) => ({
           fraction: 1,
         },
         ready: true,
+        error: null,
         plan: init.plan,
         derived: init.derived,
         gamedata: init.gamedata,
@@ -671,7 +680,13 @@ export const useStore = create<AppStore>((set, get) => ({
             : { mode: "map" },
       });
     } catch (e) {
-      set({ error: String(e) });
+      // Fatal `error` (the full-screen BACKEND UNREACHABLE card) is for a
+      // failed FIRST boot only. hydrate() is also the re-projection step for
+      // live-app actions (uploadDocs, newEmpire, syncImport, autoPull,
+      // optimizeAdopt) — a transient blip there must not nuke a healthy
+      // running app; surface it as a command error and leave the app standing.
+      if (get().ready) get().reportCmdError(`Plan re-sync failed — ${errText(e)}`);
+      else set({ error: String(e) });
     }
   },
 

@@ -1,7 +1,7 @@
 // MANIFOLD boot screen (brand handoff §4a/§6/§7): the expanding manifold IS
-// the progress bar. Full-screen on the SAME map-grid the world uses — the
-// splash → map transition (motion 7j) never changes the background, so there
-// is no cut. Choreography:
+// the progress bar. Full-screen on the map's base canvas color — the splash
+// → map transition (motion 7j) is a single dissolve on that shared backdrop
+// (see boot.css for why there is deliberately no grid here). Choreography:
 //   1. Survey intro (~1.1s, wall time — no data needed yet): crosshair sweep,
 //      the source diamond drops in with a survey ring.
 //   2. Expansion, progress-driven: the bus extends symmetrically with the
@@ -11,11 +11,12 @@
 //   3. Done-beat (~1.7s): MANIFOLD wordmark rises letter-by-letter, ticker
 //      reads the final stage — then a 0.5s crossfade reveals the live map
 //      (the app frame plays .boot-reveal's 1.05 → 1 scale-in beneath).
-// FAST-BOOT: when the loader completes before the survey intro ends (a warm
-// local plan hydrates in tens of ms), the wait the choreography narrates
-// doesn't exist — holding users ~3s anyway would be theater. The intro is
-// cut short and the done-beat drops to a brief reveal. The full beat plays
-// whenever loading genuinely outlives the intro (web boot, big saves).
+// FAST-BOOT: §7 pins the survey intro to wall time ("no data needed yet"),
+// so it always plays in full even when a warm local plan hydrates in tens
+// of ms — the expansion then closes fast from the already-complete fraction.
+// Only the done-beat compresses (FAST_BEAT_S): the wordmark hold exists to
+// mark the end of a wait, and on a warm boot nothing waited. The full beat
+// plays whenever loading genuinely outlives the intro (web boot, big saves).
 // prefers-reduced-motion: a static mark + live ticker, dismissed the moment
 // the app is ready — same contract the map animation loop honors.
 // Glow is 3 layered strokes + a radial-gradient bloom — no CSS filters.
@@ -131,12 +132,11 @@ export default function BootScreen({
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const sim = simRef.current;
-      // Survey runs on wall time; expansion consumes the loader fraction.
-      // FAST-BOOT: loader already done inside the intro window → cut ahead.
-      if (sim.t < SURVEY_S && targetRef.current >= 1) {
-        fastRef.current = true;
-        sim.t = Math.max(sim.t, SURVEY_S);
-      }
+      // Survey runs on wall time (§7) and always plays in full; expansion
+      // consumes the loader fraction. A loader that finishes inside the
+      // intro window only marks the boot fast (short done-beat) — it does
+      // not cut the sweep/lock short.
+      if (sim.t < SURVEY_S && targetRef.current >= 1) fastRef.current = true;
       stepBootSim(sim, dt, sim.t < SURVEY_S ? 0 : targetRef.current);
       const beat = fastRef.current ? FAST_BEAT_S : DONE_BEAT_S;
       if (phaseRef.current === "load" && sim.done >= beat && useStore.getState().ready) {
@@ -184,7 +184,7 @@ export default function BootScreen({
   const sim = simRef.current;
   const { t, prog, done, land } = sim;
   const surveyP = c01(t / SURVEY_S);
-  const inSurvey = t < SURVEY_S && !fastRef.current;
+  const inSurvey = t < SURVEY_S;
   const revealP = phase === "reveal" ? c01((t - revealAtRef.current) / REVEAL_S) : 0;
   const splashOp = 1 - revealP;
 
