@@ -1,0 +1,597 @@
+{
+ "confirmedCount": 32,
+ "confirmed": [
+  {
+   "area": "planner-core",
+   "title": "ReleaseNode deletes ◆ Built node claims with no immutability guard (§3.1.1)",
+   "file": "crates/planner-core/src/commands.rs",
+   "severity": "major",
+   "detail": "The ReleaseNode arm (commands.rs:1571-1585) removes the claim from state and from factory.node_claims WITHOUT calling require_planned — it is the only delete command that skips the guard (DeleteFactory/Group/Port/Edge/Junction/Route/Switch all call it). DECISIONS.md:70 explicitly deferred this: \"ReleaseNode unguarded is an acknowledged deferral UNTIL import creates ◆ claims.\" That precondition is now met: W2b-C import creates Status::Built NodeClaims (crates/app/src/import.rs:702), and Session::edit (session.rs:460) special-cases only SetBuildDone, so a release_node command reaches commands::apply unguarded. Failure scenario: import a save containing a miner → state.node_claims holds a claim C with status=\"built\", created_by=Import. Fire {type:\"release_node\",id:C} (map drawer release, or /api/edit) → returns Ok and deletes C; no BuiltImmutable error. This silently drops game-ground-truth from the plan, inconsistent with SetClaim which was carefully written to flip Built→Planned (converting, never deleting) rather than mutate the ◆ baseline. Correct behavior per §3.1.1 is to reject (or convert), matching DeleteGroup on a built group.",
+   "why": "Confirmed genuine. The ReleaseNode arm (crates/planner-core/src/commands.rs:1571-1585) deletes the claim from state and factory.node_claims with no require_planned call; it is the only delete command that skips the guard (verified against DeleteFactory/Group/Port/Edge/Junction/Route/Switch, all of w"
+  },
+  {
+   "area": "planner-core",
+   "title": "No-op / empty-transaction command truncates the redo tail and pushes a phantom undo step",
+   "file": "crates/app/src/session.rs",
+   "severity": "minor",
+   "detail": "Session::edit (session.rs:460-518) commits every applied transaction through commit_mutation → UndoLog::push with no guard for an empty forward batch, and UndoLog::push (undo.rs:77-81) unconditionally truncates the redo tail and advances the cursor. Multiple planner-core commands can return an empty transaction: TidyLayout on a factory with no movable nodes records nothing (commands.rs:1004; every `if graph_pos != *pos` guard skips), and SetBuildDone{done:None} / SetNodeOverride{node_override:None} with no existing overlay record nothing (commands.rs:1843,1862). Repro: create empty factory F; rename F (edit X); /api/undo X (canRedo=true); now /api/edit {type:\"tidy_layout\",factory:F} — F has no groups/ports so forward is empty, yet the entry is committed → redo tail wiped (canRedo=false), X can no longer be redone, and a phantom \"tidy layout\" entry sits on the undo stack that undoes nothing. Root fix belongs at the edit/commit boundary (skip commit when tx.forward is empty), but the empty transactions originate in planner-core commands.",
+   "why": "Confirmed genuine defect. Session::edit (crates/app/src/session.rs:460-518) has no guard for an empty forward patch batch — its only emptiness check (line 461) is on the command *list*, not the resulting Transaction — and unconditionally calls commit_mutation → UndoLog::push (crates/planner-core/src"
+  },
+  {
+   "area": "solver",
+   "title": "T0 drag preview collapses an independent output chain to 0 when ANY sibling target is currently infeasible",
+   "file": "crates/solver/src/t0.rs",
+   "severity": "major",
+   "detail": "In t0::solve the ceiling analysis (lines ~347-358) probes the edited port at t=0 while holding ALL sibling output targets fixed at their snapshot rates. If those fixed siblings alone violate any belt/ceiling (min_slack(f0) < -REL_TOL), it sets base_feasible=false and returns ceiling=(0.0, worst0) — the most-violated SIBLING constraint. Then the clamp at lines ~420-425 fires unconditionally: targets[port] (>0) > max_rate(0) → the EDITED port is clamped to 0 and target_ceiling names the sibling's constraint. Concrete repro: one factory, two independent chains — in-a(open)->ga->out-x and in-b(ceiling 10)->gb->out-y with out-y.rate=30 (infeasible, 30>10). User drags out-x's slider up. buildSnapshot includes out-y at 30; the T0 base probe sees in-b over its ceiling, so out-x is clamped to 0 with binding=InputCeiling(in-b). The optimistic preview (projected.result) shows out-x's port and its whole chain at 0/min while the user drags it UP, and misattributes out-x's 'ceiling' to the unrelated in-b port. T1 (used on release, ceiling pass keeps siblings elastic) computes out-x's true ceiling, so the number snaps to correct on release — this is a T0-only preview bug and a T0/T1 divergence. Trigger is common: any capped output whose target currently exceeds its cap (set via wizard/proposal/import or a lowered ceiling after a claim change).",
+   "why": "CONFIRMED — reproduced exactly against the live solver crate. The finding is real.\n\nMechanism, verified end-to-end in crates/solver/src/t0.rs:\n- `min_slack` (lines 312-322) iterates over ALL cap_keys globally — every edge and every input ceiling in the whole snapshot, not just those on the edited po"
+  },
+  {
+   "area": "solver",
+   "title": "Renderer buildSnapshot omits driven_cycles, so un-wired generators read 'GENERATES 0 MW' during every output-target drag",
+   "file": "renderer/src/solver/t0.ts",
+   "severity": "minor",
+   "detail": "crates/app/src/session.rs::snapshot (lines ~1772-1793) carefully sets GroupSpec.driven_cycles=Some(count×clock) for every generator NOT wired to a power port, so T1 runs it at fuel-limited nameplate. The renderer's buildSnapshot (t0.ts lines 42-55) never sets driven_cycles at all — every group is pushed with only {id,recipe,count,clock}, and model.rs's #[serde(default)] deserializes it to None. T0 is purely demand-driven and nothing targets the POWER pseudo-item, so a driven generator idles at 0 cycles in T0. MachineGroupNode.tsx (line 73/87/126) reads dg=projected.result.groups[id] during a drag and renders 'GENERATES {fmtPower(outRates[__PowerMW])}'. Repro: a production factory containing a MAKE-POWER coal generator; select any output port and drag its target slider. During the drag the generator card flips to 'GENERATES 0 MW' (and any projected total-power/headroom omits generation), then snaps back to nameplate on release. Wrong observable number during the interaction.",
+   "why": "Confirmed genuine, minor transient display defect, reachable by a real user. During an output-target slider drag, Inspector.tsx (onDrag->project, lines 97-125) rebuilds the factory snapshot via buildSnapshot in renderer/src/solver/t0.ts (which pushes each group as only {id,recipe,count,clock}, omitt"
+  },
+  {
+   "area": "solver",
+   "title": "buildSnapshot returns null for the whole factory if any group's recipe is unresolvable, silently disabling the live drag preview (diverges from session.snapshot)",
+   "file": "renderer/src/solver/t0.ts",
+   "severity": "minor",
+   "detail": "buildSnapshot (t0.ts lines 39-41): `const recipe = g && gamedata.recipes[g.recipe]; if (!g || !recipe) return null;` returns null for the ENTIRE factory when a single group's recipe can't be resolved. session.rs::snapshot was deliberately changed (comment lines 1703-1714) to SKIP such groups and keep solving the rest — precisely the imported-save case of a biomass/coal generator with an empty recipe string sitting inside a production factory. Because the renderer path still bails, project() (Inspector.tsx line 101) returns early and setProjected is never called, so dragging an output slider in such an imported factory yields NO live preview — numbers only update on release via T1. Same silent-no-preview outcome applies to any factory whose graph contains a material cycle (recycling/loop recipes exist in-game): t0::solve returns SolveError::Cyclic → t0_solve throws → t0SetTarget catches and returns null, whereas T1 has no cycle guard and solves it. layout.rs is explicitly 'cycle-tolerant', confirming cycles can exist in real plans.",
+   "why": "Confirmed genuine, with a concrete user-reachable scenario. The renderer's buildSnapshot (renderer/src/solver/t0.ts:40-41, `if (!g || !recipe) return null;`) returns null for the ENTIRE factory when any group's recipe is unresolvable, while the Rust mirror Session::snapshot (crates/app/src/session.r"
+  },
+  {
+   "area": "gamedata",
+   "title": "Per-grid circuit generation has no nameplate fallback — recipe-less (imported + geothermal) generators read 0 MW per grid while the empire total reads their nameplate",
+   "file": "crates/app/src/session.rs",
+   "severity": "major",
+   "detail": "The empire total (`total_generation_mw`, ~L2437) has a nameplate fallback arm: when a generator group's recipe isn't in the catalog it uses `power_production_mw × count × clock`. The comment at L2412 even says this 'covers recipe-less imported generators'. But the PER-GRID generation closure `gen_of` (~L2302) only sums each factory's solved `POWER_ITEM` out_rates — it has NO nameplate fallback. Two classes of generator have an empty/unresolved recipe: (a) EVERY imported generator (the save parser leaves generator recipe = null, parseSnapshot.ts L20-25), and (b) geothermal, which by design gets NO synthesized burn recipe in docs.rs (no fuel → nothing pushed into synthesis). In `snapshot()` (L1712) a group whose recipe doesn't resolve is `continue`d, so it never contributes a POWER_ITEM out_rate. Failure scenario: import (or build via add_group with recipe:\"\") a factory of 2 geothermal generators (nameplate 200 MW each) and wire it to a consumer factory with a Power route, forming GRID A. The empire status bar / total_generation_mw reports 400 MW, but the POWER audit GRID A card computes generation_mw = gen_of(sum) = 0 → it reads '0 of X MW generated', browns out, and the switch-shed math (sheds_at_mw = generation_mw + acc, L2389) is computed from 0 baseline. Same physical generators, two contradictory numbers on screen. This is exactly the 'reads 0 MW / IMPORTED WORKS' failure the geothermal-parse comment (docs.rs L505-509) claims to have fixed — it fixed only the empire total, not the per-grid card.",
+   "why": "CONFIRMED — genuine defect. I read the full chain and could not refute it; it is actually broader than described.\n\nPer-grid generation closure `gen_of` (session.rs L2302-2318) sums only each group's solved POWER_ITEM out_rate with `.unwrap_or(0.0)` — no nameplate fallback. The empire total `total_ge"
+  },
+  {
+   "area": "gamedata",
+   "title": "Fuel-burn synthesis drops the generator byproduct (mByproduct) — synthesized nuclear recipe produces power but no nuclear waste",
+   "file": "crates/gamedata/src/docs.rs",
+   "severity": "minor",
+   "detail": "The generator-fuel synthesis (L660-690) reads only `mFuel[].mFuelClass` and emits `products: vec![(POWER_ITEM, mw)]`. It never reads `mByproduct`/`mByproductAmount`, which are present on every mFuel entry (the fixture even carries `mByproduct` at docs-fixture.json L334/346). For nuclear generators this silently discards the Uranium/Plutonium Waste output. Failure scenario: a nuclear generator group running the synthesized `Recipe_Power_Build_GeneratorNuclear_*` solves as consuming fuel rods + producing MW but with ZERO nuclear-waste production, so the empire resource ledger shows no waste to sink and no warning that waste handling is required. The deferral comment (L657-659) explicitly defers only SUPPLEMENTAL FLUIDS (water) to the pipe-network backlog — it is silent on solid byproducts, indicating the waste drop is an oversight rather than a documented deferral. Latent for import-only nuclear (empty recipe path), observable wherever a synthesized nuclear power recipe is actually run.",
+   "why": "CONFIRMED as a genuine defect. Verified end-to-end in /home/user/Conveyancer/crates/gamedata/src/docs.rs.\n\nCode proof that the byproduct is dropped:\n- The generator accumulator is `generator_fuels: Vec<(String, f64, Vec<String>)>` (L359) — it carries only (gen_class, mw, fuel_classes). The mFuel par"
+  },
+  {
+   "area": "session",
+   "title": "Deficit `needed` for a multi-output factory is scaled by the WRONG output's target → phantom / inflated deficits",
+   "file": "crates/app/src/session.rs",
+   "severity": "major",
+   "detail": "In empire_solve's deficit block (~line 2148) `requested` is taken from the FIRST out port of the starved factory: `f.ports.iter().find_map(|pid| (p.direction==Out).then_some(p.rate))`. It is then used both to GATE the deficit (`starved_by_ceiling = requested > max_rate`) and to SIZE it (`needed = flow * requested / max_rate`, ~line 2177). `max_rate` is the InputCeiling ceiling for the specific route-fed input port `dst_port`, i.e. the achievable rate of the OUTPUT the edit targeted. For a factory with more than one Out port these are two different outputs. Concrete: factory F has Out port A (item X, rate 100, created first) and Out port B (item Y, rate 20, fed by a route-capped input inY whose belt supplies only 5/min). User edits SetTarget on B → t1 reports target_ceiling{binding: InputCeiling(inY), max_rate:5}. Session computes requested=A.rate=100, so needed = flow*100/5 (≈100 when flow=5) instead of B's true requirement (~20 for a 1:1 recipe) — a 5× inflation. Worse, `starved_by_ceiling = 100 > 5` fires even when B's real target (say 3) is fully met, registering a PHANTOM deficit for a factory that is not starved. These deficit rows feed deficit_repair/route_bottleneck_fix (opportunities.rs), the advisor new_deficit card, and chat — so the NEXT-MOVES 'short N/min' figure and the wizard prefill rate inherit the inflated/phantom number. Differential proof: with B held fixed, raising A's target from 100→200 doubles `needed` for inY, though B's requirement is independent of A. All existing e2e specs use single-output factories, so this is unpinned.",
+   "why": "CONFIRMED via end-to-end code reading; adversarial refutation attempts failed.\n\nDefect: In session.rs empire_solve deficit block (crates/app/src/session.rs:2148-2177), `requested` is taken from the FIRST Out port of the starved factory (find_map over factory.ports, which snapshot() at 1744-1758 pres"
+  },
+  {
+   "area": "session",
+   "title": "Generator MW attribution disagrees between empire total and per-grid: unknown/empty-recipe generators count at nameplate empire-wide but 0 in their grid",
+   "file": "crates/app/src/session.rs",
+   "severity": "minor",
+   "detail": "`total_generation_mw` (~line 2415) identifies generators by MACHINE kind (`MachineKind::Generator`) and falls back to nameplate `mw*count*clock` whenever the group's recipe is not in the catalog, the factory errored, or the solve skipped it (the #58 imported-generator fix). But per-grid `generation_mw` uses `gen_of` (~line 2302), which sums `df.groups[..].out_rates[__PowerMW]`. A generator with an empty/unknown recipe is skipped in `snapshot()` (`let Some(recipe)=recipes.get(&g.recipe) else {continue}`, line ~1712), so it never enters `result.groups`, so gen_of reads 0 for it. Failure scenario: import a save without a real Docs.json (generators get empty recipes) and draw a power line between the generator factory and a consumer. `derived.total_generation_mw` = nameplate (status-bar `sb-power` shows e.g. '/ 150 MW'), but `derived.circuits[grid].generation_mw` = 0, so circuit_level = -1 → the POWER audit renders the grid as overdrawn '0 MW generated', and power_deficit/power_swing fire false CRIT alarms that directly contradict the status bar. The comment at the empire fallback (opportunities.rs power_deficit) explicitly assumes the two figures are the same Σ, which does not hold once a grid contains a nameplate-fallback generator.",
+   "why": "CONFIRMED genuine defect. Imported generators are persisted with recipe=\"\" (import.rs: ImportMachine.recipe is None for generators → unwrap_or_default → \"\", written at import.rs:659). Empire total_generation_mw (session.rs:2415) identifies generators by MachineKind::Generator, which is populated fro"
+  },
+  {
+   "area": "session",
+   "title": "Power grid names collide past 26 grids (`(b'A'+ i%26)`), giving two 'GRID A' with colliding opportunity ids / advisor keys",
+   "file": "crates/app/src/session.rs",
+   "severity": "nit",
+   "detail": "Circuit naming at ~line 2400 is `format!(\"GRID {}\", (b'A' + (i as u8 % 26)) as char)`. The 27th grid is named 'GRID A' again. Grid name is used as a stable identity downstream: opportunities.rs power_deficit/power_margin key their ids on it (`power_deficit:{name}`, `power_margin:{name}`) and advisor.rs power_swing keys its condition on it (`power:{name}`). With ≥27 grids (reachable at the perf-pass scale of ≥100 routes if many isolated power pairs exist), two distinct overdrawn grids share a NEXT-MOVES row id (React key collision) and an advisor arming key, so the second grid's overdraw is indistinguishable from / suppressed relative to the first. eval_proposal deliberately matches grids by member-overlap and index precisely because names renumber — the same instability bites the id/key consumers here.",
+   "why": "Verified end-to-end and could not refute it. session.rs:2400 names grids `GRID {(b'A' + i%26)}` where i is the enumerate index over connected components of Power routes (union-find, 2266-2319) with NO cap on grid count (grep found no MAX limit). The 27th grid (i=26) wraps to \"GRID A\", colliding with"
+  },
+  {
+   "area": "session",
+   "title": "Chat 'produce <item>' matches items by unbounded `contains`, so a very short/empty item token drafts a proposal for an arbitrary catalog item",
+   "file": "crates/app/src/chat.rs",
+   "severity": "nit",
+   "detail": "In `chat()` (~line 169-179) item resolution tries exact display-name match, then falls back to `display_name.to_lowercase().contains(item_part.trim())` with no minimum length. `item_part` is whatever preceded ' at '. For `produce  at 30/min` (double space) item_part is empty → `contains(\"\")` is true for every item → the first item in BTreeMap (class-name) order is picked and a real, reviewable proposal is drafted for it via the global solver. For a vague `produce iron at 30/min`, `contains(\"iron\")` returns the first class-name-ordered item containing 'iron' (not the most relevant), silently drafting for the wrong item. Nothing applies until accepted, so severity is low, but the intent surface presents a confident wrong match instead of the 'couldn't match' reply the (None,_) arm is meant to give.",
+   "why": "Verified end-to-end and could not refute. In crates/app/src/chat.rs (chat(), ~lines 154-198) item resolution tries an exact display-name match then falls back to `display_name.to_lowercase().contains(item_part.trim())` with no minimum-length guard. `item_part` is the text before the first \" at \". ga"
+  },
+  {
+   "area": "import",
+   "title": "Demolished-in-game group sync leaves orphaned edges + boundary ports (no cascade) → factory fabricates the removed group's output",
+   "file": "crates/app/src/import.rs",
+   "severity": "major",
+   "detail": "apply_sync's SyncOp::UpdateGroup demolished arm (count==0, import.rs ~L1255-1263) removes the MachineGroup and retains it from factory.groups, but — unlike the DeleteGroup command (commands.rs L1085-1112) and remove_factory_cascading (L713) — it never removes the belt edges touching that group nor the boundary ports that were fed only by it. Repro via bridge: new_empire; import one factory = 2 smelters (Recipe_IngotIron_C) + 1 constructor (Recipe_IronRod_C) within 120 m → write_built_layer creates an internal edge Group(smelter)→Group(constructor), an edge Group(constructor)→Port(IronRod Out), and a Desc_IronRod_C Out port. Re-import the same site with the constructor demolished → diff_against_built emits UpdateGroup{count:0} 'demolished in game'; accept. Result: the constructor group is gone but the ingot→constructor edge, the constructor→rod-port edge, and the Desc_IronRod_C Out port all remain, referencing a group id that no longer exists. In session.snapshot() the orphaned out-edge is passed to T1 with from=NodeRef::Group(removed) which has no conservation constraint, so its flow variable is a FREE source bounded only by belt capacity (t1.rs L212-226 satisfies the Out port target from it): the surviving factory reports it is still producing/exporting IronRod after its only constructor was demolished. Because this drift item carries no `conflict`, driftConflictCount()==0, so under auto-sync Option B (store.autoPull L896-905) it is applied SILENTLY with no review. Subsequent re-imports report IN SYNC (the diff never inspects edges/ports), so the corruption is permanent.",
+   "why": "CONFIRMED end-to-end by reading the code. The demolished-in-game arm in apply_sync (import.rs L1255-1263) removes only the MachineGroup (f.groups.retain + state.remove(\"groups\", id)) and touches no edges or ports — unlike DeleteGroup (commands.rs L1092-1104, which removes every edge with from/to==Gr"
+  },
+  {
+   "area": "import",
+   "title": "Count/clock drift sync never recomputes boundary port rates or belt tiers → expanded factory under-reports its output and mis-sizes downstream routes",
+   "file": "crates/app/src/import.rs",
+   "severity": "major",
+   "detail": "apply_sync's UpdateGroup non-zero arm (import.rs L1234-1254) rewrites g.count/g.clock but never re-derives the factory's boundary Port rates or internal edge tiers — those are computed only in write_built_layer (L566-619). Port.rate is the solver's Out-port target (session.rs L1752-1756 → t1.rs L222-224 inflow+s==rate) and the route-ceiling source. Repro via bridge: new_empire; import 3 smelters (Recipe_IngotIron_C, no consumer) → Desc_IronIngot_C Out port.rate = 90/min. In game expand to 6 smelters; re-import → drift 'count 3→6'; accept → group.count becomes 6 but the ingot Out port.rate is still 90. The T1 demand-driven solve minimizes machines to meet the stale 90 target, so it runs only 3 smelters' worth: derived output = 90/min while the plan says 6 built smelters (real capacity 180). Any belt route bound to this port sizes to 90, not 180. The existing unit test sync_clears_caught_up_delta (tests/import.rs L199-232) accepts exactly this 3→5 count drift but only asserts group.count and planned_delta — never the port rate — so the staleness is unpinned.",
+   "why": "CONFIRMED — genuine defect, reachable by a real user via the documented drift-accept path.\n\nTraced the full chain end-to-end:\n\n1. Drift op generation (import.rs L889-897): when a re-matched built factory's group count differs (e.g. 3→6), the diff emits `SyncOp::UpdateGroup{count:6,...}` — no port op"
+  },
+  {
+   "area": "import",
+   "title": "Added-in-game group is inserted unwired at a hardcoded position → disconnected/idle bank; multiple additions overlap at the same point",
+   "file": "crates/app/src/import.rs",
+   "severity": "minor",
+   "detail": "apply_sync's UpdateGroup 'added in game' arm (None if count>0, import.rs L1264-1283) inserts the new MachineGroup at a fixed GraphPos{x:280,y:600} and creates NO edges and NO boundary ports, unlike first-import write_built_layer which auto-wires groups by recipe I/O and lays them out (L538-679). Repro via bridge: import a factory (2 smelters); in game add a new constructor bank + a new foundry bank at that site; re-import → two 'added in game' drift items (diff_against_built L932-943); accept. Both new groups land at exactly (280,600) — stacked/overlapping in the graph — and neither is belted to anything, so the new production is invisible to the empire (no Out port to route) and the banks render as idle even though their inputs are produced locally. The same save imported fresh (first import) would wire and place them correctly, so drift-then-sync diverges from a clean import.",
+   "why": "Confirmed by end-to-end code reading. import.rs apply_sync's UpdateGroup \"added in game\" arm (None if count>0, L1264-1283) upserts a MachineGroup at hardcoded GraphPos{x:280,y:600} with planned_delta:None and records ONLY the group upsert + factory.groups push — it creates zero BeltEdge and zero Por"
+  },
+  {
+   "area": "map",
+   "title": "Claim tethers render to search-filtered-out nodes (dashed line to empty ground)",
+   "file": "renderer/src/map/CanvasLayer.ts",
+   "severity": "minor",
+   "detail": "redraw() gates both drawClaimLinks() and drawNodes() on showNodes, but only drawNodes() honors this.data.nodeFilter (line 1025: `if (filter?.active && !filter.visible.has(node.id)) continue`). drawClaimLinks() (line ~743) iterates ALL this.data.claimLinks with no filter check, and MapView's claimLinks memo (MapView.tsx:209-230) is built from every plan.nodeClaims with no filter applied. Repro: claim a coal node for a factory, then type 'iron' in the search box. The coal node's disc is culled (data-nodes-shown drops to the iron subset) but its node→factory tether is still stroked — a dashed line ending in empty terrain where the hidden node would be. When that factory is selected the tether promotes to bright signal-orange with a '→ FACTORY' chip pointing at nothing. The fix is to skip claimLinks whose node is filtered out (or draw them dimmed).",
+   "why": "Confirmed by end-to-end code reading. CanvasLayer.ts:394-397 gates both drawClaimLinks() and drawNodes() only on showNodes. drawNodes() honors nodeFilter (line 1025: `if (filter?.active && !filter.visible.has(node.id)) continue`), culling both draw and hit-test for filtered-out nodes. drawClaimLinks"
+  },
+  {
+   "area": "map",
+   "title": "Search-box jump uses stale catalog coordinates, ignoring node position overrides",
+   "file": "renderer/src/map/SearchBox.tsx",
+   "severity": "minor",
+   "detail": "The node hit loop (lines 52-62) iterates world.nodes (the bundled catalog) and sets `pos: { x: n.x, y: n.y }` from the catalog row, then onJump pans there. But the map renders every node at its plan-corrected position — MapView.resolvedNodes (MapView.tsx:166-187) overlays plan.nodeOverrides[n.id].pos, and NodeDrawer shows a 'Save-corrected' note for exactly these nodes. So for any node whose position was reconciled from an imported save (W2b-C drift, common for real saves), searching it (by item name or by n.id, which SearchBox matches at line 54) pans the camera to the OLD catalog coordinate while the actual node — and the orange selection ring the same click sets — sit at the corrected coordinate, offset by the drift distance. The user is flown to empty ground beside the node they searched for. SearchBox should resolve positions through plan.nodeOverrides (or read from resolvedNodes) like the rest of the map does.",
+   "why": "Confirmed genuine defect. SearchBox.tsx:52-62 builds node hits with pos:{x:n.x,y:n.y} directly from world.nodes (the bundled catalog) and jump() (line 75) pans there via onJump/panTo, never consulting plan.nodeOverrides. MapView.tsx:166-187 (resolvedNodes) explicitly overlays plan.nodeOverrides[n.id"
+  },
+  {
+   "area": "map",
+   "title": "Factory elevation input goes stale after an external z change (e.g. undo)",
+   "file": "renderer/src/map/SummaryDrawer.tsx",
+   "severity": "nit",
+   "detail": "The elevation field (lines 93-115) is an uncontrolled input: `key={factory.id}` (stable per factory) + `defaultValue={Math.round(factory.position.z ?? 0)}`. defaultValue only applies on mount, and the key never changes while the same factory stays selected, so a z change that originates outside the input never re-syncs it. Repro: select a planned factory, type 500 in Elevation and blur (dispatches move_factory_pin with z=500), then Ctrl+Z. plan.position.z reverts to its prior value but the input keeps showing 500 — the displayed elevation contradicts the stored/rendered one until the drawer is closed and reopened. Keying the input on the z value (or making it controlled) would keep it honest.",
+   "why": "Confirmed genuine. The Elevation field (SummaryDrawer.tsx:93-115) is uncontrolled: key={factory.id} (stable per factory) + defaultValue={Math.round(factory.position.z ?? 0)}. React applies defaultValue only at mount, and the key never changes while the same factory stays selected, so a z change orig"
+  },
+  {
+   "area": "graph",
+   "title": "Send-out surplus over-reports for any underclocked source machine (floor-at-100% clock)",
+   "file": "renderer/src/graph/GraphContextMenu.tsx",
+   "severity": "major",
+   "detail": "surplus() computes nameplate potential as `perMachine * effCount(g) * Math.max(effClock(g), 1)` (line 80). effClock returns the PLAN clock as a fraction (1 = 100%), not the solved clock, so it is never 0 — the `Math.max(_, 1)` never helps the idle case it claims to defend and instead inflates any machine the user set below 100%. Failure scenario: a factory with 1 Constructor running Recipe_IronRod_C (15/min nameplate) set to clock 0.5 (7.5/min actual), product unconsumed. Right-click the card → 'Send iron rod out of factory'. surplus = 15·1·max(0.5,1) = 15, so sendOut() creates an OUT port at rate 15 and a belt sized for 15 — double the machine's real 7.5/min capacity. The solver then can't satisfy the port; the belt/port read as an over-subscribed shortfall. Expected surplus/port rate: 7.5. The existing e2e (graph-context-menu 'already-exported not re-offered') only exercises clock 1, so this is unpinned.",
+   "why": "Confirmed genuine. In renderer/src/graph/GraphContextMenu.tsx:80, surplus() computes nameplate potential as `perMachine * effCount(g) * Math.max(effClock(g), 1)`. effClock (renderer/src/state/types.ts:56) returns the PLAN clock as a fraction (1 = 100%) — `g.plannedDelta?.clock ?? g.clock`, the user-"
+  },
+  {
+   "area": "graph",
+   "title": "Group↔boundary-port belts are mislabeled as cross-floor lifts (ports have no floor)",
+   "file": "renderer/src/graph/GraphView.tsx",
+   "severity": "major",
+   "detail": "In the edges memo, floorOfEnd() returns 0 for any port end (line 562-567) and `lift = srcFloor !== dstFloor` (line 570). Ports have no `floor` field (state/types.ts Port), so any group/junction placed on a non-zero floor that connects to a boundary port is treated as a lift. This is the common state after AUTO-FLOOR (final-assembly groups get high floors, their OUT-port belts descend to floor-0 ports). Failure scenario A (all-floors view): a group G on floor 2 exporting to OUT port P renders the G→P belt with a bogus '⇅ F2→F0' lift tag and diamond lift pads (BeltEdgeView lines 99, 138-141, 196) even though P is a floor-agnostic boundary. Failure scenario B (floor filter): filter to F2 — G is shown, and P is shown (ports are never floor-dimmed, GraphView lines 409-421), but the G→P belt is replaced by a phantom lift-portal stub 72px right of G pointing to 'F0' (lines 576-601); the actual belt to the still-visible port P disappears, and clicking the portal jumps to floor 0 where G is now hidden. Expected: a group/junction→port edge is not a lift; it should draw normally and never portal, since the port is present on every floor.",
+   "why": "CONFIRMED as a genuine defect. I traced the code end-to-end and could not refute it.\n\nCore mechanism (all verified in the actual source):\n- state/types.ts: the `Port` interface (lines 60-71) has NO `floor` field, while `MachineGroup` (line 48) and `Junction` (line 84) both do.\n- GraphView.tsx `floor"
+  },
+  {
+   "area": "graph",
+   "title": "FloorPlates ignores junctions: a junction-only floor gets no plate, and lift stats undercount",
+   "file": "renderer/src/graph/FloorPlates.tsx",
+   "severity": "minor",
+   "detail": "FloorPlates buckets floors from the `groups` prop only (line 23) and its floorOf() returns 0 for any non-group end (line 27). GraphView, by contrast, derives its floor set and floor chips from groups AND junctions (GraphView lines 104-114). Failure scenario: a factory with all machines on floor 0 and a splitter/storage bank placed on floor 1 (a logistics floor). GraphView shows F0/F1 chips and the STACK FLOORS button (floors.length>1), but FloorPlates sees byFloor.size === 1 and returns [] (line 25) — no plate or 'FLOOR 1' label is drawn for the junction floor. Additionally, plate lift counts (liftsUp/liftsDown/liftsIn, lines 46-48) only count group→group cross-floor belts, so belts that terminate on a junction or port are never tallied, undercounting the '⤒/⤓/IN' badges on multi-floor plates.",
+   "why": "Confirmed via end-to-end code reading. FloorPlates (FloorPlates.tsx) receives only `factoryGroups` (GraphView.tsx:640-643, 1066) and buckets floors from groups alone (line 24); its `plateGeoms` source (631-639) also filters to `n.type === \"group\"`, so it has no junction data at all. With all groups "
+  },
+  {
+   "area": "graph",
+   "title": "Header search dims non-matching nodes but leaves all belts (and their animated chips) fully lit",
+   "file": "renderer/src/graph/GraphView.tsx",
+   "severity": "minor",
+   "detail": "buildNodes applies a `filterDim` (opacity 0.15) to non-matching machines, junctions and ports during a graphFilter search (lines 367-420), but the edges memo (lines 521-628) has no graphFilter/filter-dim term at all — belts only dim for trace/floor (data.dimmed). Failure scenario: in a rod→screw chain, type 'screw' in the header search. The rod card dims to opacity 0.15 while the screw card stays lit (pinned by graph-search.spec), but the belt feeding the rod card and its always-animated flow chip (belt-label + edge-flowing overlay, BeltEdgeView 158-206) remain at full opacity and keep animating. The result is bright, moving belt chips stretched across a graph of dimmed cards — the flow layer dominates the very nodes the search is trying to isolate, unlike trace-select which correctly dims off-chain edges.",
+   "why": "Confirmed by end-to-end code read. In GraphView.tsx, buildNodes applies inline opacity 0.15 to non-matching machines/junctions/ports via `filterDim` during a graphFilter search (lines 369, 392, 413), and graph-search.spec.ts:45-46 pins this (rod→0.15, screw→1). The edges memo (lines 521-628) compute"
+  },
+  {
+   "area": "make",
+   "title": "Capacity guard uses the NO-reuse fresh plan, so reuse+redirect-feasible builds are falsely blocked (and the offered free-up then deletes the reuse target)",
+   "file": "renderer/src/graph/MakeFromResources.tsx",
+   "severity": "major",
+   "detail": "`rawDemand`/`shortfalls`/`blocked` are computed from `freshCp` (planChain over `available`, no reuse), on the stated assumption that 'Reuse only changes wiring, not raw totals.' That assumption is false when reuse REDIRECTS an existing world export. Concrete state: factory with one iron-ingot IN port, rateCeiling 30; an existing Recipe_IronRod_C group count 2 @ clock 1 (draws 30/min ingot, all 30/min rod exported via a world OUT port at rate 30). Open MAKE, pick Iron Screw @ 120/min (reuse ON). freshCp raw demand = 30/min ingot (verified: 120 screws -> 30 rod -> 30 ingot); headroom = 30 - 30(existing draw) = 0; 30 > 0 -> `blocked=true`, warn shown, `mfr-build` DISABLED, `build()` early-returns on `blocked`. But reuse+redirect needs ZERO new extraction: `build()` would trim the rod export by newDemand(30) to 0 and feed the existing 30/min rod into the new screw line, rod group unchanged, total ingot still 30 = ceiling. So a feasible, common 'extend my exported line' build is impossible. Worse: the UI simultaneously shows the reuse offer ('Reuse & extend your existing Iron Rod line') AND the block, and the only offered remedy is FREE UP, whose `freeable` set includes that same rod line (it consumes the short ingot) -> the two-click confirm DELETES the very line the user wanted to reuse.",
+   "why": "CONFIRMED real via end-to-end code read of renderer/src/graph/MakeFromResources.tsx and makeChain.ts.\n\nThe capacity guard is computed entirely from the NO-reuse plan and never accounts for reuse+redirect:\n- `blocked` (L178) ← `shortfalls` (L148) ← `rawDemand` (L142), which sums `freshCp.belts` where"
+  },
+  {
+   "area": "make",
+   "title": "Free-up removes EVERY group consuming the short raw, over-freeing beyond the shortfall and potentially deleting a reuse candidate",
+   "file": "renderer/src/graph/MakeFromResources.tsx",
+   "severity": "minor",
+   "detail": "`freeable` (line 166) collects all existing groups whose recipe ingredients include ANY short raw, and `freeUp` (line 273) deletes all of them (deduped by id) in one dispatch. It never stops once enough extraction is freed. Concrete state: iron-ingot IN port ceiling 30; TWO Recipe_IronRod_C groups each count 1 (15/min ingot each = 30 total, headroom 0). Make Iron Plate @ 10/min (needs 15/min ingot) -> blocked. Free-up deletes BOTH rod lines (frees 30) when deleting ONE (frees 15 >= 15 needed) would suffice — the user loses twice the production they had to. The button text is honest about the count, but 'free up the node' silently over-reaches versus the shortfall, and if a reuse candidate produces from the short raw it is also swept into the delete set.",
+   "why": "Confirmed against the code end-to-end in renderer/src/graph/MakeFromResources.tsx.\n\nMechanism (verified, not inferred):\n- `freeable` (lines 166-176) collects EVERY group in the factory whose recipe `ingredients` include ANY short raw (`r.ingredients.some(([ing]) => shortItems.has(ing))`). There is n"
+  },
+  {
+   "area": "wizard",
+   "title": "t2_optimize: source_of() early-returns None on any factory group whose recipe is unknown to the catalog, silently disabling the optimizer for the whole factory",
+   "file": "crates/app/src/wizard.rs",
+   "severity": "major",
+   "detail": "In t2_optimize the in-factory `source_of` closure (line 1348) iterates `factory.groups` and does `let r = gd.recipes.get(&g.recipe)?;` (line 1351). The `?` propagates None as the CLOSURE's return value, so if ANY group in the factory has a recipe absent from `gd.recipes`, `source_of` returns None for EVERY item — even items that are actually available on a boundary IN port (never reached, because the group scan bails first). Since the alt-acceptance test is `alt.ingredients.iter().all(|(ing,_)| source_of(ing).is_some())`, every candidate alternate is rejected and the whole factory yields no MODIFY items. This is exactly the imported-save case the codebase acknowledges elsewhere (cutover_plan comment: 'the bundled fixture catalog can't resolve its recipes'): a real save with even one unrecognized recipe next to an optimizable group → the empire optimizer proposes nothing, silently. The main optimize loop correctly uses `else { continue; }` for the same lookup (line 1372); source_of must do the same (`continue`) instead of `?`. Concrete repro: factory has group A (Recipe_IronPlate_C, has a cheaper unlocked alt) and group B (Recipe_Unknown_C not in catalog); B sorts anywhere in factory.groups → t2_optimize returns None though A had a valid, fully-sourceable swap.",
+   "why": "CONFIRMED — genuine defect with a concrete, reachable failure scenario.\n\nMechanism verified in crates/app/src/wizard.rs (t2_optimize, lines 1348-1362). The in-factory `source_of` closure iterates `factory.groups` and, for each group, does `let g = state.groups.get(gid)?;` (1350) and `let r = gd.reci"
+  },
+  {
+   "area": "wizard",
+   "title": "plan_replacement of a multi-output factory reproduces only the first output item; the others are staged but never shipped (no OUT port, no route), so downstream consumers starve after the dismantle",
+   "file": "crates/app/src/session.rs",
+   "severity": "major",
+   "detail": "plan_replacement builds a WizardGoal from `by_item` — EVERY OUT-port item the built factory ships (line 1001-1017, comment says 'the item(s) the running ◆ factory produces', plural). But global_solve only ever ships `goal.items.first()`: the single OUT port (wizard.rs 627-648), the goal out-edge (722-742), and the delivery route (802-864) all use `goal.items.first()`. `by_item` is a BTreeMap, so 'first' is the alphabetically-first item class. For a ◆ factory shipping two items (e.g. Iron Plate AND Iron Rod), the ◇ replacement gets one OUT port for the alphabetically-first item; the second item's stage is created and produces internally but has no OUT port and no route to the old consumers. The cutover's Switch phase still emits a 'SWITCH <item> feed' step per supplied item (cutover.rs 238), which can never be satisfied for the second item. When the old ◆ is dismantled, every downstream factory fed by the second item loses its feed — a silent production regression from a refactor the user believed was output-preserving. Reachable from the SummaryDrawer 'PLAN REPLACEMENT' on any multi-output built factory.",
+   "why": "Confirmed genuine defect, reproduced by reading the full data flow. plan_replacement (session.rs:1001-1040) builds goal.items from EVERY non-power OUT port of the old built factory via a BTreeMap `by_item`, so goal.items is multi-entry for a multi-output factory. global_solve stages all goal items ("
+  },
+  {
+   "area": "wizard",
+   "title": "Wizard proposal power (CREATE '+X MW' impact and generator EXPAND target) ignores clock scaling, so it overstates draw versus the actual solved Δ POWER shown in the same review panel",
+   "file": "crates/app/src/wizard.rs",
+   "severity": "minor",
+   "detail": "Stage power is computed as `recipe_power(gd, r, machine) * count` (wizard.rs 396-398) with no clock factor. The real solver computes group draw as `power_mw * count * clock^1.321928` (solver/src/t0.rs 471-477, POWER_EXPONENT=1.321928). Wizard stages almost always run underclocked: count=ceil(exact), clock=exact/count ≤ 1. Example: Iron Plate 25/min plate stage = ×2 @ 62.5% → wizard reports recipe_power×2; solver draws recipe_power×2×0.625^1.32 ≈ recipe_power×2×0.53 — a ~47% overstatement per stage. Consequences in the SAME review surface: (a) the CREATE item impact '+{total_mw} MW' visibly disagrees with the footer 'Δ POWER +{deltaPowerMw} draw' (which eval_proposal computes from the real solver, session.rs 948); (b) the generator EXPAND item sets the grid target to `gp.rate + total_mw*(1+margin)` (wizard.rs 946), oversizing generation relative to the plan's actual post-accept demand. It errs conservative (never under-powers), but the two numbers shown side by side are inconsistent, contradicting the codebase's stated honest-math principle.",
+   "why": "Verified end-to-end against the actual code; the finding holds.\\n\\nWizard stage power (crates/app/src/wizard.rs:396-398) is `recipe_power(gd, r, &machine_class) * count` with NO clock factor, and `total_mw` sums these (wizard.rs:670). The real solver computes group draw as `recipe.power_mw * count *"
+  },
+  {
+   "area": "advisor",
+   "title": "Chat/context SELECTION scope returns an all-null snapshot for any non-factory selection",
+   "file": "crates/app/src/chat.rs",
+   "severity": "major",
+   "detail": "compact_state handles `ContextScope::Factory{id}` and `ContextScope::Selection{id}` with the SAME arm (line ~75), which resolves the id only via `s.state.factories.get(id)`. But `Selection` in the renderer (store.ts `Selection` union) has 8 kinds — node, group, edge, port, junction, route, switch, factory — and AdvisorPanel's Chat passes `selection.id` verbatim for whichever is selected (`scopeKind==='selection' ? {scope:'selection', id: selection.id}`). For every non-factory selection the factory lookup misses and the payload serializes as `{\"scope\":\"factory\",\"factory\":null,\"groups\":null,\"ports\":null,\"derived\":null}`. Concrete repro: in map view select a route or a resource node (the ONLY entity kinds selectable there; the FACTORY scope option is disabled unless view.mode==='factory'), open Advisor → CHAT, pick SELECTION scope, click VIEW / send a question. The context bar shows a tiny byte count and the model/heuristic receives an empty null-factory object, so any on-device or hosted answer is 'the state doesn't contain the answer'. SELECTION scope is effectively broken for 7 of 8 selection kinds — including the common map-view case. Driveable headless via POST /api/context with body {\"scope\":\"selection\",\"id\":\"<routeId>\"}.",
+   "why": "Confirmed end-to-end; every load-bearing claim holds.\n\nchat.rs:75 collapses ContextScope::Factory{id} and ContextScope::Selection{id} into one arm that resolves the id solely via s.state.factories.get(id) (line 76). On a miss, f/df are None and lines 79-83 serialize {\"scope\":\"factory\",\"factory\":null"
+  },
+  {
+   "area": "advisor",
+   "title": "Rank/chat context serializer has no factory-count or byte cap → on-device model silently degrades to heuristic on large plans",
+   "file": "crates/app/src/chat.rs",
+   "severity": "minor",
+   "detail": "compact_state (Empire) emits one entry per factory with all Out ports and no upper bound; rank_state reuses it (only deficits are capped, at .take(10)). The rank_state doc itself notes an 80-factory megabase already produces ~16.7k chars 'past Ollama's default 4k-token context'. On a 1.0-scale imported empire (the audit's stress target is >=40 factories, and real saves reach hundreds), prep.user handed to webllm.ts runRank can far exceed a small on-device model's context window. The reply then fails to parse / truncates, apply_rank_reply treats it as a QUIET degrade to the heuristic order — so with on-device AI enabled and 'READY', a large empire NEVER actually gets model ranking, while the advisor chip keeps reading 'AI · ON-DEVICE'. Degradation is graceful (no crash, no wrong numbers) but the feature is silently inert at the scale where ranking matters most, with no user-visible indication. There is no size guard nor a top-N factory projection to bound the payload.",
+   "why": "CONFIRMED as a real (minor) defect. Every code claim checks out end-to-end:\n\n- chat.rs:36-60 compact_state (Empire) emits one JSON entry per factory with all Out ports/rates and NO upper bound; only deficits is capped .take(10) (chat.rs:64).\n- ai.rs:776-810 rank_state reuses that exact payload and o"
+  },
+  {
+   "area": "shell",
+   "title": "Auto-pull timer stops during proposal review; the tick's `reviewing` guard is dead code",
+   "file": "renderer/src/shell/Titlebar.tsx",
+   "severity": "minor",
+   "detail": "Titlebar renders `{!reviewing && <DataMenu />}` (Titlebar.tsx:55), so entering a proposal review UNMOUNTS DataMenu and clears its `setInterval` (DataMenu.tsx:182-186). Two consequences: (1) DataMenu.tsx's tick guard `useStore.getState().reviewing` (line 169) — with its comment 'never clobber a proposal the user is mid-decision on' — is unreachable, since the component cannot be mounted while reviewing; this contradicts the file's documented intent that 'auto-sync's timer keeps ticking everywhere'. (2) The interval is recreated from zero every time review opens/closes. Scenario: auto-sync at 15 min; a user who opens and dismisses drift/wizard proposals every ~10 min (each open+close remounts DataMenu, resetting the countdown) never accumulates a full interval, so the periodic auto-pull effectively never fires.",
+   "why": "All mechanical claims verify against the code. DataMenu is rendered only in Titlebar.tsx:55 gated by `{!reviewing && <DataMenu />}`, and holds the sole auto-pull timer (DataMenu.tsx:182), whose effect cleanup clears the interval on unmount and recreates it from zero on remount (182-187). `reviewing`"
+  },
+  {
+   "area": "shell",
+   "title": "Power bar fill width and fill color use different denominators (aggregate vs worst-circuit)",
+   "file": "renderer/src/shell/StatusBar.tsx",
+   "severity": "minor",
+   "detail": "The PWR bar's fill WIDTH is `(totalPowerMw/totalGenerationMw)*100` — an aggregate draw/generation ratio (StatusBar.tsx:106-112) — but its fill COLOR class is `powerLevelWorst`, the worst PER-CIRCUIT level (lines 59-71, 104). Scenario: two grids, A gen 100 MW / draw 98 MW (crit, 2% headroom), B gen 1000 MW / draw 100 MW (ok). Aggregate = 1100 gen / 198 draw. The bar renders an ~18%-wide fill painted crit-red — a nearly-empty bar in alarm color. Conversely, when aggregate draw approaches aggregate generation but every circuit individually has margin, the bar fills to ~100% in green. The width and color disagree about the plan's power state whenever circuits are unbalanced (multi-grid empires).",
+   "why": "CONFIRMED as a genuine (minor) visual-inconsistency defect. Verified in renderer/src/shell/StatusBar.tsx: the power-bar fill WIDTH (lines 106-112) is the aggregate ratio (derived.totalPowerMw / derived.totalGenerationMw)*100 — empire-wide sums (crates/app/src/session.rs:271-272) — while the fill COL"
+  },
+  {
+   "area": "shell",
+   "title": "RESUME chip advertises the (H) shortcut in every view, but H does nothing in a factory graph",
+   "file": "renderer/src/shell/StatusBar.tsx",
+   "severity": "nit",
+   "detail": "The status-bar RESUME chip carries `title=\"Resume — build queue (H)\"` (StatusBar.tsx:132) and is shown in both map and factory views. But App's global H handler returns early in a factory when the dashboard is closed — `if (st.view.mode === 'factory' && !st.dashboardOpen) return;` (App.tsx:127) — to hand H to GraphView's Pan tool. Scenario: a user inside a factory graph reads 'Resume … (H)' on the always-present chip, presses H, and the resume dashboard does NOT open (H toggles the Pan tool instead). The chip's click still works; only the advertised keyboard shortcut is a no-op (or worse, does something unrelated) in factory view.",
+   "why": "Verified all technical claims end-to-end and could not refute them. (1) StatusBar.tsx:126-135 renders the RESUME chip with title=\"Resume — build queue (H)\" (line 131) whenever buildQueue.length > 0. (2) buildQueue is derived.buildQueue, a global empire-level value (single field on `derived`, populat"
+  },
+  {
+   "area": "web",
+   "title": "Wrong-but-valid JSON-array uploaded as an empty \"uploaded\" catalog (false success, plan stranded)",
+   "file": "crates/gamedata/src/docs.rs (parse_docs ~349) + renderer/src/state/store.ts (uploadDocs ~830)",
+   "severity": "minor",
+   "detail": "parse_docs only errors when the top level is not a JSON array (Shape) or the bytes are not JSON (Json). A JSON file whose top level IS an array but contains no recognizable Docs sections — e.g. `[]`, or some other tool's array-shaped export — parses to Ok(GameData) with 0 items/recipes/machines; there is no non-emptiness check anywhere on the upload path. WebSession::new therefore succeeds, buildVersion flips \"fixture\"→\"uploaded\", and store.uploadDocs fires a GREEN success toast `Catalog loaded — 0 recipes`. Concrete failure: user picks the wrong .json (an array-shaped file). Observable result: (1) the onboarding gate `catalogLoaded = buildVersion!==\"fixture\"` turns OFF, hiding the '① Upload Docs.json' step so they believe a catalog is loaded; (2) any save they then import matches 0 recipes; (3) any pre-existing plan's groups now reference recipes absent from the catalog. Truncated bytes and object-shaped JSON both DO produce a friendly error, so this array case is the one class that slips through as a false success. Fix: reject a catalog with 0 recipes (or 0 machines) at upload with a friendly error rather than accepting it.",
+   "why": "Verified end-to-end; could not refute. parse_docs (crates/gamedata/src/docs.rs:349-353) errors only on non-array (Shape) or non-JSON (Json) input — an array with no recognizable Docs sections (e.g. `[]` or another tool's array export) parses to Ok(GameData) with 0 recipes/items/machines, and there i"
+  }
+ ],
+ "refuted": [
+  "planner-core: AddPort silently clamps a negative rate to 0 while SetPortRate rejects",
+  "gamedata: Resource-well (fracking) extractors are never parsed as Extractor mach",
+  "gamedata: extraction_rate divides by cycle_time_s with no zero guard → +inf ceil",
+  "make: planChain `addDemand` recursion is unmemoized -> exponential in recipe",
+  "advisor: Per-circuit power_deficit has no EPS floor → false 'overdrawn by 0.0 M",
+  "shell: Two-click 'Start new empire' confirm survives in-menu interactions tha",
+  "web: newEmpire leaves `reviewing` dangling → advisor/audit/dashboard chrome",
+  "hygiene: Dead exported function forgetSaveHandle() — zero call sites in entire ",
+  "hygiene: Magic z-index 300 on .send-modal-backdrop inverts the app's toast-on-t"
+ ],
+ "probeCount": 46,
+ "probes": [
+  {
+   "area": "planner-core",
+   "name": "Undo-all / redo-all round-trips the plan hash over a scripted command sequence",
+   "drive": "resetView. Via POST /api/edit (one command per call, capturing created ids) build: (1) create_factory A {position,region}; (2) create_factory B; (3) add_group in A {machine,recipe,count:4,clock:1,graphPos,floor:0}; (4) add_port in A {direction:out,item:\"Desc_IronIngot_C\",rate:30,graphPos}; (5) add_port in B {direction:in,item:\"Desc_IronIngot_C\",rate:30,graphPos}; (6) add_route {kind:{kind:\"belt\",tier:1},from:A.outPort,to:B.inPort,path:[]}; (7) add_junction in A {kind:\"splitter\",graphPos,floor:0}; (8) claim_node in A {node:\"node-1\",extractor:\"Build_MinerMk1_C\",clock:1}; (9) add_route {kind:{kind:\"power\"},from:A,to:B,path:[]}; (10) add_priority_switch {route:powerRouteId,priority:3}. GET /api/hydrate → record H_full=planHash and baseline H_empty captured immediately after resetView (before step 1). POST /api/undo repeatedly until hydrate.canUndo==false (>=10 calls). GET /api/hydrate. POST /api/redo repeatedly until hydrate.canRedo==false. GET /api/hydrate.",
+   "expected": "After undo-all: plan.factories, groups, ports, edges, junctions, routes, switches, nodeClaims are all empty and planHash == H_empty. After redo-all: planHash is byte-identical to H_full recorded before the undo pass (property-style round-trip identity).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "planner-core",
+   "name": "release_node on an imported ◆ Built claim is rejected (built-immutability)",
+   "drive": "Seed a built claim exactly as phase4-import.spec.ts does (run the checked-in save fixture through the import flow). GET /api/hydrate and pick a claim C from plan.nodeClaims whose status==\"built\". POST /api/edit [{type:\"release_node\", id: C}].",
+   "expected": "HTTP 422 with DomainError code \"built_immutable\" (action \"delete\"/\"release\"); GET /api/hydrate still contains C with status==\"built\" and C still listed in its factory.nodeClaims. (Current code returns 200 and deletes C — this probe fails until the guard is added.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "planner-core",
+   "name": "A no-op command must not destroy the redo tail",
+   "drive": "resetView. POST /api/edit [{type:\"create_factory\", name:\"NOOP\", position:{x:0,y:0,z:0}, region:\"GRASS FIELDS\"}] → F. POST /api/edit [{type:\"rename_factory\", id:F, name:\"NOOP2\"}]. POST /api/undo (undoes the rename). GET /api/hydrate → assert canRedo==true and factories[F].name==\"NOOP\". POST /api/edit [{type:\"tidy_layout\", factory:F}] (F has no groups/ports/junctions → empty forward batch). GET /api/hydrate. POST /api/redo. GET /api/hydrate.",
+   "expected": "After the tidy_layout no-op, hydrate.canRedo remains true; the subsequent /api/redo restores factories[F].name==\"NOOP2\". The no-op tidy must neither truncate the redo tail nor appear as a committed undo step. (Current code commits an empty entry: canRedo flips to false and the rename can no longer be redone — probe fails.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "planner-core",
+   "name": "add_edge enforces the splitter output-port cap (1-in / 3-out)",
+   "drive": "resetView. create_factory F. add_junction in F {kind:\"splitter\"} → J. add_group in F four times → g1..g4 (any machine/recipe, count 1). POST /api/edit for edges one at a time: add_edge {factory:F, from:{kind:\"junction\",id:J}, to:{kind:\"group\",id:g1}, item:\"Desc_IronIngot_C\", tier:1}; same for g2, g3; then attempt the 4th with to:g4.",
+   "expected": "The first three add_edge calls return 200. The fourth returns 422 with code \"invalid\" and a message stating all 3 output ports are connected (Splitter out-cap). GET /api/hydrate shows exactly 3 edges whose from == {kind:junction,id:J}.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "planner-core",
+   "name": "delete_factory cascades routes/switches/claims and one undo restores everything atomically (hash identity)",
+   "drive": "resetView. create_factory A, create_factory B. In A: add_group; add_port {direction:out,item:\"Desc_IronIngot_C\",rate:30}. In B: add_port {direction:in,item:\"Desc_IronIngot_C\",rate:30}. add_route belt A.outPort→B.inPort (binds both ports). add_route power A→B; add_priority_switch on the power route (priority 5). claim_node in A. GET /api/hydrate → record H0=planHash and B.inPort id. POST /api/edit [{type:\"delete_factory\", id:A}]. GET /api/hydrate. POST /api/undo. GET /api/hydrate.",
+   "expected": "After delete: A and all of A's groups/ports/claims are absent; the belt route, the power route, and the priority switch are all absent; B still exists; B's IN port survives with boundRoute==null (the far endpoint was unbound by the cascade). After a single /api/undo: planHash is byte-identical to H0 — factory, both routes, the switch, the claim, and B's port binding all restored in one step.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "solver",
+   "name": "T0 drag preview of an independent output port is unaffected by an infeasible sibling target",
+   "drive": "Bridge-seed one factory with two independent chains. POST /api/edit: [create_factory name 'DUAL' region 'GRASS FIELDS']; then add_port in-a (Desc_IronIngot_C, rateCeiling null/open), add_port in-b (Desc_IronIngot_C, rateCeiling 10). Use MAKE FROM RESOURCES (or add_group + add edges) to build chain A: in-a -> constructor(Recipe_IronRod_C) -> out-x(Desc_IronRod_C) and chain B: in-b -> constructor(Recipe_IronRod_C) -> out-y(Desc_IronRod_C). set_port_rate out-y = 30 (infeasible: 30 > 10 ceiling). Open the factory in graph view, click the out-x boundary port to select it so the OUTPUT TARGET section mounts. Set the range input [data-testid=insp-slider] to 20 by dispatching an 'input' event (onDrag path) WITHOUT firing pointerUp, so projected stays set. Read [data-testid=target-value] and the out-x machine node's rate.",
+   "expected": "target-value shows ~20/min (out-x's own dragged rate) and out-x's constructor node shows ~20/min — NOT 0. (Current code: T0 clamps out-x to 0 because sibling out-y violates in-b's ceiling, so target-value and the whole out-x chain read 0/min mid-drag — probe FAILS, exposing the bug.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "solver",
+   "name": "Output-target hard-stop clamps at the true input ceiling and names it (app derive level)",
+   "drive": "POST /api/edit [create_factory name 'CEIL' region 'GRASS FIELDS'], add_port in (Desc_IronIngot_C, rateCeiling 30). Via MAKE FROM RESOURCES build 15/min Desc_IronRod_C (1 ingot:1 rod). Capture the created out port id (port-out-Desc_IronRod_C). Then POST /api/edit [{type:'set_port_rate', id:<outRodPortId>, rate:60}] and read the DERIVED FROM THE EDIT RESPONSE (not a later /api/hydrate — a plain hydrate solves Recompute and carries no ceiling).",
+   "expected": "editResponse.derived.factories[f].targetCeiling.maxRate == 30 (30 ingot -> 30 rod at 1:1), targetCeiling.binding.kind == 'input_ceiling' naming the ingot input port, ports[outRodPort] == 30, and clamped == true. shortfalls empty.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "solver",
+   "name": "Un-wired driven generator's DERIVED generation equals its fuel-limited nameplate and is never a shortfall",
+   "drive": "Reuse make-power's MAKE POWER flow: seed a factory with two capped Desc_Coal_C claims (30/min each = 60 pooled), build the default coal generator bank via mfr-power-build-Desc_Coal_C, and read the modal's defaultMw from mfr-power-mw-Desc_Coal_C before building. After build, GET /api/hydrate and locate the generator group (machine name contains 'generator') in derived.factories[f].groups.",
+   "expected": "derived.factories[f].groups[bankId].outRates['__PowerMW'] > 0 and equals defaultMw within rounding (the pool of 60 coal exactly feeds the bank, so it runs at nameplate), and derived.factories[f].shortfalls is empty (the generator's driven slack must not leak into shortfalls). Holds on a plain hydrate/Recompute because driven_cycles applies regardless of the solve trigger.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "gamedata",
+   "name": "Geothermal (recipe-less) generator on a grid: per-grid generation must equal nameplate, not 0",
+   "drive": "Against the dev bridge (default fixture catalog, which contains Build_GeneratorGeoThermal_C). POST http://localhost:8791/api/edit with: [{type:\"create_factory\",name:\"GEO FARM\",position:{x:-2600,y:2400},region:\"GRASS FIELDS\"}], capture id gf. POST add_group: [{type:\"add_group\",factory:gf,machine:\"Build_GeneratorGeoThermal_C\",recipe:\"\",count:2,clock:1.0}]. POST [{type:\"create_factory\",name:\"LOAD SINK\",position:{x:-1600,y:2400},region:\"GRASS FIELDS\"}], capture id ls. POST a power route joining them: [{type:\"add_route\",kind:{kind:\"power\"},from:gf,to:ls}] (endpoints are factory ids for power circuits). Then load the app, press Tab to open the audit drawer, click the POWER tab.",
+   "expected": "The GRID card containing GEO FARM reads generation = 400 MW (200 MW nameplate × 2 generators) and the empire status bar sb-power reports the SAME 400 MW of generation. (Current behavior will instead show the GRID card at 0 MW generated / browned-out while the empire total shows 400 MW — the mismatch is the bug.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "gamedata",
+   "name": "Coal-generator burn math end-to-end: 75 MW nameplate consumes exactly 15 coal/min",
+   "drive": "POST /api/edit: create_factory \"POWER TEST\" (capture pt). Add a Coal in-port: {type:\"add_port\",factory:pt,direction:\"in\",item:\"Desc_Coal_C\",cap:120,rate:0} (capture coalIn). Add a __PowerMW out-port: {type:\"add_port\",factory:pt,direction:\"out\",item:\"__PowerMW\",rate:600} (capture mwOut). Add one generator: {type:\"add_group\",factory:pt,machine:\"Build_GeneratorCoal_C\",recipe:\"Recipe_Power_Build_GeneratorCoal_Desc_Coal_C\",count:1,clock:1.0} (capture gen). add_edge coalIn→gen (Desc_Coal_C) and gen→mwOut (__PowerMW). set_port_rate mwOut to 75. Read the derived factory snapshot (edges/ports rates).",
+   "expected": "Driving the generator to 75 MW pulls exactly 15 Desc_Coal_C/min on the input edge/port (75 × 60 ÷ 300 MJ = 15) and the group produces 75 __PowerMW. Doubling mwOut to 150 (2 generators' worth) pulls exactly 30 coal/min. This pins MW·60/MJ burn synthesis through the solve; phase2-empire only asserts a 150-MW headline with a 120-cap coal port and never pins the exact 15/min-per-75-MW consumption.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "gamedata",
+   "name": "Variable-power recipe draw is per-recipe average, not the machine's fixed/zero draw",
+   "drive": "Fixture catalog (has Build_HadronCollider_C, Recipe_Diamond_C, Recipe_DarkMatter_C). POST /api/edit: create_factory \"ACCEL\" (capture ac). Add boundary in-ports for the recipe's ingredients at ample cap, an out-port for its product, then {type:\"add_group\",factory:ac,machine:\"Build_HadronCollider_C\",recipe:\"Recipe_Diamond_C\",count:1,clock:1.0} wired input→group→output; set the output port rate to the single-machine rate so the group runs at count 1. Read derived factory total_power_mw. Then edit the group's recipe to Recipe_DarkMatter_C and re-read.",
+   "expected": "With Recipe_Diamond_C the factory total_power_mw = 500 MW (variable-power average 250 + 500/2), and with Recipe_DarkMatter_C on the same machine it = 1000 MW (500 + 1000/2) — the hungrier recipe beats the machine estimate. It must NOT read the machine's raw mPowerConsumption (~0) nor a fixed per-machine number. No e2e currently drives a variable-power (Particle Accelerator/Hadron) recipe through the solve.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "gamedata",
+   "name": "Catalog-wide gamedata invariants on the REAL Docs.json (parse-level sweep)",
+   "drive": "Run parse_docs on a real Satisfactory Docs.json (set FICSIT_DOCS_JSON) — e.g. a small `cargo test`/script over the parsed GameData — and assert three invariants over the whole catalog rather than the handful of fixture recipes the unit tests pin: (1) every synthesized burn recipe (produced_in resolves to a MachineKind::Generator) has products == [(__PowerMW, N)] where N == that generator's power_production_mw; (2) every non-generator recipe with a resolvable Manufacturer producer has manufacturer_for() == Some(existing machine); (3) no RF_LIQUID/RF_GAS ingredient or product amount exceeds its raw Docs liter value (i.e. every fluid amount was normalized by /1000 exactly once).",
+   "expected": "All three invariants hold for the real 1.0/1.1/1.2 Docs.json with zero violations. A violation in (1) flags a nameplate/synthesis mismatch, in (2) a recipe whose machine was dropped by the section match arms, in (3) a fluid that escaped or was double-applied by normalization. Existing unit tests assert these only for specific fixture recipes (Recipe_LiquidFuel_C, coal burn), never as a whole-catalog sweep on real data.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "session",
+   "name": "Multi-output deficit `needed` is independent of an unrelated output's target",
+   "drive": "Via bridge http://localhost:8791/api/edit seed one factory F with TWO independent output lines and one route-capped input. (1) create_factory F, plus an upstream SRC factory. (2) On F add Out port A (item Desc_IronRod_C, created FIRST) fed by an internal group from a high-ceiling/claimed input so A can hit 100/min; add In port inY (item Desc_CopperIngot_C) and Out port B (item Desc_Wire_C) with group Recipe_Wire_C; add_edge inY→group→B. (3) On SRC produce Desc_CopperIngot_C and add_route (belt tier 1, cap 60) SRC.out→F.inY so inY is capped well below B's demand. (4) set_port_rate A=100, B (rate that exceeds what 60/min copper supports, e.g. 480 wire). GET /api/hydrate, record derived.deficits row r where r.port==inY: note r.needed (call it N1). (5) POST /api/edit set_port_rate A=200 (leave B untouched). GET /api/hydrate again; read the same inY deficit row's needed (N2).",
+   "expected": "N2 == N1 (byte-equal within 1e-6): B's required copper intake through inY depends only on B's target and recipe, never on output A's target. (Current code computes needed = flow*requested/max_rate with requested = A's rate, so N2 ≈ 2*N1 — the probe fails and localizes to session.rs ~line 2148.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "session",
+   "name": "Whole-empire derive is deterministic (same plan → same derived, modulo timing fields)",
+   "drive": "With any non-trivial multi-factory plan already seeded (e.g. after the phase2-empire seeding, or seed 3 factories + 1 belt route + 1 power route via /api/edit), GET http://localhost:8791/api/hydrate twice with NO intervening edit. From each response take `derived` and recursively delete the wall-clock fields `recompute_us`, every factory's `solve_us`, and `solve_on_release`. Deep-compare the two stripped `derived` objects (factories, edges, ports, routes, deficits ORDER and values, circuits ORDER, circuit names, generation/demand MW, total_generation_mw, total_power_mw).",
+   "expected": "The two stripped `derived` payloads are structurally identical: identical factory/route/circuit key sets, identical deficit Vec order and numeric values, identical circuit Vec order and GRID letter names, identical total_generation_mw/total_power_mw. Any difference (e.g. a HashMap-ordered field or a name that renumbers) is a determinism defect.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "session",
+   "name": "Per-factory solve error is isolated — one un-solvable factory does not blank the rest, and /api/edit still returns 200",
+   "drive": "Via /api/edit: (1) seed a HEALTHY single-output factory H (in port + group + out port + edges + set_port_rate) that produces a known rate. (2) seed a BROKEN factory G in the same plan whose solve fails — e.g. add two groups wired group1→group2→group1 to force an internal cycle, or a group whose recipe resolves but with an edge referencing a missing node so snapshot()/t1 errors. GET /api/hydrate.",
+   "expected": "The edit responses are HTTP 200 throughout (no whole-empire failure). derived.factories[G].solveError is a non-null string; derived.factories[G].ports is empty. derived.factories[H] is unaffected: solveError null and its out-port rate equals the value it solved to before G was added. If instead adding G empties/zeros H's rates or the edit 500s, isolation is broken (session.rs error_factory + feed_downstream-with-empty-ports path).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "session",
+   "name": "An un-wired (driven) fuelled generator contributes to its power grid's generation, not just to the empire total",
+   "drive": "Via /api/edit build a coal generator factory GEN: claim a coal node, add In port coalIn + group (machine Build_GeneratorCoal_C, recipe Recipe_Power_Build_GeneratorCoal_Desc_Coal_C), add_edge coalIn→group so the generator is FUELLED — but do NOT add any __PowerMW out port or edge (leave the generator un-wired, so it is driven via driven_cycles). Add a consumer factory LOAD that draws power. Draw an inter-factory power route (kind power) GEN→LOAD to form a grid. GET /api/hydrate.",
+   "expected": "derived.circuits contains the GEN↔LOAD grid with generation_mw > 0 equal to the generator's fuel-limited output (≈ nameplate × count × clock when coal supply is sufficient), and that same value is reflected in derived.total_generation_mw. The grid must NOT read 0 MW generated for a fuelled driven generator. (phase2-empire only exercises the WIRED-to-__PowerMW generator path; the driven-in-grid attribution is unpinned.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "import",
+   "name": "Demolished-group drift accept cascades (no orphaned edges/ports, no phantom output)",
+   "drive": "POST /api/new_empire {}. POST /api/import/run with {\"saveName\":\"P1\",\"machines\":[{\"class\":\"Build_SmelterMk1_C\",\"recipe\":\"Recipe_IngotIron_C\",\"clock\":1,\"x\":0,\"y\":0,\"z\":0},{\"class\":\"Build_SmelterMk1_C\",\"recipe\":\"Recipe_IngotIron_C\",\"clock\":1,\"x\":50,\"y\":0,\"z\":0},{\"class\":\"Build_ConstructorMk1_C\",\"recipe\":\"Recipe_IronRod_C\",\"clock\":1,\"x\":100,\"y\":0,\"z\":0}]}. GET /api/hydrate — record the single factory id, its group ids, its Desc_IronRod_C Out port, and that an edge exists from the smelter group to the constructor group. POST /api/import/run again with only the two smelters (constructor removed) — capture the returned drift proposal id. POST /api/proposal/accept {\"id\":<proposal>}. GET /api/hydrate.",
+   "expected": "After accept the factory has exactly one group (the smelter bank); NO edge in plan.edges has from.id or to.id equal to the removed constructor group id; NO Desc_IronRod_C port remains on the factory; and the factory's derived output does not list Desc_IronRod_C. (Current build FAILS: the ingot smelter→constructor edge, the constructor→rod-port edge, and the Desc_IronRod_C Out port all survive as orphans, and the derived factory still reports an IronRod export sourced from the deleted constructor.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "import",
+   "name": "Count-up drift accept recomputes the exported port rate",
+   "drive": "POST /api/new_empire {}. POST /api/import/run with three smelters at x=0,50,100 (Build_SmelterMk1_C / Recipe_IngotIron_C, clock 1, no consumer). GET /api/hydrate — record the Desc_IronIngot_C Out port rate (expected 90/min: 3×30). POST /api/import/run with six smelters at x=0,50,100,150,200,250 (same class/recipe). Capture the drift proposal id. POST /api/proposal/accept {\"id\":<proposal>}. GET /api/hydrate.",
+   "expected": "After accepting the 3→6 count drift, group.count==6 AND the Desc_IronIngot_C Out port rate is 180/min (doubled), and the derived factory output for Desc_IronIngot_C is 180/min. (Current build FAILS: group.count becomes 6 but the Out port rate stays 90/min and the demand-driven solve caps derived output at 90/min, so the expanded factory under-reports by 90/min.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "import",
+   "name": "Import synthesizes a save-only node claim + override for an extractor off the catalog",
+   "drive": "POST /api/new_empire {}. POST /api/import/run with {\"saveName\":\"N1\",\"machines\":[{\"class\":\"Build_SmelterMk1_C\",\"recipe\":\"Recipe_IngotIron_C\",\"clock\":1,\"x\":0,\"y\":0,\"z\":0}],\"extractors\":[{\"class\":\"Build_MinerMk1_C\",\"clock\":1,\"x\":900000,\"y\":900000,\"z\":0,\"nodeActorId\":\"BP_ResourceNode_TEST1\"}]}. GET /api/hydrate.",
+   "expected": "The single imported factory owns exactly one node claim whose `node` id starts with \"save:\" (specifically save:BP_ResourceNode_TEST1) because the miner at (900000,900000) is beyond NODE_MATCH_M of every bundled catalog node, and there is exactly one node override with that same id carrying pos≈(900000,900000). The claim's save_node_id is \"BP_ResourceNode_TEST1\". (Pins import.rs bind_extractors save-only synthesis, which the phase4-import e2e never checks — it asserts no node claims/overrides at all.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "map",
+   "name": "Search-jump lands on a node's corrected (override) position, not its catalog position",
+   "drive": "1) POST http://localhost:8791/api/edit [{type:'create_factory',name:'ANCHOR',position:{x:-2000,y:2000},region:'GRASS FIELDS'}] then GET /api/hydrate; from world (or /api/hydrate world.nodes) pick an iron catalog node N with a known id and catalog (N.x,N.y). 2) POST /api/edit [{type:'set_node_override',id:N.id,nodeOverride:{id:N.id,pos:{x:N.x+5000,y:N.y+5000,z:0}}}]. 3) page.goto('/'); dismiss onboarding; await map-root visible; wait ~400ms for the boot view to settle. 4) Fill '.searchbox input' with N.id (SearchBox matches on n.id) and press Enter to take hits[0]. 5) Wait ~400ms for moveend to stamp data-center on [data-testid=map-root].",
+   "expected": "[data-testid=map-root] data-center reads approximately '(N.x+5000),(N.y+5000)' (within ~400 world units) — the corrected position where the node actually renders and where its selection ring is drawn. (Bug reveal: it instead reads ~ '(N.x),(N.y)', the pre-correction catalog coordinate.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "map",
+   "name": "Search filter stays inert when the query matches no resource node",
+   "drive": "1) resetView; POST /api/edit [{type:'create_factory',name:'ZZQTOP WORKS',position:{x:-2600,y:2600},region:'GRASS FIELDS'}] (a name whose substring hits no item label or purity). 2) page.goto('/'); dismiss onboarding; await [data-testid=map-root]; read N = Number(data-nodes-shown). 3) Fill '.searchbox input' with 'zzqtop'. 4) Then clear and fill '.searchbox input' with 'iron'.",
+   "expected": "After step 3, data-nodes-shown stays exactly N (query matches zero nodes → nodeFilter.active=false → full node field drawn; searching a factory name never blanks the resource field). After step 4, data-nodes-shown is > 0 and < N (a real resource query does narrow). node-filter.spec only pins narrowing + clear-restores; the no-match inertness branch is unpinned.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "map",
+   "name": "No claim tether is drawn to a node hidden by the search filter",
+   "drive": "1) resetView; POST /api/edit to create factory F at {x:-2700,y:2500} (GRASS FIELDS). 2) In the UI, fill '.searchbox input' with 'coal', press Enter to open the coal node drawer; in CLAIM FOR pick F and click [data-testid=btn-claim]; then click the F pin so its claim tether highlights (bright signal). Record the F pin screen point and the coal node's screen point (map.latLngToContainerPoint) via page.evaluate. 3) Fill '.searchbox input' with 'iron' so the coal node is filtered out (data-nodes-shown drops to the iron subset). 4) Sample the data canvas ('.map-canvas-layer') pixel at the midpoint between the F pin and the (now hidden) coal node's screen point.",
+   "expected": "The coal node disc is absent AND the midpoint pixel is background (no signal-orange dashed tether / '→ ANCHOR' chip) — a claim on a filtered-out node draws no dangling tether. (Bug reveal: the tether is still stroked to the empty coal-node location.) Assert via canvas pixel sample / screenshot diff since tethers are canvas-drawn, not DOM.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "graph",
+   "name": "Send-out of an underclocked machine sizes the OUT port to real capacity, not nameplate",
+   "drive": "POST http://localhost:8791/api/edit [{type:create_factory,name:'SURPLUS CLOCK',position:{x:-1000,y:1000},region:'GRASS FIELDS'}] → f. Then add_port {factory:f,direction:'in',item:'Desc_IronIngot_C',rate:0,rateCeiling:200,graphPos:{x:0,y:100}} → ingot; add_group {factory:f,machine:'Build_ConstructorMk1_C',recipe:'Recipe_IronRod_C',count:1,clock:0.5,graphPos:{x:320,y:100},floor:0} → rod; add_edge {factory:f,from:{kind:'port',id:ingot},to:{kind:'group',id:rod},item:'Desc_IronIngot_C',tier:3} (feed only, no output edge). UI: goto '/', skip onboarding, fill .searchbox input 'SURPLUS CLOCK', Enter, click btn-open-factory. Right-click node[data-id=rod], click getByTestId('ctx-send-Desc_IronRod_C'). Then GET http://localhost:8791/api/hydrate and read plan.ports where factory==f, direction=='out', item=='Desc_IronRod_C'.",
+   "expected": "Exactly one OUT port for Desc_IronRod_C, and its rate == 7.5 (nameplate 15/min × 0.5 clock). CURRENT BUILD produces rate == 15 (the Math.max(effClock,1) floor), which is the bug.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "graph",
+   "name": "A group→boundary-port belt from a raised floor is NOT drawn as a lift",
+   "drive": "POST /api/edit create_factory 'PORT LIFT' → f. add_port in Desc_IronIngot_C rate0 ceiling200 graphPos{0,100} → ingot; add_group Build_ConstructorMk1_C Recipe_IronRod_C count1 clock1 graphPos{320,100} floor0 → g; add_port out Desc_IronRod_C rate0 ceiling null graphPos{680,100} → outp; add_edge port ingot→group g item Desc_IronIngot_C tier3; add_edge group g→port outp item Desc_IronRod_C tier3 → capture created edge id E; set_group_floor {id:g,floor:2}. UI: open the graph (all-floors view is default). Read getByTestId(`belt-label-${E}`) innerText and count .lift-pad rects on that edge.",
+   "expected": "The belt-label for the g→outp edge shows a plain 'n/cap · % MK.3' chip with NO '⇅' glyph and NO 'F2→F0' lift tag, and there are 0 lift-pad diamonds on it (a port is a floor-agnostic boundary, so this is not a cross-floor lift). CURRENT BUILD renders '⇅ F2→F0 · …' with two lift pads.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "graph",
+   "name": "Filtering to the source floor keeps a group→port belt whole (no phantom lift portal)",
+   "drive": "Same fixture and setup as the previous probe (group g on floor 2, out-port outp, edge id E). UI: open graph, click the floor chip getByTestId('floor-chips').getByRole('button',{name:'F2'}). Then assert on getByTestId(`lift-portal-${E}`) count, and on the visibility of node[data-id=g] and node[data-id=outp].",
+   "expected": "0 lift-portal elements for edge E; node g (floor 2) is visible and its OUT port outp is visible with the belt drawn between them. CURRENT BUILD shows exactly one lift-portal-<E> stub near g pointing to 'F0' while the port outp still renders detached — clicking that portal jumps to floor 0 where g is hidden.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "graph",
+   "name": "STACK FLOORS is idempotent — running it twice leaves positions unchanged",
+   "drive": "POST /api/edit create_factory 'STACK IDEM' → f. add_group Build_ConstructorMk1_C Recipe_IronRod_C count1 clock1 graphPos{200,120} floor0 → g0; add_group Build_ConstructorMk1_C Recipe_Screw_C count1 clock1 graphPos{560,300} floor1 → g1 (two distinct floors). UI: open graph. Click getByTestId('btn-stack-floors'); wait ~700ms. GET /api/hydrate → record plan.groups[g0].graphPos and plan.groups[g1].graphPos (call them A1/B1). Click getByTestId('btn-stack-floors') again; wait ~700ms. GET /api/hydrate → record A2/B2.",
+   "expected": "A2 == A1 and B2 == B1 exactly (the second STACK emits an empty command batch and moves nothing — the layout has already converged). Any position delta on the second click indicates non-deterministic band-stacking.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "graph",
+   "name": "Trace-on-select dims off-chain nodes to 0.3 and leaves an unconnected card at 0.3 too",
+   "drive": "POST /api/edit create_factory 'TRACE DIM' → f. add_port in Desc_IronIngot_C rate0 ceiling200 graphPos{0,100} → p; add_group Build_ConstructorMk1_C Recipe_IronRod_C count1 clock1 graphPos{300,100} floor0 → A; add_group Build_ConstructorMk1_C Recipe_Screw_C count1 clock1 graphPos{640,100} floor0 → B; add_edge port p→group A item Desc_IronIngot_C tier3; add_edge group A→group B item Desc_IronRod_C tier3; add_group Build_ConstructorMk1_C Recipe_IronPlate_C count1 clock1 graphPos{300,360} floor0 → C (isolated, no edges). UI: open graph, click node[data-id=A]. Read computed opacity of node[data-id=A], node[data-id=B], node[data-id=C], node[data-id=p].",
+   "expected": "A opacity 1 and B opacity 1 and p opacity 1 (all on A's belt-connected chain, so traceSet contains them → no dim); C opacity 0.3 (off-chain traceDim). Selecting an isolated card instead (click C) leaves every node at opacity 1 because a single-node trace set does not dim (seen.size <= 1 → traceSet null).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "make",
+   "name": "Reuse+redirect build is NOT blocked when the node is fully claimed but the existing line is exported",
+   "drive": "POST http://localhost:8791/api/edit sequence: [create_factory name 'REUSE TIGHT' region 'GRASS FIELDS'] -> f; [add_port factory f direction in item Desc_IronIngot_C rate 0 rateCeiling 30] -> ingot; [add_group factory f machine Build_ConstructorMk1_C recipe Recipe_IronRod_C count 2 clock 1.0 floor 0] -> rod; [add_port factory f direction out item Desc_IronRod_C rate 0 rateCeiling null] -> rodOut; [add_edge from port(ingot) to group(rod) item Desc_IronIngot_C tier 3]; [add_edge from group(rod) to port(rodOut) item Desc_IronRod_C tier 3]; [set_port_rate id rodOut rate 30]. UI: reload, open factory graph for 'REUSE TIGHT', click btn-make-from-resources, click mfr-item-Desc_IronScrew_C, ensure the mfr-reuse checkbox is checked, fill mfr-rate with 120, then click mfr-build.",
+   "expected": "The modal must show NO mfr-warn (this build is feasible via redirect: 0 new ingot needed) and mfr-build must be ENABLED. After clicking build the modal hides; GET /api/hydrate shows exactly ONE Recipe_IronRod_C group and exactly ONE Recipe_Screw_C group in factory f (rod reused, not duplicated); plan.ports[rodOut].rate is trimmed below 30 (toward 0) to feed the new line; port-out Desc_IronScrew_C shows 120/min; the iron-ingot input port's derived draw stays <= 30/min. (Under current code this FAILS: mfr-warn is visible, mfr-build is disabled, and the build cannot proceed.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "make",
+   "name": "Diamond target sums a shared raw-tier intermediate into ONE group in a real build",
+   "drive": "POST http://localhost:8791/api/edit: [create_factory name 'DIAMOND' region 'GRASS FIELDS'] -> f; [add_port factory f direction in item Desc_OreIron_C rate 0 rateCeiling null] -> ore. UI: reload, open factory graph for 'DIAMOND', click btn-make-from-resources, click mfr-item-Desc_IronPlateReinforced_C, fill mfr-rate with 5, click mfr-build.",
+   "expected": "GET /api/hydrate for factory f contains exactly ONE group with recipe Recipe_IngotIron_C (the diamond: ingot is demanded by both the plate path 45/min and the rod path 15/min = 60/min total, summed not duplicated) with count 2 and clock ~1.0; plus exactly one Recipe_IronPlate_C (count 2, clock ~0.75), one Recipe_Screw_C (count 2, clock ~0.75), one Recipe_IronRod_C (count 1), one Recipe_IronPlateReinforced_C (count 1). port-out Desc_IronPlateReinforced_C shows 5/min. Key assertion: number of Recipe_IngotIron_C groups == 1.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "make",
+   "name": "Reuse SCALES UP the existing line's machine count when its capacity can't cover the new draw",
+   "drive": "POST http://localhost:8791/api/edit: [create_factory name 'SCALEUP' region 'GRASS FIELDS'] -> f; [add_port factory f direction in item Desc_IronIngot_C rate 0 rateCeiling 200] -> ingot; [add_group factory f machine Build_ConstructorMk1_C recipe Recipe_IronRod_C count 1 clock 1.0 floor 0] -> rod; [add_edge from port(ingot) to group(rod) item Desc_IronIngot_C tier 3]. UI: reload, open factory graph for 'SCALEUP', click btn-make-from-resources, click mfr-item-Desc_IronScrew_C, ensure mfr-reuse is checked, fill mfr-rate with 80, click mfr-build.",
+   "expected": "80 screws need 20/min rod, exceeding the existing 1-machine rod capacity (15/min). GET /api/hydrate shows still exactly ONE Recipe_IronRod_C group but its count is now 2 (scaled from 1 via set_group_count so per*count*clock = 30 >= 20) with clock unchanged at 1.0; exactly one Recipe_Screw_C group (count 2); port-out Desc_IronScrew_C shows 80/min. Assertion: rod group count == 2 and rod group count-of-groups == 1.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "wizard",
+   "name": "Reject leaves the plan byte-identical (apply/reject atomicity)",
+   "drive": "1) Load the map view; GET http://localhost:8791/api/hydrate and record planHash H0 and Object.keys(plan.factories).length N0. 2) Open the wizard, set item = Iron Plate, rate = 25, click SOLVE; wait for [data-testid=proposal-review]. 3) Click the REJECT button (button.prop-reject). 4) GET /api/hydrate again; also read the proposal object from plan.proposals.",
+   "expected": "After reject: planHash === H0 (plan-content hash excludes proposals, so it is unchanged); Object.keys(plan.factories).length === N0 and no new groups/ports/routes/claims exist (zero ◇ entities materialized); the proposal's status === \"rejected\"; the review surface is closed and the map is shown. No entity other than the proposal itself changed.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "wizard",
+   "name": "Two-stage chain produces exact stages / machines / ports",
+   "drive": "1) Load map; open wizard; item = Iron Plate, rate = 25; SOLVE; wait for [data-testid=proposal-review]. 2) Assert the CREATE row detail text. 3) Click ACCEPT, wait for review to close, GET /api/hydrate and inspect the newly-created factory (name contains 'IRON PLATE WORKS'): its groups and ports.",
+   "expected": "CREATE item detail reads exactly '2 stages · 4 machines · Iron Plate 25.0/min' (plate stage Recipe_IronPlate_C ×2 @ 62% [per-machine 20/min, exact 1.25], ingot stage Recipe_IngotIron_C ×2 @ 62% [per-machine 30/min, exact 1.25 for 37.5 ingot/min]). goal-check shows 25/25 ✓. After accept, the new factory has exactly 2 machine groups (4 machines total), exactly 1 IN port (Iron Ore) and exactly 1 OUT port (Iron Plate), plus ClaimNode items covering ≥37.5/min of Iron Ore.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "wizard",
+   "name": "Wizard CREATE power impact matches the solved Δ POWER for a single new site",
+   "drive": "1) Load map; open wizard; item = Iron Plate, rate = 25; SOLVE; wait for [data-testid=proposal-review]. 2) Parse the numeric MW from the CREATE item's impact cell ('+N MW'). 3) Parse the numeric MW from the footer Δ POWER cell ('+M MW draw', from [data-testid=proposal-review] prop-cell 'Δ POWER').",
+   "expected": "Honest expectation: N === M (both should equal the clock-scaled solved draw of the four underclocked machines). Actual current behavior will FAIL this: the CREATE impact N is computed without clock (recipe_power×count) while the footer M is the real solver draw (×clock^1.321928), so N > M for the @62% stages — pinning the finding that the two power figures shown together disagree.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "advisor",
+   "name": "SELECTION-scope context resolves a non-factory selection (route)",
+   "drive": "Via bridge POST http://localhost:8791/api/edit: create factory F1 (create_factory), create factory F2; add an OUT port on F1 (add_port direction=out item=Desc_CopperIngot_C) → PID_OUT; add an IN port on F2 (add_port direction=in item=Desc_CopperIngot_C) → PID_IN; add_route {kind:{kind:belt,tier:5}, from:PID_OUT, to:PID_IN, path:[...]} → capture route id R. Then POST http://localhost:8791/api/context with raw body {\"scope\":\"selection\",\"id\":\"<R>\"}. (Equivalently in UI: goto /, map view, drive __ficsitStore.getState().setSelection({kind:'route',id:R}), open advisor via 'a', CHAT tab, set the scope <select> to SELECTION, click btn-view-context.)",
+   "expected": "The returned ContextSnapshot.payload describes the SELECTED ROUTE — its id/kind/endpoints (or at minimum a non-null subject for scope 'selection'). It must NOT be the all-null factory object {\"scope\":\"factory\",\"factory\":null,\"groups\":null,\"ports\":null,\"derived\":null}. (Current code returns exactly that null object → probe fails → confirms the SELECTION-scope bug.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "advisor",
+   "name": "IGNORE POWER demotes power_deficit below deficit_repair, adds the honest note, and hides power_margin",
+   "drive": "Via bridge /api/edit seed three self-contained subjects (unique names/coords): (1) OVERDRAWN grid — GEN1 with __PowerMW OUT set to 30, LOAD1 with 16x Build_SmelterMk1_C Recipe_IngotIron_C (64 MW draw), add_route {kind:{kind:power}} GEN1→LOAD1. (2) THIN grid — GEN2 __PowerMW OUT set to 75, LOAD2 16x Build_SmelterMk1_C (64 MW), power route GEN2→LOAD2 (→ ~14% headroom, warn band). (3) STARVED copper chain — producer OUT Desc_CopperIngot_C dipped so a Desc_CopperIngot_C deficit exists (mirror w3/w5 seeding). GET /api/next (default prefs). Then POST /api/next/preferences {\"noTrains\":false,\"ignorePower\":true}; GET /api/next again. Restore {\"noTrains\":false,\"ignorePower\":false} after.",
+   "expected": "BEFORE toggle: opportunities contains a kind==='power_deficit' card, a kind==='power_margin' card, and a deficit_repair:Desc_CopperIngot_C card; the power_deficit index < the deficit_repair index (class 0 above class 1). AFTER ignorePower=true: NO kind==='power_margin' card remains; the power_deficit card still exists and its `evidence` ends with the exact suffix ' — power ignored by preference — this grid is still overdrawn'; and the deficit_repair:Desc_CopperIngot_C index is now < the power_deficit index (demotion to class 3, below class-1 repairs).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "advisor",
+   "name": "route_bottleneck_fix names the SMALLEST sufficient belt tier for a transport-capped starve",
+   "drive": "Via bridge /api/edit: PROD factory — IN port Desc_OreCopper_C rateCeiling=480, OUT port Desc_CopperIngot_C rateCeiling=null, group 8x Build_SmelterMk1_C Recipe_IngotCopper_C clock 1.0, belts port→group→port; set_port_rate OUT=100 (producer achieves 100/min; upstream solves blind to the belt). SINK factory — IN port Desc_CopperIngot_C rateCeiling=null, OUT port Desc_Wire_C rateCeiling=null, group 16x Build_ConstructorMk1_C Recipe_Wire_C, belts; set_port_rate wire OUT=200 (→ 100/min copper-ingot demand). add_route {kind:{kind:belt,tier:1}} PROD.OUT→SINK.IN (Mk.1 cap = 60). GET /api/next.",
+   "expected": "opportunities contains a kind==='route_bottleneck_fix' card for this route whose `title` contains 'bump it to Mk.2' (smallest belt tier with capacity>=flow+recoverable=60+40=100 is Mk.2 at 120) and whose `evidence` is exactly '60.0/60.0 per min at 100% with 40.0/min recoverable through it'. There is NO deficit_repair:Desc_CopperIngot_C card (production_gap is 0 — the producer makes the full 100).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "advisor",
+   "name": "deficit_repair names an already-full contributing route when the miss is production, not transport",
+   "drive": "Via bridge /api/edit: PROD factory — IN Desc_OreIron_C rateCeiling=480, OUT Desc_IronIngot_C rateCeiling=null, group 8x Build_SmelterMk1_C Recipe_IngotIron_C, belts; set_port_rate OUT=60 (producer makes exactly the Mk.1 belt cap). SINK factory — IN Desc_IronIngot_C rateCeiling=null, OUT Desc_IronRod_C rateCeiling=null, group 16x Build_ConstructorMk1_C Recipe_IronRod_C, belts; set_port_rate rod OUT=100 (→ 100/min iron-ingot demand). add_route {kind:{kind:belt,tier:1}} PROD.OUT→SINK.IN. GET /api/next.",
+   "expected": "opportunities contains deficit_repair:Desc_IronIngot_C with action.kind==='wizardGoal', action.rate===40, and `evidence` exactly 'need 100.0/min, supplied 60.0/min across 1 port(s); the Mk.1 route is already full — upgrading it is also required once production rises'. There is NO route_bottleneck_fix card for this route (transport_gap is 0 → recoverable 0 → the route-fix family is correctly gated out).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "shell",
+   "name": "Two-click wipe DISARMS when the DATA menu closes and reopens",
+   "drive": "1) POST http://localhost:8791/api/edit with [{\"type\":\"create_factory\",\"name\":\"DISARM TEST\",\"position\":{\"x\":-2400,\"y\":2400},\"region\":\"GRASS FIELDS\"}]. 2) page.goto('/'); if getByTestId('onboard-skip') visible, click it; await getByTestId('map-root'). 3) Record N = Object.keys((GET /api/hydrate).plan.factories).length (>=1). 4) Click getByTestId('btn-data-menu'); click getByTestId('btn-new-empire') — assert it now contains /Click again/i (armed). 5) page.keyboard.press('Escape') to close the menu. 6) Click getByTestId('btn-data-menu') to reopen. 7) Click getByTestId('btn-new-empire') exactly ONCE.",
+   "expected": "After reopen, btn-new-empire reads 'Start new empire' (NOT 'Click again') — the arm was reset by the close. The single post-reopen click only RE-ARMS (button now shows 'Click again to delete everything'); GET /api/hydrate still reports N factories — the plan is NOT wiped. (new-empire.spec pins arm→confirm→wipe but never the disarm-on-close, so a regression that let the arm survive a close would silently make a single click destructive and go uncaught.)",
+   "coveredByExisting": false
+  },
+  {
+   "area": "shell",
+   "name": "Escape while the DATA menu is open closes the menu WITHOUT clearing the map selection",
+   "drive": "1) page.goto('/'); await getByTestId('map-root'); dismiss onboarding if present. 2) Select something on the map: locator('.searchbox input').fill('iron ingot works 1'); page.keyboard.press('Enter'); await getByTestId('summary-drawer') visible. 3) Click getByTestId('btn-data-menu'); await getByTestId('data-menu') visible. 4) page.keyboard.press('Escape').",
+   "expected": "getByTestId('data-menu') becomes hidden AND getByTestId('summary-drawer') is STILL visible — the DataMenu capture-phase handler consumed Escape (stopPropagation) so MapView's window bubble handler never ran setSelection(null). A regression removing the stopPropagation would close the menu and ALSO clear the selection on the same keystroke.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "shell",
+   "name": "⌘K/Ctrl+K while the DATA menu is open closes the menu and focuses the header search",
+   "drive": "1) page.goto('/'); await getByTestId('map-root'); dismiss onboarding if present. 2) Click getByTestId('btn-data-menu'); await getByTestId('data-menu') visible. 3) page.keyboard.press('Control+k').",
+   "expected": "getByTestId('data-menu') becomes hidden AND locator('.searchbox input') is focused (toBeFocused). The menu's fixed backdrop did not swallow the shortcut: the capture handler closed the menu WITHOUT consuming the key, and SearchBox's bubble handler then focused the search. A regression that consumed ⌘K in the menu (or left the backdrop up) would leave the search unfocused or the menu open.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "shell",
+   "name": "PWR chip shows the generation segment only when generation > 0 (draw-vs-generation truth)",
+   "drive": "1) Wipe to a clean plan: POST /api/edit two create_factory cmds, open DATA menu, double-click btn-new-empire to run new_empire (or POST the equivalent reset) so the plan is empty. 2) page.goto('/'); read getByTestId('sb-power'). 3) Assert locator('[data-testid=\"sb-power\"] .sb-gen') has count 0 and the text matches /PWR .*MW/ with no '/'. 4) Create a generator: from GET /api/hydrate gamedata.machines pick a machine whose kind is Generator; POST /api/edit [{create_factory...},{create_group with that machine, count>=1, clock 1.0}]; page.reload(). 5) Read getByTestId('sb-power') again.",
+   "expected": "With zero generation, sb-power shows draw only — no '.sb-gen' span, no '/ <gen> MW'. After a generator group exists (totalGenerationMw>0), the '.sb-gen' span appears and sb-power text contains ' / ' followed by the generation figure in MW. This pins that the generation half of the chip tracks totalGenerationMw>0 rather than always rendering; no existing spec asserts sb-power content.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "web",
+   "name": "Garbage/truncated Docs.json upload → friendly error, no wedged state",
+   "drive": "Web build (playwright.web.config, __ficsitStore/__ficsitBackend handles as in e2e-web/web-smoke.spec.ts). goto('/'); waitReady. dispatch([{type:'create_factory',name:'KEEP',position:{x:1,y:2,z:0},region:'GRASS FIELDS'}]). Assert factoryCount===1 and buildVersion==='fixture'. Write a temp file containing the truncated bytes `{\"NativeClass\":` (invalid JSON) and page.getByTestId('docs-file-input').setInputFiles(that file).",
+   "expected": "buildVersion STAYS 'fixture' (never flips to 'uploaded'); a red error toast is shown whose text starts \"Couldn't load Docs.json —\" and cmdError is non-null; factoryCount stays 1 and factory 'KEEP' is still present; a subsequent dispatch(create_factory 'AFTER') succeeds (app is not wedged); after page.reload()+waitReady, factoryCount===1, factory 'KEEP' present, buildVersion==='fixture'.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "web",
+   "name": "Wrong-but-valid JSON array (`[]`) Docs.json upload → should be rejected",
+   "drive": "goto('/'); waitReady. Assert buildVersion==='fixture'. Write a temp file whose entire contents are `[]` and setInputFiles('docs-file-input', that file). Wait up to 30s for the upload to settle.",
+   "expected": "DECLARED-EXPECTED (correct behavior): the upload is REJECTED — buildVersion remains 'fixture', an error toast appears, and catalogLoaded stays false (the '① Upload Docs.json' onboarding/DATA step is still shown). [This probe pins finding #1: the CURRENT implementation instead flips buildVersion→'uploaded', shows a green 'Catalog loaded — 0 recipes' toast, and turns the first-run gate off — a mismatch that confirms the missing non-emptiness validation.]",
+   "coveredByExisting": false
+  },
+  {
+   "area": "web",
+   "name": "Docs.json upload preserves an existing plan through the catalog swap and reload",
+   "drive": "goto('/'); waitReady. dispatch([{type:'create_factory',name:'SURVIVOR',position:{x:3,y:4,z:0},region:'GRASS FIELDS'}]). Assert factoryCount===1, buildVersion==='fixture'. setInputFiles('docs-file-input', crates/gamedata/assets/docs-fixture.json). poll buildVersion until 'uploaded'.",
+   "expected": "Immediately after the swap: factoryCount===1 and the factory named 'SURVIVOR' is still present (the worker rebuilt WebSession over the new catalog from the preserved plan snapshot). After page.reload()+waitReady: buildVersion==='uploaded' AND factoryCount===1 with 'SURVIVOR' present (saveDocsAndPlan wrote docs+plan atomically). The existing 'corrupt plan keeps docs' test corrupts the plan away, so no current test asserts a GOOD plan survives a GOOD upload.",
+   "coveredByExisting": false
+  },
+  {
+   "area": "web",
+   "name": "wasm undo snapshot persists the undone state across reload",
+   "drive": "goto('/'); waitReady. dispatch([{type:'create_factory',name:'ALPHA',...}]) then dispatch([{type:'create_factory',name:'BETA',...}]). Assert factoryCount===2. Call await __ficsitStore.getState().undo() (undoes BETA's creation). Assert factoryCount===1 and the sole factory is 'ALPHA'. page.reload(); waitReady.",
+   "expected": "After reload factoryCount===1 and the only factory is 'ALPHA' — BETA does NOT resurrect. This pins that the dispatch 'undo' arm's mutated=true snapshot actually wrote the post-undo store to IndexedDB (the undo/redo persistence path is unpinned by web-smoke).",
+   "coveredByExisting": false
+  },
+  {
+   "area": "web",
+   "name": "View-state (openFactory) round-trips through IndexedDB on reload",
+   "drive": "goto('/'); waitReady. dispatch([{type:'create_factory',name:'HOME',...}],{select:true}); capture its id F. Call __ficsitStore.getState().setView({mode:'factory',factoryId:F}) (persists openFactory via set_view_state, debounced). Then dispatch([{type:'create_factory',name:'FLUSH',...}]) to force an inline snapshot that flushes the pending debounced view write. page.reload(); waitReady.",
+   "expected": "After reload, __ficsitStore.getState().view deep-equals {mode:'factory', factoryId:F} — the app reopens the factory it was in (openFactory persisted and hydrate re-projected it), NOT {mode:'map'}. Pins view-state hydrate fidelity and that a real mutation flushes the coalesced view-state snapshot.",
+   "coveredByExisting": false
+  }
+ ]
+}
