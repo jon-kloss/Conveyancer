@@ -236,3 +236,69 @@ test("reuse scales up the rod machine count when capacity is short", async ({ pa
     await edit(request, [{ type: "delete_factory", id: f }]).catch(() => {});
   }
 });
+
+// ---------------------------------------------------------------------------
+// PROBE 4 — Free-up removes only enough consumers to cover the shortfall,
+// sized by REAL solved draw (an idle consumer frees nothing and is never
+// picked).
+//
+// Setup: iron-ore IN capped at 90/min, fully drawn by two live smelter lines
+// (G1: 1 machine → 30 ore/min export, G2: 2 machines → 60 ore/min export),
+// plus one IDLE smelter G0 (unwired — real draw 0). Ask MAKE for 30/min more
+// ingot → 30 ore short.
+//
+// EXPECTED: the free-up button offers to remove exactly ONE group; clicking
+// it (two-click confirm) deletes G1 — the smallest LIVE consumer — never the
+// idle G0 (frees nothing) and never G2 (over-frees); the warning then clears
+// and BUILD becomes enabled with the recovered 30/min of ore.
+// ---------------------------------------------------------------------------
+test("free-up removes the smallest live consumer, not everything", async ({ page, request }) => {
+  await resetView(request);
+  const f = (await edit(request, [{ type: "create_factory", name: "FREEUP FAIR", position: { x: -3200, y: 3200 }, region: "GRASS FIELDS" }])).created[0];
+  const ore = (await edit(request, [{ type: "add_port", factory: f, direction: "in", item: "Desc_OreIron_C", rate: 0, rateCeiling: 90, graphPos: { x: 0, y: 100 } }])).created[0];
+  const g0 = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_SmelterMk1_C", recipe: "Recipe_IngotIron_C", count: 1, clock: 1.0, graphPos: { x: 320, y: 360 }, floor: 0 }])).created[0];
+  const g1 = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_SmelterMk1_C", recipe: "Recipe_IngotIron_C", count: 1, clock: 1.0, graphPos: { x: 320, y: 100 }, floor: 0 }])).created[0];
+  const g2 = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_SmelterMk1_C", recipe: "Recipe_IngotIron_C", count: 2, clock: 1.0, graphPos: { x: 320, y: 230 }, floor: 0 }])).created[0];
+  const out1 = (await edit(request, [{ type: "add_port", factory: f, direction: "out", item: "Desc_IronIngot_C", rate: 0, rateCeiling: null, graphPos: { x: 640, y: 100 } }])).created[0];
+  const out2 = (await edit(request, [{ type: "add_port", factory: f, direction: "out", item: "Desc_IronIngot_C", rate: 0, rateCeiling: null, graphPos: { x: 640, y: 230 } }])).created[0];
+  await edit(request, [
+    { type: "add_edge", factory: f, from: P(ore), to: G(g1), item: "Desc_OreIron_C", tier: 3 },
+    { type: "add_edge", factory: f, from: P(ore), to: G(g2), item: "Desc_OreIron_C", tier: 3 },
+    { type: "add_edge", factory: f, from: G(g1), to: P(out1), item: "Desc_IronIngot_C", tier: 3 },
+    { type: "add_edge", factory: f, from: G(g2), to: P(out2), item: "Desc_IronIngot_C", tier: 3 },
+    { type: "set_port_rate", id: out1, rate: 30 },
+    { type: "set_port_rate", id: out2, rate: 60 },
+  ]);
+
+  try {
+    await openGraph(page, "FREEUP FAIR");
+    await page.getByTestId("btn-make-from-resources").click();
+    const modal = page.getByTestId("make-from-resources");
+    await expect(modal).toBeVisible();
+
+    await modal.getByTestId("mfr-item-Desc_IronIngot_C").click();
+    await modal.getByTestId("mfr-rate").fill("30");
+
+    // Blocked: 30 ore short. The offer is ONE group — the smallest live
+    // consumer covers the whole gap.
+    await expect(modal.getByTestId("mfr-warn")).toBeVisible();
+    const freeup = modal.getByTestId("mfr-freeup");
+    await expect(freeup).toContainText("REMOVE 1 GROUP");
+    await freeup.click(); // arm
+    await freeup.click(); // confirm
+
+    // G1 (30/min live draw) is gone; the idle G0 and the big G2 survive.
+    await expect
+      .poll(async () => {
+        const h = await hydrate(request);
+        return [!h.plan.groups[g1], !!h.plan.groups[g0], !!h.plan.groups[g2]];
+      })
+      .toEqual([true, true, true]);
+
+    // The recovered 30/min clears the warning and enables the build.
+    await expect(modal.getByTestId("mfr-warn")).toHaveCount(0);
+    await expect(modal.getByTestId("mfr-build")).toBeEnabled();
+  } finally {
+    await edit(request, [{ type: "delete_factory", id: f }]).catch(() => {});
+  }
+});

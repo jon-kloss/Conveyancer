@@ -153,6 +153,10 @@ export default function MakeFromResources({
       if (!b.fromRaw || reuseItems.has(b.fromItem)) continue;
       d.set(b.fromItem, (d.get(b.fromItem) ?? 0) + b.rate);
     }
+    // One expansion per reused GROUP: the build scales a group that feeds two
+    // reused items ONCE (max count wins), so expanding each item's remainder
+    // separately would double that group's raws — keep only the biggest.
+    const extraByGid = new Map<Id, { item: string; extra: number; machines: number }>();
     for (const item of reuseItems) {
       const prod = existingProducers.get(item);
       if (!prod) continue;
@@ -161,7 +165,10 @@ export default function MakeFromResources({
         .reduce((s, b) => s + b.rate, 0);
       if (newDemand <= 1e-6) continue;
       // Mirrors the build path's redirect: world exports THIS group feeds are
-      // trimmable into the new chain without any new extraction.
+      // trimmable into the new chain without any new extraction — but a port
+      // TARGET can exceed what the group really outputs (a starved export),
+      // so credit no more than the solver's committed flow, exactly like the
+      // build's min(freed, committed).
       const fedByGroup = (pid: Id) =>
         Object.values(plan.edges).some(
           (e) => e.from.kind === "group" && e.from.id === prod.id && e.to.kind === "port" && e.to.id === pid,
@@ -177,13 +184,19 @@ export default function MakeFromResources({
             fedByGroup(p.id),
         )
         .reduce((s, p) => s + p.rate, 0);
-      const extra = newDemand - redirectable;
+      const committed = derived.factories[factoryId]?.groups[prod.id]?.outRates[item] ?? 0;
+      const extra = newDemand - Math.min(redirectable, committed);
       if (extra <= 1e-6) continue;
+      const machines = extra / prod.per;
+      const cur = extraByGid.get(prod.id);
+      if (!cur || machines > cur.machines) extraByGid.set(prod.id, { item, extra, machines });
+    }
+    for (const { item, extra } of extraByGid.values()) {
       const sub = planChain(gamedata, unlocked, available, item, extra);
       if (sub) for (const b of sub.belts) if (b.fromRaw) d.set(b.fromItem, (d.get(b.fromItem) ?? 0) + b.rate);
     }
     return d;
-  }, [freshCp, buildCp, reuseItems, existingProducers, plan.edges, plan.ports, factoryId, gamedata, unlocked, available]);
+  }, [freshCp, buildCp, reuseItems, existingProducers, plan.edges, plan.ports, factoryId, gamedata, unlocked, available, derived]);
 
   const shortfalls = useMemo(() => {
     const out: { item: string; need: number; have: number }[] = [];
@@ -203,18 +216,24 @@ export default function MakeFromResources({
 
   // Free-up: existing groups in THIS factory that consume a short raw.
   // Smallest draw first, and only as many as the gap needs — deleting every
-  // consumer would over-free far beyond the shortfall.
+  // consumer would over-free far beyond the shortfall. Draw is the solver's
+  // REAL per-group intake (the same currency as headroom's used-draw), not
+  // nameplate: an idle consumer draws nothing, so deleting it frees nothing
+  // and it must never be picked. `covered` lists the raws whose gap the
+  // selected groups actually close, so the toast can't over-claim.
   const freeable = useMemo(() => {
-    if (!shortfalls.length) return [] as { id: Id; makes: string }[];
+    const none = { groups: [] as { id: Id; makes: string }[], covered: [] as string[] };
+    if (!shortfalls.length) return none;
+    const dfGroups = derived.factories[factoryId]?.groups;
     const out = new Map<Id, string>();
+    const covered: string[] = [];
     for (const s of shortfalls) {
       let remaining = s.need - s.have;
       const consumers = factoryGroups
         .flatMap((g) => {
           const r = gamedata.recipes[g.recipe];
-          const ing = r?.ingredients.find(([i]) => i === s.item);
-          if (!r || !ing || r.durationS <= 0) return [];
-          const draw = ((ing[1] * 60) / r.durationS) * effCount(g) * effClock(g);
+          if (!r?.ingredients.some(([i]) => i === s.item)) return [];
+          const draw = dfGroups?.[g.id]?.inRates[s.item] ?? 0;
           return draw > 1e-6 ? [{ g, r, draw }] : [];
         })
         .sort((a, b) => a.draw - b.draw);
@@ -223,9 +242,10 @@ export default function MakeFromResources({
         if (!out.has(c.g.id)) out.set(c.g.id, name(c.r.products[0]?.[0] ?? c.g.recipe));
         remaining -= c.draw;
       }
+      if (remaining <= 1e-6) covered.push(s.item);
     }
-    return [...out].map(([id, makes]) => ({ id, makes }));
-  }, [shortfalls, factoryGroups, gamedata]);
+    return { groups: [...out].map(([id, makes]) => ({ id, makes })), covered };
+  }, [shortfalls, factoryGroups, gamedata, derived, factoryId]);
 
   const blocked = shortfalls.length > 0;
 
@@ -316,14 +336,21 @@ export default function MakeFromResources({
   };
 
   const freeUp = async () => {
-    if (!freeable.length) return;
+    if (!freeable.groups.length) return;
     if (!confirmFree) {
       setConfirmFree(true);
       return;
     }
     setConfirmFree(false);
-    await dispatch([...new Set(freeable.map((f) => f.id))].map((id) => ({ type: "delete_group", id }) as Command));
-    pushToast(`Freed up ${shortfalls.map((s) => name(s.item)).join(", ")} — removed ${freeable.length} group(s).`, "success");
+    await dispatch(freeable.groups.map((f) => ({ type: "delete_group", id: f.id }) as Command));
+    // Claim only the raws the removed draw actually covers — an uncoverable
+    // gap (or a raw with no live consumers) is not "freed up".
+    pushToast(
+      freeable.covered.length
+        ? `Freed up ${freeable.covered.map(name).join(", ")} — removed ${freeable.groups.length} group(s).`
+        : `Removed ${freeable.groups.length} group(s) — not enough consumer draw to cover the shortfall.`,
+      freeable.covered.length ? "success" : "info",
+    );
   };
 
   const build = async () => {
@@ -665,15 +692,15 @@ export default function MakeFromResources({
                   {feasibleRate >= 1 ? `, build at the ${feasibleRate}/min your nodes can feed,` : ""} or free
                   up the resource below.
                 </div>
-                {freeable.length > 0 && (
+                {freeable.groups.length > 0 && (
                   <button
                     className={`btn ${confirmFree ? "btn-danger" : "btn-ghost"} mfr-freeup`}
                     onClick={() => void freeUp()}
                     data-testid="mfr-freeup"
                   >
                     {confirmFree
-                      ? `CONFIRM — REMOVE ${freeable.length} GROUP(S)`
-                      : `FREE UP ${shortfalls.map((s) => name(s.item).toUpperCase()).join(" / ")} (REMOVE ${freeable.length} GROUP${freeable.length === 1 ? "" : "S"})`}
+                      ? `CONFIRM — REMOVE ${freeable.groups.length} GROUP(S)`
+                      : `FREE UP ${shortfalls.map((s) => name(s.item).toUpperCase()).join(" / ")} (REMOVE ${freeable.groups.length} GROUP${freeable.groups.length === 1 ? "" : "S"})`}
                   </button>
                 )}
               </div>
