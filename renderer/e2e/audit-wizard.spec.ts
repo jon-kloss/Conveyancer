@@ -189,8 +189,18 @@ test("two-stage chain: exact stages, machines and boundary ports", async ({ page
 // impact renders as a whole number, so agreement means within ±0.5 MW —
 // still an order of magnitude tighter than the ~2× gap the unscaled figure
 // produced at these clocks.
+//
+// Harness note (#133): M is an EMPIRE-WIDE before/after delta — on a dirty
+// shared plan the global solve can also re-clock leftover factories from
+// earlier specs, legitimately splitting M from the CREATE-only N (observed
+// once at |N−M| = 9 in the full serial run). Seed a fresh empire so the delta
+// can only be the new chain's own draw; every spec after this one re-seeds
+// itself (the resetView decoupling contract), as audit-import already relies
+// on mid-suite.
 // ---------------------------------------------------------------------------
 test("CREATE power impact agrees with the footer Δ POWER draw", async ({ page, request }) => {
+  const res = await request.post(`${API}/new_empire`, { data: "{}" });
+  if (!res.ok()) throw new Error(`new_empire ${res.status()}: ${await res.text()}`);
   await bootMap(page, request);
   await wizardSolveIronPlate25(page);
 
