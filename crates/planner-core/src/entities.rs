@@ -183,6 +183,27 @@ pub fn belt_capacity(tier: u8) -> f64 {
     BELT_CAPACITY[(tier.clamp(1, 6) - 1) as usize]
 }
 
+/// Pipe tiers: capacity in m³/min. Fluids (RF_LIQUID/RF_GAS) ride pipes, not
+/// belts — Mk.1 = 300, Mk.2 = 600. An edge's transport medium is a pure
+/// function of the item's form, so nothing is stored on the edge: the app/
+/// renderer pick the right table by looking up the item form in gamedata.
+pub const PIPE_CAPACITY: [f64; 2] = [300.0, 600.0];
+
+pub fn pipe_capacity(tier: u8) -> f64 {
+    PIPE_CAPACITY[(tier.clamp(1, 2) - 1) as usize]
+}
+
+/// Throughput of an edge carrying `item` at `tier`: a pipe when the item is a
+/// fluid, a belt otherwise. The single source of truth both solver snapshots
+/// consult (desktop `session.rs`, web `snapshot.ts` mirrors it).
+pub fn transport_capacity(is_fluid: bool, tier: u8) -> f64 {
+    if is_fluid {
+        pipe_capacity(tier)
+    } else {
+        belt_capacity(tier)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum EdgeEnd {

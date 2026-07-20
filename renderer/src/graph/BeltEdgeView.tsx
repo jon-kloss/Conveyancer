@@ -7,7 +7,7 @@ import type { CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { flowBand, flowSpeed, type FlowBand } from "../lib/format";
 import { fmtRate, fmtPercent } from "../lib/format";
-import { beltCapacity, type BeltEdge } from "../state/types";
+import { beltCapacity, pipeCapacity, type BeltEdge } from "../state/types";
 import type { EdgeGeom } from "./edgeLayout";
 
 export interface LiftPortal {
@@ -19,6 +19,9 @@ export interface LiftPortal {
 
 export interface BeltEdgeData {
   edge: BeltEdge;
+  /** true when this edge carries a fluid — rendered as a PIPE (blue, "PIPE
+   *  Mk.n", 300/600 m³/min capacity) instead of a belt. */
+  fluid: boolean;
   flow: number;
   saturation: number;
   /** solver-named evidence this belt caps demanded throughput (GraphView
@@ -86,8 +89,17 @@ export default function BeltEdgeView(props: EdgeProps) {
   }
 
   const band = flowBand(data.saturation, data.flow, data.bottleneck);
-  const capacity = beltCapacity(data.edge.tier);
-  const s = data.flowOverlay ? STROKE[band] : { width: 2, dash: undefined, color: "var(--steel-500)" };
+  // Clamp a stale belt tier (a legacy fluid edge saved before pipes) into the
+  // medium's real range so the label and capacity agree — pipes reach Mk.2.
+  const tier = data.fluid ? Math.max(1, Math.min(2, data.edge.tier)) : data.edge.tier;
+  const capacity = data.fluid ? pipeCapacity(tier) : beltCapacity(tier);
+  // Pipes carry the same flow-health grammar (green/amber/red), but their
+  // neutral (no-overlay) state tints blue so a fluid run reads as a PIPE at a
+  // glance, never a belt.
+  const neutral = data.fluid ? "var(--bp-400)" : "var(--steel-500)";
+  const s = data.flowOverlay ? STROKE[band] : { width: 2, dash: undefined, color: neutral };
+  // Tier label reads "PIPE Mk.n" for fluids, "MK.n" for belts.
+  const tierLabel = data.fluid ? `PIPE Mk.${tier}` : `MK.${tier}`;
   const isBottleneck = data.flowOverlay && band === "bottleneck";
   // MOTION = FLOW (gate: flow > 0); speed = utilization: only edges with
   // derived flow > 0 animate; idle belts stay static — independent of the
@@ -100,7 +112,7 @@ export default function BeltEdgeView(props: EdgeProps) {
   // belts always show the full chip: the alarm outranks tidiness.
   const compact = !isBottleneck && !props.selected && (data.geom?.pathLen ?? Infinity) < 150;
   const liftTag = data.lift ? `⇅ F${data.srcFloor}→F${data.dstFloor}` : "";
-  const fullText = `${liftTag ? liftTag + " · " : ""}${fmtRate(data.flow)}/${fmtRate(capacity)} · ${fmtPercent(data.saturation)} MK.${data.edge.tier}${data.flowOverlay ? BAND_NOTE[band] : ""}`;
+  const fullText = `${liftTag ? liftTag + " · " : ""}${fmtRate(data.flow)}/${fmtRate(capacity)} · ${fmtPercent(data.saturation)} ${tierLabel}${data.flowOverlay ? BAND_NOTE[band] : ""}`;
 
   // Floor-filtered view: the belt runs to a lift portal at the card edge.
   // Clicking the portal jumps to the connected floor with this belt selected.
@@ -210,7 +222,7 @@ export default function BeltEdgeView(props: EdgeProps) {
       ))}
       <EdgeLabelRenderer>
         <div
-          className={`belt-label mono ${data.flowOverlay ? band : ""} ${compact ? "compact" : ""} ${
+          className={`belt-label mono ${data.fluid ? "pipe" : ""} ${data.flowOverlay ? band : ""} ${compact ? "compact" : ""} ${
             data.projected ? "projected" : ""
           } ${data.settled ? "settle" : ""} ${props.selected ? "selected" : ""} ${data.dimmed ? "dimmed" : ""}`}
           style={{
@@ -229,7 +241,7 @@ export default function BeltEdgeView(props: EdgeProps) {
           ) : (
             <>
               {fmtRate(data.flow)}/{fmtRate(capacity)} · {fmtPercent(data.saturation)}
-              <span className="belt-tier">MK.{data.edge.tier}</span>
+              <span className="belt-tier">{tierLabel}</span>
             </>
           )}
         </div>

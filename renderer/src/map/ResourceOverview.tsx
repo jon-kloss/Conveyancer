@@ -10,7 +10,7 @@ import { useStore } from "../state/store";
 import type { DeficitRow, DerivedCircuit, Id } from "../state/types";
 import { circuitHeadroom, fmtPower, fmtRate, powerLevel } from "../lib/format";
 import { buildLedgerRows, type LedgerRow as Row } from "../lib/ledger";
-import { minBeltTier } from "../graph/logistics";
+import { minBeltTier, minPipeTier } from "../graph/logistics";
 import ItemIcon from "../lib/ItemIcon";
 
 type PanelState = "collapsed" | "brief" | "detailed";
@@ -175,10 +175,12 @@ export default function ResourceOverview() {
             ))}
           </div>
         )}
-        {netAbs > 0.01 && solid && (
+        {netAbs > 0.01 && (
           <div className="ro-drill-belt">
             NET {sign(r.net)}
-            {fmtRate(netAbs)}/MIN — FITS A MK.{minBeltTier(netAbs)} BELT
+            {solid
+              ? `${fmtRate(netAbs)}/MIN — FITS A MK.${minBeltTier(netAbs)} BELT`
+              : `${fmtRate(netAbs)}/MIN — FITS A MK.${minPipeTier(netAbs)} PIPE`}
           </div>
         )}
       </div>

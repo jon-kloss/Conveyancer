@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { balancedJunctions, manifoldJunctions, minBeltTier, groupLogistics } from "./logistics";
+import { balancedJunctions, manifoldJunctions, minBeltTier, minPipeTier, groupLogistics } from "./logistics";
 
 describe("junction counts", () => {
   it("balanced 1→N tree uses ⌈(N-1)/2⌉ splitters", () => {
@@ -21,7 +21,36 @@ describe("minBeltTier", () => {
   });
 });
 
+describe("minPipeTier", () => {
+  it("picks the lowest pipe tier that carries the fluid rate", () => {
+    expect(minPipeTier(120)).toBe(1); // ≤300
+    expect(minPipeTier(300)).toBe(1);
+    expect(minPipeTier(301)).toBe(2); // ≤600
+    expect(minPipeTier(600)).toBe(2);
+    expect(minPipeTier(5000)).toBe(2); // beyond Mk.2 → capped at 2
+  });
+});
+
 describe("groupLogistics", () => {
+  it("sizes fluid lines against pipe tiers, solids against belts", () => {
+    // Water at 300/min fits a Mk.1 pipe; the same rate on a belt would be Mk.4.
+    const l = groupLogistics(
+      2,
+      { Desc_Water_C: 300 },
+      { Desc_IronIngot_C: 300 },
+      (item) => item === "Desc_Water_C",
+    );
+    const water = l.inputs[0];
+    expect(water.fluid).toBe(true);
+    expect(water.tier).toBe(1); // pipe Mk.1 (≤300), not belt Mk.4
+    const ingot = l.outputs[0];
+    expect(ingot.fluid).toBe(false);
+    expect(ingot.tier).toBe(4); // belt Mk.4 (≤480)
+  });
+  it("flags parallel pipes when a fluid rate exceeds a single Mk.2 pipe", () => {
+    const l = groupLogistics(2, { Desc_Water_C: 1500 }, {}, () => true);
+    expect(l.inputs[0].lines).toBe(3); // 1500 / 600 → 3 pipes
+  });
   it("a ×2 smelter (1 in, 1 out) needs 1 splitter + 1 merger (balanced)", () => {
     const l = groupLogistics(2, { Desc_OreIron_C: 60 }, { Desc_IronIngot_C: 60 });
     expect(l.splitters).toEqual({ balanced: 1, manifold: 1 });

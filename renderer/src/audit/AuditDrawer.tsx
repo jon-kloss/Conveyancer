@@ -17,7 +17,7 @@ import {
   itemLabel,
   type FlowBand,
 } from "../lib/format";
-import { beltCapacity } from "../state/types";
+import { clampEdgeTier, isFluidItem, transportCapacity } from "../state/types";
 import type { AltOpportunity, AuditTab } from "../state/types";
 import "./audit.css";
 
@@ -285,10 +285,12 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
       rows.push({
         key: `edge-${e.id}`,
         label: `${plan.factories[e.factory]?.name ?? "?"} · ${itemName(e.item)}${toName ? ` → ${toName}` : ""}`,
-        tierText: `BELT · MK.${e.tier}`,
+        tierText: isFluidItem(gamedata, e.item)
+          ? `PIPE · Mk.${clampEdgeTier(gamedata, e.item, e.tier)}`
+          : `BELT · MK.${e.tier}`,
         saturation: d.saturation,
         flow: d.flow,
-        capacity: beltCapacity(e.tier),
+        capacity: transportCapacity(gamedata, e.item, e.tier),
         band: flowBand(d.saturation, d.flow, bset.has(e.id)),
         trace: () => {
           setView({ mode: "factory", factoryId: e.factory });

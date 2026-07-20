@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 #[cfg(feature = "sqlite")]
-use crate::docs::{Belt, Buildable, Item, Machine};
+use crate::docs::{Belt, Buildable, Item, Machine, Pipe};
 use crate::docs::{GameData, MachineKind, Recipe};
 
 #[cfg(feature = "sqlite")]
@@ -36,7 +36,9 @@ pub enum DbError {
 /// unions CT_Hard boxes only — v3 blobs hold wrong values for every
 /// transform-bearing class (Manufacturer 18×13 vs true 18×20, Particle
 /// Accelerator 52×22 garbage vs 37×27) and must re-parse.
-const SCHEMA_VERSION: &str = "4";
+/// v5: `GameData.pipes` (fluid transport tiers) joined the persisted shape —
+/// pre-v5 blobs carry no pipeline catalog and must re-parse to gain it.
+const SCHEMA_VERSION: &str = "5";
 
 #[cfg(feature = "sqlite")]
 const SCHEMA: &str = "
@@ -45,6 +47,7 @@ CREATE TABLE IF NOT EXISTS items (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS recipes (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS machines (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS belts (class TEXT PRIMARY KEY, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pipes (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS buildables (class TEXT PRIMARY KEY, json TEXT NOT NULL);
 ";
 
@@ -65,6 +68,7 @@ pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
     clear("recipes")?;
     clear("machines")?;
     clear("belts")?;
+    clear("pipes")?;
     clear("buildables")?;
     for (class, item) in &gd.items {
         conn.execute(
@@ -88,6 +92,12 @@ pub fn write(conn: &Connection, gd: &GameData) -> Result<(), DbError> {
         conn.execute(
             "INSERT INTO belts (class, json) VALUES (?1, ?2)",
             (class, serde_json::to_string(b)?),
+        )?;
+    }
+    for (class, p) in &gd.pipes {
+        conn.execute(
+            "INSERT INTO pipes (class, json) VALUES (?1, ?2)",
+            (class, serde_json::to_string(p)?),
         )?;
     }
     for (class, b) in &gd.buildables {
@@ -131,6 +141,12 @@ pub fn read(conn: &Connection) -> Result<GameData, DbError> {
     }
     for (class, json) in load("belts")? {
         gd.belts.insert(class, serde_json::from_str::<Belt>(&json)?);
+    }
+    // `pipes` (v5) may be absent in a pre-v5 DB that slipped the version gate;
+    // tolerate a missing table so an older cache degrades to an empty catalog
+    // rather than erroring.
+    for (class, json) in load("pipes").unwrap_or_default() {
+        gd.pipes.insert(class, serde_json::from_str::<Pipe>(&json)?);
     }
     for (class, json) in load("buildables")? {
         gd.buildables

@@ -33,6 +33,16 @@ pub struct Item {
     pub is_resource: bool,
 }
 
+impl Item {
+    /// True for liquids and gases — the items that travel by PIPE, not belt.
+    /// The single predicate every fluid-vs-belt branch keys off (edge medium,
+    /// pipe capacity, MAKE eligibility), so the RF_LIQUID/RF_GAS set is named
+    /// once here instead of re-derived at each call site.
+    pub fn is_fluid(&self) -> bool {
+        self.form == "RF_LIQUID" || self.form == "RF_GAS"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recipe {
@@ -98,6 +108,18 @@ pub struct Belt {
     pub tier: u8,
 }
 
+/// A pipeline tier — the fluid analogue of `Belt`. Mk.1/Mk.2 carry 300/600
+/// m³/min. `capacity_per_min` is the game m³/min (Docs `mFlowLimit` is m³/s).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pipe {
+    pub class_name: String,
+    pub display_name: String,
+    /// m³/min (Docs mFlowLimit is m³/s → × 60).
+    pub capacity_per_min: f64,
+    pub tier: u8,
+}
+
 /// A tier-progression milestone (an `EST_Milestone` FGSchematic) — what the
 /// player buys at the HUB terminal to advance. `cost` is the build cost in
 /// (item class, quantity) pairs, all SOLID parts (no fluid m³ scaling), used
@@ -130,6 +152,11 @@ pub struct GameData {
     pub recipes: BTreeMap<String, Recipe>,
     pub machines: BTreeMap<String, Machine>,
     pub belts: BTreeMap<String, Belt>,
+    /// Pipeline tiers (fluid transport). Empty when Docs.json ships no
+    /// FGBuildablePipeline section (older trimmed fixtures), so old catalogs
+    /// load unchanged.
+    #[serde(default)]
+    pub pipes: BTreeMap<String, Pipe>,
     #[serde(default)]
     pub buildables: BTreeMap<String, Buildable>,
     /// Schematic class → recipe classes it unlocks (W2b unlocked-alt awareness).
@@ -348,6 +375,15 @@ const BELT_TIERS: [(&str, u8); 6] = [
     ("Build_ConveyorBeltMk5_C", 5),
     ("Build_ConveyorBeltMk6_C", 6),
 ];
+
+/// Pipeline build classes → tier. The fluid analogue of `BELT_TIERS`; the two
+/// tiers carry 300/600 m³/min. Used to pick which `FGBuildablePipeline` classes
+/// land in `pipes` (support pipes / junctions on the same native class are not
+/// transport tiers and are skipped).
+const PIPE_TIERS: [(&str, u8); 2] = [("Build_Pipeline_C", 1), ("Build_PipelineMK2_C", 2)];
+
+/// Fallback pipe capacity (m³/min) per tier when Docs.json omits `mFlowLimit`.
+const PIPE_FLOW_FALLBACK: [f64; 2] = [300.0, 600.0];
 
 /// One generator fuel: (fuel item class, optional (byproduct class, amount
 /// per fuel item burned)) — nuclear waste rides the second slot.
@@ -618,6 +654,35 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     }
                 }
             }
+            "FGBuildablePipeline" | "FGBuildablePipelineHyper" => {
+                for c in &classes {
+                    let class_name = s(c, "ClassName");
+                    let Some(tier) = PIPE_TIERS
+                        .iter()
+                        .find(|(n, _)| *n == class_name)
+                        .map(|(_, t)| *t)
+                    else {
+                        continue;
+                    };
+                    // mFlowLimit is m³/s → ×60 for m³/min; a missing/zero limit
+                    // (trimmed fixture) falls back to the known game rate.
+                    let flow = f(c, "mFlowLimit") * 60.0;
+                    let capacity_per_min = if flow > 0.0 {
+                        flow
+                    } else {
+                        PIPE_FLOW_FALLBACK[(tier - 1) as usize]
+                    };
+                    gd.pipes.insert(
+                        class_name.clone(),
+                        Pipe {
+                            class_name,
+                            display_name: s(c, "mDisplayName"),
+                            capacity_per_min,
+                            tier,
+                        },
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -644,11 +709,10 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         });
     }
 
-    let liquid_forms = ["RF_LIQUID", "RF_GAS"];
     let is_fluid: std::collections::BTreeSet<String> = gd
         .items
         .values()
-        .filter(|i| liquid_forms.contains(&i.form.as_str()))
+        .filter(|i| i.is_fluid())
         .map(|i| i.class_name.clone())
         .collect();
     for r in gd.recipes.values_mut() {
@@ -844,6 +908,19 @@ mod tests {
         assert!(!mf.alternate);
         assert!(gd.recipes["Recipe_Alternate_Screw_C"].alternate);
         assert_eq!(gd.belts["Build_ConveyorBeltMk3_C"].capacity_per_min, 270.0);
+        // Pipelines parse off FGBuildablePipeline: mFlowLimit (m³/s) × 60 →
+        // m³/min. Mk.1 = 5×60 = 300, Mk.2 = 10×60 = 600. Non-tier pipeline
+        // classes (junctions) are skipped — only the two transport tiers land.
+        assert_eq!(gd.pipes["Build_Pipeline_C"].capacity_per_min, 300.0);
+        assert_eq!(gd.pipes["Build_Pipeline_C"].tier, 1);
+        assert_eq!(gd.pipes["Build_PipelineMK2_C"].capacity_per_min, 600.0);
+        assert_eq!(gd.pipes.len(), 2);
+        assert!(!gd.pipes.contains_key("Build_PipelineJunction_Cross_C"));
+        // Fluids answer is_fluid; solids don't — the one predicate every
+        // pipe-vs-belt branch keys off.
+        assert!(gd.items["Desc_Water_C"].is_fluid());
+        assert!(gd.items["Desc_LiquidOil_C"].is_fluid());
+        assert!(!gd.items["Desc_IronIngot_C"].is_fluid());
         // mClearanceData on the fixture constructor → real derived footprint;
         // classes without the key stay honestly None.
         assert_eq!(

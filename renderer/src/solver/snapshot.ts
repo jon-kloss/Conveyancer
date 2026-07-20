@@ -3,7 +3,7 @@
 // unit-testable under vitest/node.
 
 import type { GameData, Id, Plan } from "../state/types";
-import { beltCapacity, effClock, effCount, POWER_ITEM } from "../state/types";
+import { effClock, effCount, POWER_ITEM, transportCapacity } from "../state/types";
 
 export interface FactorySnapshot {
   groups: unknown[];
@@ -86,7 +86,9 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
       from: toRef(e.from),
       to: toRef(e.to),
       item: e.item,
-      capacity: beltCapacity(e.tier),
+      // Fluid edges are pipes (300/600 m³/min); solids are belts — mirrors the
+      // desktop `session.rs` capacity split so web and desktop solve alike.
+      capacity: transportCapacity(gamedata, e.item, e.tier),
     }));
   const junctions = Object.values(plan.junctions)
     .filter((j) => j.factory === factoryId)

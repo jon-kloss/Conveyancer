@@ -7,7 +7,17 @@ import { useStore, solveChip } from "../state/store";
 import { buildSnapshot, ensureT0, t0SetTarget } from "../solver/t0";
 import { footprintFor, footprintArea } from "./footprints";
 import { fmtClock, fmtPower, fmtRate, flowBand, bottleneckEdges, itemLabel } from "../lib/format";
-import { beltCapacity, effClock, effCount, POWER_ITEM, type DerivedFactory, type Id } from "../state/types";
+import {
+  clampEdgeTier,
+  effClock,
+  effCount,
+  isFluidItem,
+  POWER_ITEM,
+  transportCapacity,
+  transportTiers,
+  type DerivedFactory,
+  type Id,
+} from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
 import { groupLogistics, balancedJunctions, SPLITTER_CLASS, MERGER_CLASS } from "./logistics";
 import SendToFactory from "./SendToFactory";
@@ -147,6 +157,13 @@ export default function Inspector({
   const selectedJunction = selection?.kind === "junction" ? plan.junctions[selection.id] : null;
   const selectedEdge = selection?.kind === "edge" ? plan.edges[selection.id] : null;
   const selectedPort = selection?.kind === "port" ? plan.ports[selection.id] : null;
+  // Tier label for an edge option/row: "PIPE Mk.n" for fluids, "MK.n" for belts.
+  // Clamps a stale belt tier (a legacy fluid edge) into range so the row/select
+  // value matches an offered option — pipes reach Mk.2.
+  const edgeTierLabel = (item: string, tier: number) => {
+    const t = clampEdgeTier(gamedata, item, tier);
+    return isFluidItem(gamedata, item) ? `PIPE Mk.${t}` : `MK.${t}`;
+  };
   // The factory-level OUTPUT TARGET (+ its binding-constraint warning) is the
   // overview control. When a specific belt / group / junction — or a non-output
   // port — is selected, that entity's own sections own the panel; showing the
@@ -194,14 +211,16 @@ export default function Inspector({
     if (n <= 1) return null;
     const inR = dgSel?.inRates ?? {};
     const outR = Object.fromEntries(Object.entries(dgSel?.outRates ?? {}).filter(([it]) => it !== POWER_ITEM));
-    const logi = groupLogistics(n, inR, outR);
+    const logi = groupLogistics(n, inR, outR, (item) => isFluidItem(gamedata, item));
     if (logi.splitters.balanced === 0 && logi.mergers.balanced === 0) return null;
     const clk = effClock(selectedGroup);
     const tips: string[] = [];
     for (const l of [...logi.inputs, ...logi.outputs]) {
       const name = itemLabel(gamedata.items, l.item);
-      if (l.lines > 1) tips.push(`${name}: ${fmtRate(l.rate)}/min needs ${l.lines} parallel Mk.6 belts.`);
-      else if (l.tier > 1) tips.push(`${name}: ${fmtRate(l.rate)}/min needs a Mk.${l.tier} belt.`);
+      const carrier = l.fluid ? "pipe" : "belt";
+      const topTier = l.fluid ? "Mk.2 pipes" : "Mk.6 belts";
+      if (l.lines > 1) tips.push(`${name}: ${fmtRate(l.rate)}/min needs ${l.lines} parallel ${topTier}.`);
+      else if (l.tier > 1) tips.push(`${name}: ${fmtRate(l.rate)}/min needs a Mk.${l.tier} ${carrier}.`);
     }
     // Consolidation: same output from fewer machines at higher clock (≤250%) —
     // fewer junctions, but more power (power ∝ clock^k).
@@ -426,7 +445,7 @@ export default function Inspector({
             {gamedata.recipes[selectedGroup.recipe]?.ingredients.map(([item]) => {
               const rate = dgSel?.inRates[item] ?? 0;
               const feeding = feedEdges.filter((e) => e.item === item);
-              const cap = feeding.reduce((acc, e) => acc + beltCapacity(e.tier), 0);
+              const cap = feeding.reduce((acc, e) => acc + transportCapacity(gamedata, e.item, e.tier), 0);
               const sat = cap > 0 ? rate / cap : 0;
               const band = flowBand(sat, rate, feeding.some((e) => bottlenecks.has(e.id)));
               return (
@@ -520,18 +539,18 @@ export default function Inspector({
                   {bottlenecks.has(e.id) && e.status !== "built" && <span className="chip crit">UPGRADE?</span>}
                   {e.status === "built" ? (
                     <span className="mono t-data-12" title="Imported as built — rebuild in-game to change its tier.">
-                      MK.{e.tier} · BUILT
+                      {edgeTierLabel(e.item, e.tier)} · BUILT
                     </span>
                   ) : (
                     <select
                       className="mono"
                       style={{ height: 24 }}
-                      value={e.tier}
+                      value={clampEdgeTier(gamedata, e.item, e.tier)}
                       onChange={(ev) => void dispatch([{ type: "set_edge_tier", id: e.id, tier: Number(ev.target.value) }])}
                     >
-                      {[1, 2, 3, 4, 5, 6].map((t) => (
+                      {transportTiers(gamedata, e.item).map((t) => (
                         <option key={t} value={t}>
-                          MK.{t} — {beltCapacity(t)}/min
+                          {edgeTierLabel(e.item, t)} — {transportCapacity(gamedata, e.item, t)}/min
                         </option>
                       ))}
                     </select>
@@ -601,27 +620,30 @@ export default function Inspector({
         </section>
       )}
 
-      {/* ---- selected belt ---- */}
+      {/* ---- selected belt/pipe ---- */}
       {selectedEdge && (
         <section className="insp-section">
-          <h3 className="t-label">BELT — {itemLabel(gamedata.items, selectedEdge.item).toUpperCase()}</h3>
+          <h3 className="t-label">
+            {(isFluidItem(gamedata, selectedEdge.item) ? "PIPE" : "BELT")} — {itemLabel(gamedata.items, selectedEdge.item).toUpperCase()}
+          </h3>
           <div className="drawer-row">
             <span className="drawer-row-name">Tier</span>
             {selectedEdge.status === "built" ? (
               <span className="mono t-data-12" data-testid="edge-tier-built">
-                MK.{selectedEdge.tier} — {beltCapacity(selectedEdge.tier)}/min · BUILT
+                {edgeTierLabel(selectedEdge.item, selectedEdge.tier)} —{" "}
+                {transportCapacity(gamedata, selectedEdge.item, selectedEdge.tier)}/min · BUILT
               </span>
             ) : (
               <select
                 className="mono"
                 style={{ height: 24 }}
-                value={selectedEdge.tier}
+                value={clampEdgeTier(gamedata, selectedEdge.item, selectedEdge.tier)}
                 onChange={(ev) => void dispatch([{ type: "set_edge_tier", id: selectedEdge.id, tier: Number(ev.target.value) }])}
                 data-testid="edge-tier-select"
               >
-                {[1, 2, 3, 4, 5, 6].map((t) => (
+                {transportTiers(gamedata, selectedEdge.item).map((t) => (
                   <option key={t} value={t}>
-                    MK.{t} — {beltCapacity(t)}/min
+                    {edgeTierLabel(selectedEdge.item, t)} — {transportCapacity(gamedata, selectedEdge.item, t)}/min
                   </option>
                 ))}
               </select>
@@ -629,7 +651,7 @@ export default function Inspector({
           </div>
           {selectedEdge.status === "built" && (
             <div className="insp-note" data-testid="edge-tier-built-note">
-              Imported as built — this belt's tier is fixed to your save. Rebuild it at a higher tier in-game, then re-import to raise its capacity here.
+              Imported as built — this {isFluidItem(gamedata, selectedEdge.item) ? "pipe" : "belt"}'s tier is fixed to your save. Rebuild it at a higher tier in-game, then re-import to raise its capacity here.
             </div>
           )}
           <div className="drawer-row">
