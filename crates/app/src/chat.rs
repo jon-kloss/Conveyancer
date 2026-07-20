@@ -84,7 +84,8 @@ pub fn compact_state(s: &mut Session, scope: &ContextScope) -> ContextSnapshot {
                 "factories": factories,
                 "factoriesOmitted": total_factories.saturating_sub(EMPIRE_FACTORY_CAP),
                 "deficits": derived.deficits.iter().take(10).collect::<Vec<_>>(),
-                "circuits": derived.circuits,
+                "circuits": derived.circuits.iter().take(EMPIRE_FACTORY_CAP).collect::<Vec<_>>(),
+                "circuitsOmitted": derived.circuits.len().saturating_sub(EMPIRE_FACTORY_CAP),
                 "totals": {
                     "factories": s.state.factories.len(),
                     "groups": s.state.groups.len(),
@@ -115,6 +116,12 @@ pub fn compact_state(s: &mut Session, scope: &ContextScope) -> ContextSnapshot {
                     "scope": "selection", "kind": "port", "subject": p,
                     "factory": fname(&p.factory),
                     "solvedRate": derived.factories.get(&p.factory).and_then(|d| d.ports.get(id)),
+                })
+            } else if let Some(e) = st.edges.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "edge", "subject": e,
+                    "factory": fname(&e.factory),
+                    "derived": derived.factories.get(&e.factory).and_then(|d| d.edges.get(id)),
                 })
             } else if let Some(r) = st.routes.get(id) {
                 // Belt/rail/truck/drone endpoints are ports; power-route
@@ -148,6 +155,33 @@ pub fn compact_state(s: &mut Session, scope: &ContextScope) -> ContextSnapshot {
                 serde_json::json!({
                     "scope": "selection", "kind": "switch", "subject": sw,
                     "route": st.routes.get(&sw.route),
+                })
+            } else if let Some(n) = s.world.nodes.iter().find(|n| &n.id == id) {
+                // A WORLD resource node: not a plan entity, so resolve it from
+                // the catalog plus the plan's overlays — the claim (if any) is
+                // keyed by claim id with the node id as a value, so reverse-scan.
+                let claim = st.node_claims.values().find(|c| &c.node == id);
+                serde_json::json!({
+                    "scope": "selection", "kind": "node", "subject": n,
+                    "override": st.node_overrides.get(id),
+                    "claim": claim.map(|c| serde_json::json!({
+                        "factory": fname(&c.factory),
+                        "extractor": c.extractor,
+                        "clock": c.clock,
+                        "extractionCeiling": s.claim_rate(c),
+                    })),
+                })
+            } else if let Some(c) = st.node_claims.values().find(|c| &c.node == id) {
+                // A save-only node ("save:<id>") has no catalog entry — the
+                // claim + override overlay is its whole identity.
+                serde_json::json!({
+                    "scope": "selection", "kind": "node", "subject": st.node_overrides.get(id),
+                    "claim": {
+                        "factory": fname(&c.factory),
+                        "extractor": c.extractor,
+                        "clock": c.clock,
+                        "extractionCeiling": s.claim_rate(c),
+                    },
                 })
             } else {
                 serde_json::json!({
