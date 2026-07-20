@@ -356,7 +356,9 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         build_version: build_version.to_string(),
         ..Default::default()
     };
-    let mut generator_fuels: Vec<(String, f64, Vec<String>)> = Vec::new();
+    // (generator class, MW, fuels) where each fuel carries its optional
+    // byproduct (item class, amount per fuel item burned) — nuclear waste.
+    let mut generator_fuels: Vec<(String, f64, Vec<(String, Option<(String, f64)>)>)> = Vec::new();
     // Machines whose draw varies by recipe, and every recipe's raw
     // (constant, factor) pair — joined in a post-pass below, so section
     // ordering in Docs.json never matters.
@@ -511,14 +513,20 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         p if p > 0.0 => p,
                         _ => f(c, "mVariablePowerProductionFactor"),
                     };
-                    // fuel classes: modern Docs nests them in mFuel[].mFuelClass
-                    let mut fuels: Vec<String> = Vec::new();
+                    // fuel classes: modern Docs nests them in mFuel[].mFuelClass,
+                    // with the burn byproduct (nuclear waste) alongside.
+                    let mut fuels: Vec<(String, Option<(String, f64)>)> = Vec::new();
                     if let Some(list) = c.get("mFuel").and_then(Value::as_array) {
                         for entry in list {
                             let fc = s(entry, "mFuelClass");
-                            if !fc.is_empty() {
-                                fuels.push(fc);
+                            if fc.is_empty() {
+                                continue;
                             }
+                            let bp_class = s(entry, "mByproduct");
+                            let bp_amount = f(entry, "mByproductAmount");
+                            let byproduct = (!bp_class.is_empty() && bp_amount > 0.0)
+                                .then(|| (bp_class, bp_amount));
+                            fuels.push((fc, byproduct));
                         }
                     }
                     gd.machines.insert(
@@ -658,7 +666,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
     // the pipe network model — noted in DECISIONS.md; the fuel math itself
     // is exact.
     for (gen_class, mw, fuels) in generator_fuels {
-        for fuel in fuels {
+        for (fuel, byproduct) in fuels {
             let Some(fuel_item) = gd.items.get(&fuel) else {
                 continue;
             };
@@ -667,6 +675,13 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             }
             let per_min = mw * 60.0 / fuel_item.energy_mj;
             let class_name = format!("Recipe_Power_{}_{}", gen_class.trim_end_matches("_C"), fuel);
+            // Burn byproducts ride the recipe (nuclear waste: amount per fuel
+            // item × fuel/min) — dropping them hides an output the empire
+            // must belt away.
+            let mut products = vec![(POWER_ITEM.to_string(), mw)];
+            if let Some((bp_class, bp_amount)) = byproduct {
+                products.push((bp_class, bp_amount * per_min));
+            }
             gd.recipes.insert(
                 class_name.clone(),
                 Recipe {
@@ -682,7 +697,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     ),
                     duration_s: 60.0,
                     ingredients: vec![(fuel, per_min)],
-                    products: vec![(POWER_ITEM.to_string(), mw)],
+                    products,
                     produced_in: vec![gen_class.clone()],
                     variable_power_mw: None,
                 },
@@ -825,6 +840,39 @@ mod tests {
         assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
         assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
         assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
+    }
+
+    #[test]
+    fn burn_recipe_carries_fuel_byproduct() {
+        // Nuclear-style generator: mFuel entries carry mByproduct /
+        // mByproductAmount (waste per fuel item burned). 2500 MW · 60 ÷
+        // 750,000 MJ = 0.2 rods/min; 50 waste per rod → 10 waste/min riding
+        // the synthesized burn recipe as a second product. Dropping it hides
+        // an output the empire must belt away.
+        let docs = r#"[
+          {"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptorNuclearFuel'","Classes":[
+            {"ClassName":"Desc_NuclearFuelRod_C","mDisplayName":"Uranium Fuel Rod","mForm":"RF_SOLID","mStackSize":"SS_SMALL","mEnergyValue":"750000"}]},
+          {"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'","Classes":[
+            {"ClassName":"Desc_NuclearWaste_C","mDisplayName":"Uranium Waste","mForm":"RF_SOLID","mStackSize":"SS_HUGE"}]},
+          {"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorNuclear'","Classes":[
+            {"ClassName":"Build_GeneratorNuclear_C","mDisplayName":"Nuclear Power Plant","mPowerProduction":"2500",
+             "mFuel":[{"mFuelClass":"Desc_NuclearFuelRod_C","mSupplementalResourceClass":"Desc_Water_C","mByproduct":"Desc_NuclearWaste_C","mByproductAmount":"50"}]}]}
+        ]"#;
+        let gd = parse_docs(docs, "test").unwrap();
+        let burn = &gd.recipes["Recipe_Power_Build_GeneratorNuclear_Desc_NuclearFuelRod_C"];
+        assert_eq!(
+            burn.ingredients,
+            vec![("Desc_NuclearFuelRod_C".to_string(), 0.2)]
+        );
+        assert_eq!(
+            burn.products,
+            vec![
+                (POWER_ITEM.to_string(), 2500.0),
+                ("Desc_NuclearWaste_C".to_string(), 10.0)
+            ]
+        );
+        // A fuel without mByproduct keeps a power-only product list — pinned
+        // by the coal generator in parses_bundled_fixture above.
     }
 
     #[test]
