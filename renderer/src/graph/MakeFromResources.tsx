@@ -137,13 +137,66 @@ export default function MakeFromResources({
     return h;
   }, [inPorts, derived.factories, factoryId]);
 
-  // Full raw demand of the target (from the fresh plan — the true extraction
-  // this build adds regardless of reuse).
+  // ADDED extraction demand of this build — what the capacity guard checks.
+  // Fresh build: every raw feed of the fresh chain. With reuse ON, the fresh
+  // total over-blocks: a reused line's feed comes from machines that ALREADY
+  // draw their raws (counted in headroom), and redirecting its world exports
+  // adds zero new extraction. So under reuse, count (a) the new groups' real
+  // raw draw, plus (b) for each reused feed, only the remainder its
+  // redirectable exports can't cover — expanded to raws via a sub-chain,
+  // since scaling the reused line up pulls that much more from its inputs.
   const rawDemand = useMemo(() => {
     const d = new Map<string, number>();
-    if (freshCp) for (const b of freshCp.belts) if (b.fromRaw) d.set(b.fromItem, (d.get(b.fromItem) ?? 0) + b.rate);
+    const cp = reuseItems.size ? buildCp : freshCp;
+    if (!cp) return d;
+    for (const b of cp.belts) {
+      if (!b.fromRaw || reuseItems.has(b.fromItem)) continue;
+      d.set(b.fromItem, (d.get(b.fromItem) ?? 0) + b.rate);
+    }
+    // One expansion per reused GROUP: the build scales a group that feeds two
+    // reused items ONCE (max count wins), so expanding each item's remainder
+    // separately would double that group's raws — keep only the biggest.
+    const extraByGid = new Map<Id, { item: string; extra: number; machines: number }>();
+    for (const item of reuseItems) {
+      const prod = existingProducers.get(item);
+      if (!prod) continue;
+      const newDemand = cp.belts
+        .filter((b) => b.fromRaw && b.fromItem === item)
+        .reduce((s, b) => s + b.rate, 0);
+      if (newDemand <= 1e-6) continue;
+      // Mirrors the build path's redirect: world exports THIS group feeds are
+      // trimmable into the new chain without any new extraction — but a port
+      // TARGET can exceed what the group really outputs (a starved export),
+      // so credit no more than the solver's committed flow, exactly like the
+      // build's min(freed, committed).
+      const fedByGroup = (pid: Id) =>
+        Object.values(plan.edges).some(
+          (e) => e.from.kind === "group" && e.from.id === prod.id && e.to.kind === "port" && e.to.id === pid,
+        );
+      const redirectable = Object.values(plan.ports)
+        .filter(
+          (p) =>
+            p.factory === factoryId &&
+            p.direction === "out" &&
+            p.item === item &&
+            p.boundRoute === null &&
+            p.rate > 0 &&
+            fedByGroup(p.id),
+        )
+        .reduce((s, p) => s + p.rate, 0);
+      const committed = derived.factories[factoryId]?.groups[prod.id]?.outRates[item] ?? 0;
+      const extra = newDemand - Math.min(redirectable, committed);
+      if (extra <= 1e-6) continue;
+      const machines = extra / prod.per;
+      const cur = extraByGid.get(prod.id);
+      if (!cur || machines > cur.machines) extraByGid.set(prod.id, { item, extra, machines });
+    }
+    for (const { item, extra } of extraByGid.values()) {
+      const sub = planChain(gamedata, unlocked, available, item, extra);
+      if (sub) for (const b of sub.belts) if (b.fromRaw) d.set(b.fromItem, (d.get(b.fromItem) ?? 0) + b.rate);
+    }
     return d;
-  }, [freshCp]);
+  }, [freshCp, buildCp, reuseItems, existingProducers, plan.edges, plan.ports, factoryId, gamedata, unlocked, available, derived]);
 
   const shortfalls = useMemo(() => {
     const out: { item: string; need: number; have: number }[] = [];
@@ -161,19 +214,38 @@ export default function MakeFromResources({
     return Math.floor(rate * ratio);
   }, [shortfalls, rawDemand, headroom, rate]);
 
-  // Free-up: existing groups in THIS factory that consume a short raw. Removing
-  // them returns that extraction to the pool so this build can use it.
+  // Free-up: existing groups in THIS factory that consume a short raw.
+  // Smallest draw first, and only as many as the gap needs — deleting every
+  // consumer would over-free far beyond the shortfall. Draw is the solver's
+  // REAL per-group intake (the same currency as headroom's used-draw), not
+  // nameplate: an idle consumer draws nothing, so deleting it frees nothing
+  // and it must never be picked. `covered` lists the raws whose gap the
+  // selected groups actually close, so the toast can't over-claim.
   const freeable = useMemo(() => {
-    const shortItems = new Set(shortfalls.map((s) => s.item));
-    if (!shortItems.size) return [] as { id: Id; makes: string }[];
-    const out: { id: Id; makes: string }[] = [];
-    for (const g of factoryGroups) {
-      const r = gamedata.recipes[g.recipe];
-      if (r && r.ingredients.some(([ing]) => shortItems.has(ing)))
-        out.push({ id: g.id, makes: name(r.products[0]?.[0] ?? g.recipe) });
+    const none = { groups: [] as { id: Id; makes: string }[], covered: [] as string[] };
+    if (!shortfalls.length) return none;
+    const dfGroups = derived.factories[factoryId]?.groups;
+    const out = new Map<Id, string>();
+    const covered: string[] = [];
+    for (const s of shortfalls) {
+      let remaining = s.need - s.have;
+      const consumers = factoryGroups
+        .flatMap((g) => {
+          const r = gamedata.recipes[g.recipe];
+          if (!r?.ingredients.some(([i]) => i === s.item)) return [];
+          const draw = dfGroups?.[g.id]?.inRates[s.item] ?? 0;
+          return draw > 1e-6 ? [{ g, r, draw }] : [];
+        })
+        .sort((a, b) => a.draw - b.draw);
+      for (const c of consumers) {
+        if (remaining <= 1e-6) break;
+        if (!out.has(c.g.id)) out.set(c.g.id, name(c.r.products[0]?.[0] ?? c.g.recipe));
+        remaining -= c.draw;
+      }
+      if (remaining <= 1e-6) covered.push(s.item);
     }
-    return out;
-  }, [shortfalls, factoryGroups, gamedata]);
+    return { groups: [...out].map(([id, makes]) => ({ id, makes })), covered };
+  }, [shortfalls, factoryGroups, gamedata, derived, factoryId]);
 
   const blocked = shortfalls.length > 0;
 
@@ -264,14 +336,21 @@ export default function MakeFromResources({
   };
 
   const freeUp = async () => {
-    if (!freeable.length) return;
+    if (!freeable.groups.length) return;
     if (!confirmFree) {
       setConfirmFree(true);
       return;
     }
     setConfirmFree(false);
-    await dispatch([...new Set(freeable.map((f) => f.id))].map((id) => ({ type: "delete_group", id }) as Command));
-    pushToast(`Freed up ${shortfalls.map((s) => name(s.item)).join(", ")} — removed ${freeable.length} group(s).`, "success");
+    await dispatch(freeable.groups.map((f) => ({ type: "delete_group", id: f.id }) as Command));
+    // Claim only the raws the removed draw actually covers — an uncoverable
+    // gap (or a raw with no live consumers) is not "freed up".
+    pushToast(
+      freeable.covered.length
+        ? `Freed up ${freeable.covered.map(name).join(", ")} — removed ${freeable.groups.length} group(s).`
+        : `Removed ${freeable.groups.length} group(s) — not enough consumer draw to cover the shortfall.`,
+      freeable.covered.length ? "success" : "info",
+    );
   };
 
   const build = async () => {
@@ -613,15 +692,15 @@ export default function MakeFromResources({
                   {feasibleRate >= 1 ? `, build at the ${feasibleRate}/min your nodes can feed,` : ""} or free
                   up the resource below.
                 </div>
-                {freeable.length > 0 && (
+                {freeable.groups.length > 0 && (
                   <button
                     className={`btn ${confirmFree ? "btn-danger" : "btn-ghost"} mfr-freeup`}
                     onClick={() => void freeUp()}
                     data-testid="mfr-freeup"
                   >
                     {confirmFree
-                      ? `CONFIRM — REMOVE ${freeable.length} GROUP(S)`
-                      : `FREE UP ${shortfalls.map((s) => name(s.item).toUpperCase()).join(" / ")} (REMOVE ${freeable.length} GROUP${freeable.length === 1 ? "" : "S"})`}
+                      ? `CONFIRM — REMOVE ${freeable.groups.length} GROUP(S)`
+                      : `FREE UP ${shortfalls.map((s) => name(s.item).toUpperCase()).join(" / ")} (REMOVE ${freeable.groups.length} GROUP${freeable.groups.length === 1 ? "" : "S"})`}
                   </button>
                 )}
               </div>
