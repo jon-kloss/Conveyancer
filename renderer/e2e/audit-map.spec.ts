@@ -35,6 +35,34 @@ async function dismissOnboarding(page: import("@playwright/test").Page): Promise
   if (await skip.isVisible().catch(() => false)) await skip.click();
 }
 
+// Isolation backstop (PR #61 review): teardown edits are best-effort and a
+// probe aborted mid-finally would leak its factory or node override into the
+// shared serial plan. Scrub THIS SUITE's leftovers at probe start — a clean
+// plan needs nothing, a polluted one is repaired before seeding.
+const PROBE_FACTORIES = ["ANCHOR", "ZZQTOP WORKS", "TETHER PROBE", "TETHER REF"];
+async function scrubLeftovers(request: APIRequestContext): Promise<void> {
+  try {
+    const res = await request.get(`${API}/hydrate`);
+    if (!res.ok()) return;
+    const h = (await res.json()) as {
+      plan: {
+        factories: Record<string, { id: string; name: string }>;
+        nodeOverrides?: Record<string, { id: string }>;
+      };
+    };
+    const cmds: unknown[] = [];
+    for (const f of Object.values(h.plan.factories))
+      if (PROBE_FACTORIES.includes(f.name)) cmds.push({ type: "delete_factory", id: f.id });
+    // At probe start no spec is mid-flight (workers=1), so any surviving
+    // override is by definition a leak from an aborted teardown.
+    for (const ov of Object.values(h.plan.nodeOverrides ?? {}))
+      cmds.push({ type: "set_node_override", id: ov.id, nodeOverride: null });
+    if (cmds.length) await edit(request, cmds);
+  } catch {
+    /* best-effort backstop */
+  }
+}
+
 // ---------------------------------------------------------------------------
 // PROBE 1 — Search-jump lands on a node's CORRECTED (override) position.
 //
@@ -48,6 +76,7 @@ async function dismissOnboarding(page: import("@playwright/test").Page): Promise
 // ---------------------------------------------------------------------------
 test("search-jump lands on a node's corrected override position", async ({ page, request }) => {
   await resetView(request);
+  await scrubLeftovers(request);
   const anchor = (
     await edit(request, [
       { type: "create_factory", name: "ANCHOR", position: { x: -2000, y: 2000 }, region: "GRASS FIELDS" },
@@ -118,6 +147,7 @@ test("search-jump lands on a node's corrected override position", async ({ page,
 // ---------------------------------------------------------------------------
 test("search filter stays inert when the query matches no resource node", async ({ page, request }) => {
   await resetView(request);
+  await scrubLeftovers(request);
   const f = (
     await edit(request, [
       { type: "create_factory", name: "ZZQTOP WORKS", position: { x: -2600, y: 2600 }, region: "GRASS FIELDS" },
@@ -170,6 +200,7 @@ test("search filter stays inert when the query matches no resource node", async 
 // ---------------------------------------------------------------------------
 test("no claim tether is drawn to a search-filtered (hidden) node", async ({ page, request }) => {
   await resetView(request);
+  await scrubLeftovers(request);
   const f = (
     await edit(request, [
       { type: "create_factory", name: "TETHER PROBE", position: { x: -2700, y: 2500 }, region: "GRASS FIELDS" },
