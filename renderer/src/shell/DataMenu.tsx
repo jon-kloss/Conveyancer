@@ -259,7 +259,8 @@ export default function DataMenu() {
               data-testid="btn-import"
             >
               <span className="data-menu-item-label">
-                <Glyph name="import" size={14} /> {__WASM_BACKEND__ ? "② Import save" : "Import save"}
+                <Glyph name="import" size={14} />{" "}
+                {__WASM_BACKEND__ ? `② Import save${hasImportedSave ? " ✓" : ""}` : "Import save"}
               </span>
               <span className="data-menu-item-sub">
                 {__WASM_BACKEND__ && !catalogLoaded

@@ -336,7 +336,17 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   // the how-to title. (The first-time flow is ② Import save, never sync.)
   await expect(importBtn).toHaveAttribute("aria-disabled", "false");
   await expect(importBtn).toContainText("② Import save");
-  await expect(page.getByTestId("btn-upload-docs-first")).toContainText("① Upload Docs.json ✓");
+  const stepOne = page.getByTestId("btn-upload-docs-first");
+  await expect(stepOne).toContainText("① Upload Docs.json ✓");
+  await expect(stepOne).toContainText("upload again to swap game versions");
+  // The order banner survives the upload — the single ordered layout is the
+  // point; a re-gate on !catalogLoaded would hide it here.
+  await expect(page.getByTestId("data-menu-order")).toBeVisible();
+  // ...as do the numbered drag-drop hints, and the old separate "Update
+  // Docs.json" entry stays gone (step ① owns the swap action now).
+  await expect(page.locator(".data-menu-hint-key").first()).toContainText("① Docs (Steam)");
+  await expect(page.locator(".data-menu-hint-key").last()).toContainText("② Save");
+  await expect(page.getByTestId("btn-upload-docs")).toHaveCount(0);
   await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
   await expect(syncBtn).toHaveAttribute("title", /[Ii]mport your save/);
   await expect(autoBtn).toHaveAttribute("title", /[Ii]mport your save/);
