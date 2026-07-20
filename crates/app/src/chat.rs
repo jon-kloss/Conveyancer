@@ -278,10 +278,18 @@ pub fn chat(s: &mut Session, _scope: &ContextScope, message: &str) -> ChatReply 
                 .values()
                 .find(|i| i.display_name.to_lowercase() == item_part.trim())
                 .or_else(|| {
-                    s.gamedata
-                        .items
-                        .values()
-                        .find(|i| i.display_name.to_lowercase().contains(item_part.trim()))
+                    // Substring fallback only for queries long enough to be
+                    // meaningful — "produce c at 10" must not match the first
+                    // item containing a "c".
+                    let q = item_part.trim();
+                    (q.len() >= 3)
+                        .then(|| {
+                            s.gamedata
+                                .items
+                                .values()
+                                .find(|i| i.display_name.to_lowercase().contains(q))
+                        })
+                        .flatten()
                 })
                 .map(|i| (i.class_name.clone(), i.display_name.clone()));
             // Three distinct failures, three distinct replies: blaming the item

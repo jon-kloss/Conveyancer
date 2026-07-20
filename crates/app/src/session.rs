@@ -2486,7 +2486,7 @@ impl Session {
                     )
                 });
                 derived.circuits.push(DerivedCircuit {
-                    name: format!("GRID {}", (b'A' + (i as u8 % 26)) as char),
+                    name: format!("GRID {}", grid_letters(i)),
                     members,
                     generation_mw,
                     demand_mw,
@@ -2879,7 +2879,7 @@ fn epoch_secs() -> u64 {
 
 #[cfg(test)]
 mod circuit_tests {
-    use super::circuit_level;
+    use super::{circuit_level, grid_letters};
 
     /// The shared helper reproduces the EXACT 0.20 / 0.05 boundaries the
     /// advisor's power_swing rule and the review consequence used inline, so
@@ -2902,4 +2902,33 @@ mod circuit_tests {
         assert_eq!(circuit_level(0.0, 10.0), (-1.0, "crit"));
         assert_eq!(circuit_level(0.0, 0.0), (1.0, "ok"));
     }
+
+    #[test]
+    fn grid_letters_roll_over_like_spreadsheet_columns() {
+        assert_eq!(grid_letters(0), "A");
+        assert_eq!(grid_letters(25), "Z");
+        // Grid 27 used to wrap back onto "GRID A" via (i % 26) — two grids
+        // with one name. Spreadsheet columns keep every name distinct.
+        assert_eq!(grid_letters(26), "AA");
+        assert_eq!(grid_letters(27), "AB");
+        assert_eq!(grid_letters(51), "AZ");
+        assert_eq!(grid_letters(52), "BA");
+        assert_eq!(grid_letters(701), "ZZ");
+        assert_eq!(grid_letters(702), "AAA");
+    }
+}
+
+/// Spreadsheet-style grid letters: A..Z, then AA, AB… — 27 grids must not
+/// collide back onto "GRID A".
+fn grid_letters(mut i: usize) -> String {
+    let mut out = Vec::new();
+    loop {
+        out.push(b'A' + (i % 26) as u8);
+        if i < 26 {
+            break;
+        }
+        i = i / 26 - 1;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap()
 }

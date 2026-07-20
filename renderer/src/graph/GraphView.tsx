@@ -375,23 +375,31 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
   const nodeGeomSnapRef = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map());
   const edgePathSnapRef = useRef<Map<string, { d: string; from: string; to: string }>>(new Map());
 
-  // ---- nodes (positions locally tracked while dragging; committed on drop) ----
-  const buildNodes = useCallback((): Node[] => {
-    if (!factory) return [];
-    const out: Node[] = [];
-    // #117 header search: matching machines/items stay lit, the rest dims —
-    // same live-filter grammar as the map's node search. Matching is by
-    // machine name, recipe name, or any ingredient/product item name.
-    const q = graphFilter.trim().toLowerCase();
-    const matchText = (s?: string) => !!s && s.toLowerCase().includes(q);
-    const groupMatches = (g: (typeof plan.groups)[string]) => {
+  // #117 header search grammar, shared by the node AND edge passes: matching
+  // machines/items stay lit, the rest dims. Matching is by machine name,
+  // recipe name, or any ingredient/product item name.
+  const groupMatchesFilter = useCallback(
+    (g: (typeof plan.groups)[string]): boolean => {
+      const q = graphFilter.trim().toLowerCase();
+      if (q === "") return true;
+      const matchText = (s?: string) => !!s && s.toLowerCase().includes(q);
       const r = gamedata.recipes[g.recipe];
       return (
         matchText(gamedata.machines[g.machine]?.displayName) ||
         matchText(r?.displayName) ||
         (!!r && [...r.products, ...r.ingredients].some(([it]) => matchText(itemLabel(gamedata.items, it))))
       );
-    };
+    },
+    [graphFilter, gamedata],
+  );
+
+  // ---- nodes (positions locally tracked while dragging; committed on drop) ----
+  const buildNodes = useCallback((): Node[] => {
+    if (!factory) return [];
+    const out: Node[] = [];
+    const q = graphFilter.trim().toLowerCase();
+    const matchText = (s?: string) => !!s && s.toLowerCase().includes(q);
+    const groupMatches = groupMatchesFilter;
     for (const gid of factory.groups) {
       const g = plan.groups[gid];
       if (!g) continue;
@@ -463,7 +471,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       });
     }
     return out;
-  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet, graphFilter, gamedata, mountCls, buildIdx]);
+  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet, graphFilter, gamedata, mountCls, buildIdx, groupMatchesFilter]);
 
   const [nodes, setNodes] = useState<Node[]>(buildNodes);
   // Plan/selection changes rebuild the node array — but xyflow adopts user
@@ -619,7 +627,20 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       const lift = srcFloor !== dstFloor;
       // Trace dim: an edge stays lit only when it links two on-chain nodes.
       const traceDim = !!traceSet && !(traceSet.has(e.from.id) && traceSet.has(e.to.id));
-      let dimmed = traceDim || (floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter);
+      // Header-search dim follows the nodes: a belt whose every group
+      // endpoint is filtered out dims with them (port/junction ends are
+      // never filter-dimmed, so a matched group's boundary belts stay lit).
+      const endFilterDim = (end: { kind: string; id: string }) => {
+        if (end.kind !== "group") return false;
+        const g = useStore.getState().plan.groups[end.id];
+        return !!g && !groupMatchesFilter(g);
+      };
+      const filterDim =
+        graphFilter.trim() !== "" && endFilterDim(e.from) && endFilterDim(e.to);
+      let dimmed =
+        traceDim ||
+        filterDim ||
+        (floorFilter !== "all" && srcFloor !== floorFilter && dstFloor !== floorFilter);
       let geom = layout[e.id] ?? null;
       let portal: { x: number; y: number; dir: "up" | "down"; otherFloor: number } | null = null;
       if (floorFilter !== "all" && lift) {
@@ -645,8 +666,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
               pathLen: 72,
             };
             // A cross-floor stub is un-dimmed by the floor filter, but a trace
-            // selection still owns it: keep it dim when it's off the traced chain.
-            if (!traceDim) dimmed = false;
+            // selection or the header-search filter still owns it: only the
+            // floor-filter dim is cleared here.
+            if (!traceDim && !filterDim) dimmed = false;
           }
         }
       }
@@ -675,7 +697,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
-  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet, edgeDraw]);
+  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet, edgeDraw, graphFilter, groupMatchesFilter]);
 
   // Diff plan-entity ids between commits → play removal/creation grammar.
   useEffect(() => {

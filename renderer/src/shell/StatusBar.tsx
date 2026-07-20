@@ -11,6 +11,7 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
   const plan = useStore((s) => s.plan);
   const derived = useStore((s) => s.derived);
   const setView = useStore((s) => s.setView);
+  const view = useStore((s) => s.view);
   const setSelection = useStore((s) => s.setSelection);
   const setDashboardOpen = useStore((s) => s.setDashboardOpen);
   const setAdvisorOpen = useStore((s) => s.setAdvisorOpen);
@@ -144,7 +145,9 @@ export default function StatusBar({ overlayMode }: { overlayMode: boolean }) {
           className="sb-item mono"
           data-testid="sb-resume"
           onClick={() => setDashboardOpen(true)}
-          title="Resume — build queue (H)"
+          // (H) opens the dashboard on the map; inside the factory graph H is
+          // the Pan-tool hotkey, so don't advertise a dead shortcut there.
+          title={view.mode === "factory" ? "Resume — build queue" : "Resume — build queue (H)"}
         >
           ▶ RESUME {buildDone}/{buildQueue.length}
         </button>

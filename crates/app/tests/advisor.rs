@@ -548,6 +548,51 @@ fn chat_rate_parse_is_forgiving_and_errors_name_the_right_culprit() {
     assert!(reply.reply.contains("couldn't match"), "{}", reply.reply);
 }
 
+/// The substring fallback needs a query long enough to be meaningful: a 1–2
+/// char token ("od") used to grab the first item containing it (Iron Rod) and
+/// silently draft the wrong proposal. Three chars is the floor — a real
+/// partial like "frame" still resolves.
+#[test]
+fn chat_item_match_ignores_tiny_substring_tokens() {
+    let mut s = Session::in_memory(None).unwrap();
+
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce od at 30/min",
+    );
+    assert!(
+        reply.proposal.is_none(),
+        "2-char token must not contains-match: {}",
+        reply.reply
+    );
+    assert!(reply.reply.contains("couldn't match"), "{}", reply.reply);
+
+    // Exactly 3 chars is the boundary: "rod" is no item's full name, so it
+    // reaches the contains fallback and must resolve (pins >= 3, not >= 4).
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce rod at 30/min",
+    );
+    assert!(
+        reply.proposal.is_some(),
+        "exactly-3-char partial resolves via contains: {}",
+        reply.reply
+    );
+
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce frame at 30/min",
+    );
+    assert!(
+        reply.proposal.is_some(),
+        "longer partial still resolves via contains: {}",
+        reply.reply
+    );
+}
+
 /// A drift card's REVIEW CTA is only actionable while its proposal is open:
 /// closing the proposal drops the card at the feed boundary — derived, zero
 /// writes — while every other card kind and the mute set ride through, and
