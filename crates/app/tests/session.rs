@@ -1466,6 +1466,75 @@ fn imported_generator_counts_nameplate_without_fuel() {
 }
 
 #[test]
+fn water_pump_group_produces_water_from_nothing() {
+    // A placeable water extractor has no world node (water is drawn from any
+    // surface), so it runs its synthesized zero-ingredient extraction recipe.
+    // The solver must produce its water with no input, feeding downstream like
+    // any source — the whole point of making the pump placeable.
+    let mut s = Session::in_memory(None).unwrap();
+    let r = s
+        .edit(vec![Command::CreateFactory {
+            name: "WATER WORKS".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap();
+    let fid = r.created[0].clone();
+
+    let pump = add_group(
+        &mut s,
+        &fid,
+        "Build_WaterPump_C",
+        "Recipe_Extract_Build_WaterPump",
+        gp(200.0, 0.0),
+    );
+    let r = s
+        .edit(vec![Command::AddPort {
+            factory: fid.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_Water_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(600.0, 0.0),
+        }])
+        .unwrap();
+    let out_port = r.created[0].clone();
+    connect(
+        &mut s,
+        &fid,
+        EdgeEnd::Group(pump.clone()),
+        EdgeEnd::Port(out_port.clone()),
+        "Desc_Water_C",
+        5,
+    );
+    s.edit(vec![Command::SetPortRate {
+        id: out_port.clone(),
+        rate: 100.0,
+    }])
+    .unwrap();
+
+    let d = s.solve_all_readonly();
+    let df = d.factories.get(&fid).expect("factory derived");
+    assert!(
+        df.solve_error.is_none(),
+        "zero-ingredient extraction solves: {:?}",
+        df.solve_error
+    );
+    let dg = df.groups.get(&pump).expect("water pump derived group");
+    // Demand-driven to 100/min, within the single pump's 120/min capacity.
+    assert!(
+        (dg.out_rates.get("Desc_Water_C").copied().unwrap_or(0.0) - 100.0).abs() < 1e-4,
+        "pump produces the demanded water with no input: {:?}",
+        dg.out_rates
+    );
+    assert!(dg.in_rates.is_empty(), "extraction consumes nothing");
+}
+
+#[test]
 fn starved_fueled_plant_reports_solved_generation_not_nameplate() {
     // The other side of #58's honesty: a plant whose fuel recipe DOES solve
     // must report the solved (starved) output, not nameplate — the empire
