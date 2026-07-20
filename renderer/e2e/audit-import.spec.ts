@@ -31,10 +31,6 @@ async function post(request: APIRequestContext, path: string, body: unknown): Pr
   if (!res.ok()) throw new Error(`${path} ${res.status()}: ${await res.text()}`);
   return res.json();
 }
-async function edit(request: APIRequestContext, cmds: unknown[]): Promise<void> {
-  await post(request, "/edit", cmds);
-}
-
 interface Group { id: string; factory: string; machine: string; recipe: string; count: number }
 interface Port {
   id: string;
