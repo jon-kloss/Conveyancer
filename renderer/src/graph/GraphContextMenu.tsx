@@ -7,8 +7,8 @@ import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
 import { itemLabel } from "../lib/format";
 import { modKey } from "../lib/keys";
-import { POWER_ITEM, effClock, effCount, type Command, type Id } from "../state/types";
-import { minBeltTier } from "./logistics";
+import { isFluidItem, POWER_ITEM, effClock, effCount, type Command, type Id } from "../state/types";
+import { minTransportTier } from "./logistics";
 
 export interface CtxTarget {
   x: number;
@@ -130,7 +130,8 @@ export default function GraphContextMenu({
           from: { kind: "group", id: gid },
           to: { kind: "port", id: portId },
           item,
-          tier: minBeltTier(Math.max(rate, 1)),
+          // Fluids exit on a pipe (Mk.1/Mk.2), solids on a belt.
+          tier: minTransportTier(Math.max(rate, 1), isFluidItem(gamedata, item)),
         },
       ]);
       setSelection({ kind: "port", id: portId });

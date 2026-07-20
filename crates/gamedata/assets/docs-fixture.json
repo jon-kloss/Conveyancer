@@ -474,6 +474,25 @@
   ]
  },
  {
+  "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildablePipeline'",
+  "Classes": [
+   {
+    "ClassName": "Build_Pipeline_C",
+    "mDisplayName": "Pipeline Mk.1",
+    "mFlowLimit": "5.000000"
+   },
+   {
+    "ClassName": "Build_PipelineMK2_C",
+    "mDisplayName": "Pipeline Mk.2",
+    "mFlowLimit": "10.000000"
+   },
+   {
+    "ClassName": "Build_PipelineJunction_Cross_C",
+    "mDisplayName": "Pipeline Junction Cross"
+   }
+  ]
+ },
+ {
   "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorGeoThermal'",
   "Classes": [
    {

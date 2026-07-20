@@ -51,7 +51,7 @@ import {
 import FloorPlates from "./FloorPlates";
 import { fmtRate, fmtPercent, bottleneckEdges, itemLabel } from "../lib/format";
 import GraphSearch from "./GraphSearch";
-import { beltCapacity } from "../state/types";
+import { isFluidItem, transportCapacity } from "../state/types";
 import "./graph.css";
 
 const nodeTypes = { group: MachineGroupNode, boundaryPort: BoundaryPortNode, junction: JunctionNode };
@@ -589,7 +589,8 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
     const labelSizes: Record<string, LabelSize> = {};
     for (const e of beltEdges) {
       const d = df?.edges[e.id];
-      const text = `${fmtRate(d?.flow ?? 0)}/${fmtRate(beltCapacity(e.tier))} · ${fmtPercent(d?.saturation ?? 0)} MK.${e.tier}`;
+      const tierLabel = isFluidItem(gamedata, e.item) ? `PIPE Mk.${e.tier}` : `MK.${e.tier}`;
+      const text = `${fmtRate(d?.flow ?? 0)}/${fmtRate(transportCapacity(gamedata, e.item, e.tier))} · ${fmtPercent(d?.saturation ?? 0)} ${tierLabel}`;
       labelSizes[e.id] = { w: text.length * 6.4 + 16, h: 20 };
     }
     // Splitters/mergers route belts to distinct faces like the real building.
@@ -680,6 +681,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         selected: selection?.kind === "edge" && selection.id === e.id,
         data: {
           edge: e,
+          fluid: isFluidItem(gamedata, e.item),
           flow: d?.flow ?? 0,
           saturation: d?.saturation ?? 0,
           bottleneck: bottlenecks.has(e.id),
@@ -697,7 +699,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
         } satisfies BeltEdgeData as unknown as Record<string, unknown>,
       };
     });
-  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet, edgeDraw, graphFilter, groupMatchesFilter]);
+  }, [factory, plan.edges, plan.junctions, factoryId, df, selection, isProjected, flowOverlay, settled, nodes, floorFilter, groupFloor, jumpFloor, traceSet, edgeDraw, graphFilter, groupMatchesFilter, gamedata]);
 
   // Diff plan-entity ids between commits → play removal/creation grammar.
   useEffect(() => {
@@ -924,9 +926,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       // endpoint — the MK.1 default silently capped a splitter/merger web's
       // output at 60/min while its feeds ran MK.3 (the red-bottleneck bug).
       // No neighbors → MK.1 stays the honest floor; tier is editable after.
+      // Only edges carrying the SAME medium (belt vs pipe) as this new one may
+      // donate their tier — a fluid pipe must never inherit a Mk.5 belt tier
+      // (pipes cap at Mk.2), nor a belt a pipe's.
+      const fluid = isFluidItem(gd, item);
       const touching = (id: string) =>
         Object.values(p.edges)
-          .filter((e) => e.from.id === id || e.to.id === id)
+          .filter((e) => (e.from.id === id || e.to.id === id) && isFluidItem(gd, e.item) === fluid)
           .map((e) => e.tier);
       const tier = Math.max(1, ...touching(conn.source), ...touching(conn.target));
       void dispatch([{ type: "add_edge", factory: factoryId, from: endOf(conn.source), to: endOf(conn.target), item, tier }]);

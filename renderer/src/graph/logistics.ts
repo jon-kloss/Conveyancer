@@ -5,7 +5,7 @@
 //   • manifold — one tap per machine (simple, ramps up unevenly):     N−1 per line
 // One tree per distinct input item (splitters) / output item (mergers).
 
-import { BELT_CAPACITY } from "../state/types";
+import { BELT_CAPACITY, PIPE_CAPACITY } from "../state/types";
 
 export const SPLITTER_CLASS = "Build_ConveyorAttachmentSplitter_C";
 export const MERGER_CLASS = "Build_ConveyorAttachmentMerger_C";
@@ -15,18 +15,27 @@ export const balancedJunctions = (n: number): number => (n <= 1 ? 0 : Math.ceil(
 /** Manifold: one tap per machine except the last. */
 export const manifoldJunctions = (n: number): number => Math.max(0, n - 1);
 
-/** Lowest belt tier (1..6) that carries `rate`/min; 6 if it exceeds Mk.6. */
-export const minBeltTier = (rate: number): number => {
-  const i = BELT_CAPACITY.findIndex((c) => rate <= c + 1e-6);
-  return i === -1 ? BELT_CAPACITY.length : i + 1;
+const minTierIn = (table: readonly number[], rate: number): number => {
+  const i = table.findIndex((c) => rate <= c + 1e-6);
+  return i === -1 ? table.length : i + 1;
 };
+
+/** Lowest belt tier (1..6) that carries `rate`/min; 6 if it exceeds Mk.6. */
+export const minBeltTier = (rate: number): number => minTierIn(BELT_CAPACITY, rate);
+/** Lowest pipe tier (1..2) that carries `rate` m³/min; 2 if beyond Mk.2. */
+export const minPipeTier = (rate: number): number => minTierIn(PIPE_CAPACITY, rate);
+/** Min transport tier for a line, picking the pipe or belt table by medium. */
+export const minTransportTier = (rate: number, isFluid: boolean): number =>
+  isFluid ? minPipeTier(rate) : minBeltTier(rate);
 
 export interface LogiLine {
   item: string;
   rate: number;
-  /** min belt tier for a single line */
+  /** true when this line rides a pipe (fluid), false for a belt */
+  fluid: boolean;
+  /** min transport tier for a single line */
   tier: number;
-  /** parallel belt lines needed (rate beyond a single Mk.6 belt) */
+  /** parallel belt/pipe lines needed (rate beyond the top single tier) */
   lines: number;
 }
 
@@ -38,26 +47,34 @@ export interface GroupLogistics {
   mergers: { balanced: number; manifold: number };
 }
 
-const line = (item: string, rate: number): LogiLine => ({
-  item,
-  rate,
-  tier: Math.min(BELT_CAPACITY.length, minBeltTier(rate)),
-  lines: rate > BELT_CAPACITY[BELT_CAPACITY.length - 1] ? Math.ceil(rate / BELT_CAPACITY[BELT_CAPACITY.length - 1]) : 1,
-});
+const line = (item: string, rate: number, isFluid: boolean): LogiLine => {
+  const table = isFluid ? PIPE_CAPACITY : BELT_CAPACITY;
+  const top = table[table.length - 1];
+  return {
+    item,
+    rate,
+    fluid: isFluid,
+    tier: Math.min(table.length, minTransportTier(rate, isFluid)),
+    lines: rate > top ? Math.ceil(rate / top) : 1,
+  };
+};
 
 /** Compute the splitter/merger build for a group. Rates are per-minute totals
- *  for the whole group (from the solver's inRates/outRates). */
+ *  for the whole group (from the solver's inRates/outRates). `isFluid` maps an
+ *  item to its transport medium (fluids ride pipes); default treats everything
+ *  as a belt for callers/tests that don't care about the pipe distinction. */
 export function groupLogistics(
   count: number,
   inRates: Record<string, number>,
   outRates: Record<string, number>,
+  isFluid: (item: string) => boolean = () => false,
 ): GroupLogistics {
   const inputs = Object.entries(inRates)
     .filter(([, r]) => r > 1e-6)
-    .map(([item, r]) => line(item, r));
+    .map(([item, r]) => line(item, r, isFluid(item)));
   const outputs = Object.entries(outRates)
     .filter(([, r]) => r > 1e-6)
-    .map(([item, r]) => line(item, r));
+    .map(([item, r]) => line(item, r, isFluid(item)));
   const b = balancedJunctions(count);
   const m = manifoldJunctions(count);
   return {

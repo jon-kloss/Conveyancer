@@ -485,6 +485,14 @@
 .belt-label.bottleneck .belt-tier {
   color: var(--on-signal);
 }
+/* Pipe (fluid) edge chip: a blue accent so a fluid run reads as a PIPE at a
+   glance. Flow-health bands (amber/red) still override the border. */
+.belt-label.pipe {
+  border-color: var(--bp-600);
+}
+.belt-label.pipe .belt-tier {
+  color: var(--bp-400);
+}
 
 /* ---- inspector (360px right) ---- */
 .inspector {

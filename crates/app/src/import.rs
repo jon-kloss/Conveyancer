@@ -476,14 +476,23 @@ pub(crate) fn nearest_built_match<'a>(state: &'a PlanState, pos: &MapPos) -> Opt
         .map(|(f, _)| f)
 }
 
-/// Lowest belt tier whose capacity covers `rate`.
-fn tier_for(rate: f64) -> u8 {
-    for (i, cap) in BELT_CAPACITY.iter().enumerate() {
+/// Lowest transport tier whose capacity covers `rate` — the pipe table for a
+/// fluid edge (Mk.1/Mk.2), the belt table otherwise. Built edges store their
+/// tier immutably, and the solver reads capacity back through the SAME
+/// pipe-vs-belt split, so a fluid edge must be tiered against pipe rates or its
+/// derived capacity would be wrong.
+fn tier_for(rate: f64, is_fluid: bool) -> u8 {
+    let table: &[f64] = if is_fluid {
+        &PIPE_CAPACITY
+    } else {
+        &BELT_CAPACITY
+    };
+    for (i, cap) in table.iter().enumerate() {
         if rate <= *cap {
             return (i + 1) as u8;
         }
     }
-    6
+    table.len() as u8
 }
 
 /// First import: materialize clusters as ◆ Built entities into `state`,
@@ -547,6 +556,7 @@ pub fn write_built_layer(
             let cons: f64 = consumers
                 .get(item)
                 .map_or(0.0, |v| v.iter().map(|p| p.1).sum());
+            let fluid = gd.items.get(item).is_some_and(|i| i.is_fluid());
             if let (Some(ps), Some(cs)) = (producers.get(item), consumers.get(item)) {
                 for (pg, pr) in ps {
                     for (cg, cr) in cs {
@@ -556,7 +566,7 @@ pub fn write_built_layer(
                             from: EdgeEnd::Group(pg.clone()),
                             to: EdgeEnd::Group(cg.clone()),
                             item: item.clone(),
-                            tier: tier_for(pr.min(*cr)),
+                            tier: tier_for(pr.min(*cr), fluid),
                             status: Status::Built,
                             created_by: CreatedBy::Import(import_id.to_string()),
                         });
@@ -573,7 +583,7 @@ pub fn write_built_layer(
                         from: EdgeEnd::Group(pg.clone()),
                         to: EdgeEnd::Port(pid.clone()),
                         item: item.clone(),
-                        tier: tier_for(net),
+                        tier: tier_for(net, fluid),
                         status: Status::Built,
                         created_by: CreatedBy::Import(import_id.to_string()),
                     });
@@ -599,7 +609,7 @@ pub fn write_built_layer(
                         from: EdgeEnd::Port(pid.clone()),
                         to: EdgeEnd::Group(cg.clone()),
                         item: item.clone(),
-                        tier: tier_for(-net),
+                        tier: tier_for(-net, fluid),
                         status: Status::Built,
                         created_by: CreatedBy::Import(import_id.to_string()),
                     });
@@ -1222,9 +1232,10 @@ fn resync_built_wiring(
         let (Some(ps), Some(cs)) = (producers.get(item), consumers.get(item)) else {
             continue;
         };
+        let fluid = gd.items.get(item).is_some_and(|i| i.is_fluid());
         for (pg, pr) in ps {
             for (cg, cr) in cs {
-                let want = tier_for(pr.min(*cr));
+                let want = tier_for(pr.min(*cr), fluid);
                 let existing = state
                     .edges
                     .values()
@@ -1371,7 +1382,7 @@ fn resync_built_wiring(
             };
             // Every serving group is belted to the port at a tier that
             // covers the whole net flow (matching write_built_layer).
-            let want = tier_for(rate);
+            let want = tier_for(rate, gd.items.get(item).is_some_and(|i| i.is_fluid()));
             for gid in &groups {
                 let (from, to) = match dir {
                     PortDirection::Out => (EdgeEnd::Group(gid.clone()), EdgeEnd::Port(pid.clone())),

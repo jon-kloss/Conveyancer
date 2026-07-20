@@ -1840,7 +1840,15 @@ impl Session {
                 from: to_node_ref(&e.from, &self.state),
                 to: to_node_ref(&e.to, &self.state),
                 item: e.item.clone(),
-                capacity: belt_capacity(e.tier),
+                // Fluids ride pipes (300/600 m³/min), solids ride belts — the
+                // medium is a pure function of the item's form.
+                capacity: transport_capacity(
+                    self.gamedata
+                        .items
+                        .get(&e.item)
+                        .is_some_and(|i| i.is_fluid()),
+                    e.tier,
+                ),
             })
             .collect();
         // Drive un-wired generators toward nameplate so they don't idle at 0 MW.
