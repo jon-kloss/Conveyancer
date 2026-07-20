@@ -74,10 +74,11 @@ export default function GraphContextMenu({
     const perMachine = recipe && recipe.durationS > 0
       ? ((recipe.products.find(([i]) => i === item)?.[1] ?? 0) * 60) / recipe.durationS
       : 0;
-    // Nameplate capacity, NOT the demand-driven clock: an idle output solves to
-    // clock 0, but that's precisely what you want to send out, so floor the
-    // clock at 100% (and honor an overclock above it).
-    const potential = perMachine * effCount(g) * Math.max(effClock(g), 1);
+    // PLANNED capacity, NOT the demand-driven solve: an idle output solves to
+    // 0/min, but that's precisely what you want to send out. The planned clock
+    // already IS that capacity — flooring it at 100% would over-promise an
+    // underclocked machine's exports (0.5 clock offered nameplate).
+    const potential = perMachine * effCount(g) * effClock(g);
     let committed = 0;
     for (const e of Object.values(plan.edges)) {
       if (e.factory !== factoryId || e.item !== item || e.from.kind !== "group" || e.from.id !== gid) continue;
