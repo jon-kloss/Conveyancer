@@ -345,6 +345,10 @@ const BELT_TIERS: [(&str, u8); 6] = [
     ("Build_ConveyorBeltMk6_C", 6),
 ];
 
+/// One generator fuel: (fuel item class, optional (byproduct class, amount
+/// per fuel item burned)) — nuclear waste rides the second slot.
+type FuelEntry = (String, Option<(String, f64)>);
+
 /// Parse decoded Docs.json text into normalized game data.
 pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError> {
     let root: Value = serde_json::from_str(text)?;
@@ -358,7 +362,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
     };
     // (generator class, MW, fuels) where each fuel carries its optional
     // byproduct (item class, amount per fuel item burned) — nuclear waste.
-    let mut generator_fuels: Vec<(String, f64, Vec<(String, Option<(String, f64)>)>)> = Vec::new();
+    let mut generator_fuels: Vec<(String, f64, Vec<FuelEntry>)> = Vec::new();
     // Machines whose draw varies by recipe, and every recipe's raw
     // (constant, factor) pair — joined in a post-pass below, so section
     // ordering in Docs.json never matters.
@@ -515,7 +519,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     };
                     // fuel classes: modern Docs nests them in mFuel[].mFuelClass,
                     // with the burn byproduct (nuclear waste) alongside.
-                    let mut fuels: Vec<(String, Option<(String, f64)>)> = Vec::new();
+                    let mut fuels: Vec<FuelEntry> = Vec::new();
                     if let Some(list) = c.get("mFuel").and_then(Value::as_array) {
                         for entry in list {
                             let fc = s(entry, "mFuelClass");
@@ -525,7 +529,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                             let bp_class = s(entry, "mByproduct");
                             let bp_amount = f(entry, "mByproductAmount");
                             let byproduct = (!bp_class.is_empty() && bp_amount > 0.0)
-                                .then(|| (bp_class, bp_amount));
+                                .then_some((bp_class, bp_amount));
                             fuels.push((fc, byproduct));
                         }
                     }
