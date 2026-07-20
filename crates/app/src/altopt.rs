@@ -327,8 +327,15 @@ pub fn optimize_to_recipe(
         // product or a boundary IN port) — T2 rewires feeds, never invents them.
         let source_of = |item: &str| -> Option<EdgeEnd> {
             for gid in &factory.groups {
-                let g = state.groups.get(gid)?;
-                let r = gd.recipes.get(&g.recipe)?;
+                // Skip unresolvable groups (imported factories carry recipes
+                // outside the loaded catalog) — one unknown recipe must not
+                // veto sourcing for the whole factory.
+                let Some(g) = state.groups.get(gid) else {
+                    continue;
+                };
+                let Some(r) = gd.recipes.get(&g.recipe) else {
+                    continue;
+                };
                 if r.products.first().map(|(i, _)| i == item).unwrap_or(false) {
                     return Some(EdgeEnd::Group(gid.clone()));
                 }
