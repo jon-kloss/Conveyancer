@@ -336,6 +336,10 @@ fn parse_clearance_footprint(raw: &str) -> Option<(f64, f64)> {
 /// Power is production (Addendum A2) — the ordinary solver handles it.
 pub const POWER_ITEM: &str = "__PowerMW";
 
+/// Water — extracted by a water pump anywhere (no world node), so a placeable
+/// water extractor synthesizes a recipe producing this (see build()).
+pub const WATER_ITEM: &str = "Desc_Water_C";
+
 const BELT_TIERS: [(&str, u8); 6] = [
     ("Build_ConveyorBeltMk1_C", 1),
     ("Build_ConveyorBeltMk2_C", 2),
@@ -363,6 +367,12 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
     // (generator class, MW, fuels) where each fuel carries its optional
     // byproduct (item class, amount per fuel item burned) — nuclear waste.
     let mut generator_fuels: Vec<(String, f64, Vec<FuelEntry>)> = Vec::new();
+    // Water pumps (FGBuildableWaterPump) extract water from any water surface —
+    // there is NO world node to claim (unlike ores/oil), so water can't arrive
+    // through a map claim. We give each pump a synthesized extraction recipe
+    // (below) so it can be PLACED in a factory like a machine and its water feeds
+    // downstream recipes.
+    let mut water_pumps: Vec<String> = Vec::new();
     // Machines whose draw varies by recipe, and every recipe's raw
     // (constant, factor) pair — joined in a post-pass below, so section
     // ordering in Docs.json never matters.
@@ -493,6 +503,9 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         },
                     };
                     if !m.class_name.is_empty() {
+                        if fg == "FGBuildableWaterPump" {
+                            water_pumps.push(m.class_name.clone());
+                        }
                         gd.machines.insert(m.class_name.clone(), m);
                     }
                 }
@@ -708,6 +721,51 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             );
         }
     }
+    // Synthesize a water-extraction recipe per water pump: no ingredients, one
+    // Desc_Water_C product at the pump's normal-purity rate (items_per_cycle per
+    // cycle_time_s). This makes the pump placeable in a factory (the add-machine
+    // picker is recipe-driven) and its water an ordinary solved output that can
+    // feed downstream recipes — the water source the model otherwise only
+    // "assumed". Skipped if the catalog carries no water item (e.g. a trimmed
+    // fixture without it).
+    for pump in &water_pumps {
+        let Some(machine) = gd.machines.get(pump) else {
+            continue;
+        };
+        let MachineKind::Extractor {
+            items_per_cycle,
+            cycle_time_s,
+        } = machine.kind
+        else {
+            continue;
+        };
+        if cycle_time_s <= 0.0 || !gd.items.contains_key(WATER_ITEM) {
+            continue;
+        }
+        let class_name = format!("Recipe_Extract_{}", pump.trim_end_matches("_C"));
+        let display_name = format!(
+            "{} — {}",
+            machine.display_name,
+            gd.items
+                .get(WATER_ITEM)
+                .map(|i| i.display_name.clone())
+                .unwrap_or_else(|| "Water".to_string())
+        );
+        gd.recipes.insert(
+            class_name.clone(),
+            Recipe {
+                alternate: false,
+                class_name,
+                display_name,
+                duration_s: cycle_time_s,
+                ingredients: Vec::new(),
+                products: vec![(WATER_ITEM.to_string(), items_per_cycle)],
+                produced_in: vec![pump.clone()],
+                variable_power_mw: None,
+            },
+        );
+    }
+
     // The pseudo power item so names resolve everywhere.
     gd.items.insert(
         POWER_ITEM.to_string(),
@@ -844,6 +902,31 @@ mod tests {
         assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
         assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
         assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
+    }
+
+    #[test]
+    fn synthesizes_water_extraction_recipe() {
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        // The water pump parses as an extractor machine...
+        let wp = &gd.machines["Build_WaterPump_C"];
+        assert!(matches!(wp.kind, MachineKind::Extractor { .. }));
+        assert_eq!(wp.display_name, "Water Extractor");
+        // ...and gets a synthesized extraction recipe: no inputs, one Water
+        // product at the pump's nameplate rate (2/cycle ÷ 1s = 120/min), so it's
+        // placeable in a factory and its water is an ordinary solved output.
+        let r = &gd.recipes["Recipe_Extract_Build_WaterPump"];
+        assert!(r.ingredients.is_empty(), "extraction has no inputs");
+        assert_eq!(r.products, vec![(WATER_ITEM.to_string(), 2.0)]);
+        assert_eq!(r.produced_in, vec!["Build_WaterPump_C".to_string()]);
+        assert!(!r.alternate);
+        assert_eq!(r.products[0].1 * 60.0 / r.duration_s, 120.0);
+        // Miners/oil pumps stay node-bound: no extraction recipe is synthesized.
+        assert!(
+            !gd.recipes
+                .values()
+                .any(|x| x.produced_in.contains(&"Build_MinerMk1_C".to_string())),
+            "solid/oil extractors are claimed on the map, not placed via a recipe"
+        );
     }
 
     #[test]

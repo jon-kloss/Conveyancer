@@ -25,12 +25,14 @@ export default function AddGroupMenu({
 
   const recipes = useMemo(() => {
     const q = query.toLowerCase();
-    // Manufacturers AND generators: a coal plant is placed like any other
-    // machine group — pick its synthesized burn recipe ("Coal-Powered
-    // Generator — Coal") and the generator bank follows.
+    // Manufacturers, generators AND extractors: a coal plant is placed like any
+    // other machine group (its synthesized burn recipe), and a water extractor
+    // likewise (its synthesized extraction recipe). Only machines that carry a
+    // recipe surface — node-bound miners/oil pumps have none, so including the
+    // extractor kind here exposes the water pump without pulling in miners.
     const placeable = new Set(
       Object.values(gamedata.machines)
-        .filter((m) => m.kind === "manufacturer" || m.kind === "generator")
+        .filter((m) => m.kind === "manufacturer" || m.kind === "generator" || m.kind === "extractor")
         .map((m) => m.className),
     );
     const rank = (name: string) => {
@@ -52,7 +54,7 @@ export default function AddGroupMenu({
     const r = gamedata.recipes[recipeClass];
     const machine = r.producedIn.find((m) => {
       const kind = gamedata.machines[m]?.kind;
-      return kind === "manufacturer" || kind === "generator";
+      return kind === "manufacturer" || kind === "generator" || kind === "extractor";
     });
     if (!machine) return;
     const pos = screenToFlowPosition({ x: at.flowX, y: at.flowY });

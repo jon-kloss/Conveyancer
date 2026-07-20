@@ -33,6 +33,12 @@
     "mForm": "RF_LIQUID",
     "mStackSize": "SS_FLUID",
     "mEnergyValue": "320.000000"
+   },
+   {
+    "ClassName": "Desc_Water_C",
+    "mDisplayName": "Water",
+    "mForm": "RF_LIQUID",
+    "mStackSize": "SS_FLUID"
    }
   ]
  },
@@ -321,6 +327,18 @@
     "ClassName": "Build_OilPump_C",
     "mDisplayName": "Oil Extractor",
     "mPowerConsumption": "40.000000",
+    "mItemsPerCycle": "2.000000",
+    "mExtractCycleTime": "1.000000"
+   }
+  ]
+ },
+ {
+  "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableWaterPump'",
+  "Classes": [
+   {
+    "ClassName": "Build_WaterPump_C",
+    "mDisplayName": "Water Extractor",
+    "mPowerConsumption": "20.000000",
     "mItemsPerCycle": "2.000000",
     "mExtractCycleTime": "1.000000"
    }
