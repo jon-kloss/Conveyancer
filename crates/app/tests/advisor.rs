@@ -674,3 +674,63 @@ fn chat_rate_commas_preserve_magnitude() {
         ),
     }
 }
+
+/// Audit #130 (1): SELECTION-scope context resolves a non-factory selection to
+/// a real subject payload — a selected route must never come back as the
+/// factory arm's all-null snapshot.
+#[test]
+fn selection_context_resolves_a_route_subject() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_fa, _out, route) = build_chain(&mut s, 120.0, 3, 30.0, 30.0);
+
+    let ctx = app::chat::compact_state(
+        &mut s,
+        &app::chat::ContextScope::Selection { id: route.clone() },
+    );
+    assert_eq!(ctx.payload["scope"], "selection");
+    assert_eq!(ctx.payload["kind"], "route");
+    let text = ctx.payload.to_string();
+    assert!(
+        text.contains(&route),
+        "the selected route's id survives: {text}"
+    );
+    assert!(
+        !ctx.payload["from"].is_null() && !ctx.payload["to"].is_null(),
+        "endpoints described"
+    );
+
+    // A group selection resolves too (grab any group from the chain).
+    let gid = s.state.groups.keys().next().unwrap().clone();
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Selection { id: gid });
+    assert_eq!(ctx.payload["kind"], "group");
+    assert!(!ctx.payload["subject"].is_null());
+
+    // And a factory id still gets the full factory snapshot.
+    let fid = s.state.factories.keys().next().unwrap().clone();
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Selection { id: fid });
+    assert_eq!(ctx.payload["scope"], "factory");
+    assert!(!ctx.payload["factory"].is_null());
+}
+
+/// Audit #130 (2): the Empire context clamps its factory list deterministically
+/// (first 48 in id order) and counts the omitted remainder honestly.
+#[test]
+fn empire_context_clamps_factory_list_with_honest_remainder() {
+    let mut s = Session::in_memory(None).unwrap();
+    for i in 0..52 {
+        s.edit(vec![Command::CreateFactory {
+            name: format!("F{i:02}"),
+            position: MapPos {
+                x: 100.0 * i as f64,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: String::new(),
+        }])
+        .unwrap();
+    }
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Empire);
+    assert_eq!(ctx.payload["factories"].as_array().unwrap().len(), 48);
+    assert_eq!(ctx.payload["factoriesOmitted"], 4);
+    assert_eq!(ctx.payload["totals"]["factories"], 52);
+}
