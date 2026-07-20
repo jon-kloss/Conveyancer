@@ -776,11 +776,19 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
     // already-correct m³/min amounts — the supplemental water added below is
     // computed straight in m³/min and must NOT be re-divided by 1000.
     for (gen_class, mw, fuels, supplemental) in generator_fuels {
-        // Supplemental water a generator burns to run (coal/nuclear): the game
-        // rate is MW × ratio × 60 / 1000 m³/min (coal 75 × 10 → 45; nuclear
-        // 2500 × 1.6 → 240). Only add it when the resource resolves to a known
-        // fluid item (skip a trimmed fixture without water). Constant across a
-        // generator's fuels — a plant needs the same water whatever it burns.
+        // Supplemental water a generator burns to run (coal/nuclear). The TARGET
+        // rates are confirmed from the wiki: coal 45 m³/min @75 MW, nuclear
+        // 240 @2500 MW. This formula reproduces them IFF the real Docs.json
+        // `mSupplementalToPowerRatio` is 10 (coal) / 1.6 (nuclear).
+        //
+        // ⚠ UNVERIFIED CONSTANT: the ×60/1000 unit conversion (and thus the
+        // assumed ratio of 10) was NOT confirmed against a real Docs.json — the
+        // bundled fixture authors its own ratio, so its test is self-fulfilling.
+        // If a real coal generator reads a water demand that ISN'T ~45/min,
+        // this line is the fix: adjust the divisor/×60 to match whatever unit
+        // `mSupplementalToPowerRatio` actually carries. (per-min per MW → drop
+        // ×60/1000; per-sec per MW → ×60 only.) The soft-input MECHANISM is
+        // independent of this constant and stays correct either way.
         let supplemental_water = supplemental.as_ref().and_then(|(class, ratio)| {
             let item = gd.items.get(class)?;
             item.is_fluid()

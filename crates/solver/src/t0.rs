@@ -266,14 +266,37 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
     }
     /// Relative tolerance of the ceiling search (bracket + bisection).
     const REL_TOL: f64 = 1e-9;
+    // A soft input (generator cooling water) is an elastic demand: its pipe
+    // capacity must never bound the edited target's ceiling, and must never be
+    // named as the binding constraint. Mirror T1's `find_binding`: drop
+    // soft-fed edges and boundary inputs that feed only soft demand from the
+    // cap set entirely.
+    let edge_feeds_soft = |ei: usize| -> bool {
+        let e = &snapshot.edges[ei];
+        if let NodeRef::Group(gid) = &e.to {
+            if let Some(g) = snapshot.groups.iter().find(|g| &g.id == gid) {
+                return g.soft_inputs.contains(&e.item);
+            }
+        }
+        false
+    };
+    let input_feeds_only_soft = |i: usize| -> bool {
+        let node = NodeRef::Input(snapshot.inputs[i].id.clone());
+        graph
+            .out_edges
+            .get(&node)
+            .map(|v| !v.is_empty() && v.iter().all(|&ei| edge_feeds_soft(ei)))
+            .unwrap_or(false)
+    };
     let cap_keys: Vec<CapKey> = (0..snapshot.edges.len())
+        .filter(|&i| !edge_feeds_soft(i))
         .map(CapKey::Edge)
         .chain(
             snapshot
                 .inputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.ceiling.is_some())
+                .filter(|(i, p)| p.ceiling.is_some() && !input_feeds_only_soft(*i))
                 .map(|(i, _)| CapKey::Input(i)),
         )
         .collect();

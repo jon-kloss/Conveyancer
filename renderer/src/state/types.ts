@@ -246,6 +246,10 @@ export interface GameRecipe {
   alternate: boolean;
   /** Average sustained draw override for variable-power machines (absent for fixed-power recipes). */
   variablePowerMw?: number | null;
+  /** A supplemental ingredient the machine burns to RUN that must not throttle it
+   *  (a generator's cooling water): rides `ingredients` as a real demand/shortfall
+   *  but the solver treats it as a SOFT input. Only synthesized burn recipes set it. */
+  supplemental?: string | null;
 }
 export interface GameMachine {
   className: string;

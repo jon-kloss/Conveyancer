@@ -369,9 +369,25 @@ fn run_lp(
     })
 }
 
+/// Does this edge deliver a soft input (generator cooling water) to its
+/// destination group? A soft-fed edge that saturates is not binding the
+/// ceiling — the demand it serves is elastic, so its capacity never limits the
+/// maximized output.
+fn edge_feeds_soft_input(snapshot: &FactorySnapshot, e: &EdgeSpec) -> bool {
+    if let NodeRef::Group(gid) = &e.to {
+        if let Some(g) = snapshot.groups.iter().find(|g| &g.id == gid) {
+            return g.soft_inputs.contains(&e.item);
+        }
+    }
+    false
+}
+
 /// Identify the constraint that binds at the ceiling solution.
 fn find_binding(snapshot: &FactorySnapshot, flows: &[f64]) -> Option<Constraint> {
     for (i, e) in snapshot.edges.iter().enumerate() {
+        if edge_feeds_soft_input(snapshot, e) {
+            continue;
+        }
         if flows[i] >= e.capacity - EPS * (1.0 + e.capacity) {
             return Some(Constraint::BeltCapacity {
                 edge: e.id.clone(),
@@ -383,6 +399,13 @@ fn find_binding(snapshot: &FactorySnapshot, flows: &[f64]) -> Option<Constraint>
     for p in &snapshot.inputs {
         if let Some(ceiling) = p.ceiling {
             let node = NodeRef::Input(p.id.clone());
+            // Skip a boundary input that feeds only soft demand: its saturation
+            // is an elastic water deficit, not a limit on the maximized output.
+            let feeds_only_soft = edges_out_of(snapshot, &node, None)
+                .all(|ei| edge_feeds_soft_input(snapshot, &snapshot.edges[ei]));
+            if feeds_only_soft {
+                continue;
+            }
             let used: f64 = edges_out_of(snapshot, &node, None)
                 .map(|ei| flows[ei])
                 .sum();
@@ -417,6 +440,13 @@ fn attribute_shortfall(
     for g in &snapshot.groups {
         let gnode = NodeRef::Group(g.id.clone());
         for (item, _) in &g.recipe.inputs {
+            // A soft input (e.g. generator cooling water) is designed to be
+            // satisfiable by deficit — its absence is an elastic shortfall, not a
+            // structural break — so it must never be reported as the reason a
+            // chain is zeroed, nor hijack another output's shortfall attribution.
+            if g.soft_inputs.contains(item) {
+                continue;
+            }
             if edges_into(snapshot, &gnode, Some(item)).next().is_none() {
                 return Some(Constraint::Disconnected {
                     node: g.id.clone(),

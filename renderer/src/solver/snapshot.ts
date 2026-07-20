@@ -58,6 +58,10 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
       count: effCount(g),
       clock: effClock(g),
       drivenCycles: isGenerator && !wiredToPower ? effCount(g) * effClock(g) : null,
+      // A generator's cooling water is a SOFT input, mirroring session.rs: it
+      // must not throttle the preview ceiling on water-pipe capacity. Empty for
+      // ordinary recipes.
+      softInputs: recipe.supplemental ? [recipe.supplemental] : [],
     });
   }
   const inputs = [];
