@@ -568,6 +568,19 @@ fn chat_item_match_ignores_tiny_substring_tokens() {
     );
     assert!(reply.reply.contains("couldn't match"), "{}", reply.reply);
 
+    // Exactly 3 chars is the boundary: "rod" is no item's full name, so it
+    // reaches the contains fallback and must resolve (pins >= 3, not >= 4).
+    let reply = app::chat::chat(
+        &mut s,
+        &app::chat::ContextScope::Empire,
+        "produce rod at 30/min",
+    );
+    assert!(
+        reply.proposal.is_some(),
+        "exactly-3-char partial resolves via contains: {}",
+        reply.reply
+    );
+
     let reply = app::chat::chat(
         &mut s,
         &app::chat::ContextScope::Empire,
@@ -575,7 +588,7 @@ fn chat_item_match_ignores_tiny_substring_tokens() {
     );
     assert!(
         reply.proposal.is_some(),
-        "3+ char partial still resolves via contains: {}",
+        "longer partial still resolves via contains: {}",
         reply.reply
     );
 }

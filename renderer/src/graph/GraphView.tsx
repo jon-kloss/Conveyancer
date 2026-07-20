@@ -471,7 +471,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       });
     }
     return out;
-  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet, graphFilter, gamedata, mountCls, buildIdx]);
+  }, [factory, plan.groups, plan.ports, plan.junctions, selection, factoryId, floorFilter, floors.length, traceSet, graphFilter, gamedata, mountCls, buildIdx, groupMatchesFilter]);
 
   const [nodes, setNodes] = useState<Node[]>(buildNodes);
   // Plan/selection changes rebuild the node array — but xyflow adopts user
@@ -666,8 +666,9 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
               pathLen: 72,
             };
             // A cross-floor stub is un-dimmed by the floor filter, but a trace
-            // selection still owns it: keep it dim when it's off the traced chain.
-            if (!traceDim) dimmed = false;
+            // selection or the header-search filter still owns it: only the
+            // floor-filter dim is cleared here.
+            if (!traceDim && !filterDim) dimmed = false;
           }
         }
       }

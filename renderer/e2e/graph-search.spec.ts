@@ -20,8 +20,12 @@ test("graph search dims non-matching machines, clears on empty", async ({ page, 
   const f = (await edit(request, [{ type: "create_factory", name: "SEARCH WORKS", position: { x: -1800, y: 1800 }, region: "GRASS FIELDS" }])).created[0];
   const rod = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_ConstructorMk1_C", recipe: "Recipe_IronRod_C", count: 1, clock: 1, graphPos: { x: 200, y: 120 }, floor: 0 }])).created[0];
   const screw = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_ConstructorMk1_C", recipe: "Recipe_Screw_C", count: 1, clock: 1, graphPos: { x: 560, y: 120 }, floor: 0 }])).created[0];
-  // A belt between the two groups — #132 pins that filter dimming follows it.
-  await edit(request, [{ type: "add_edge", factory: f, from: { kind: "group", id: rod }, to: { kind: "group", id: screw }, item: "Desc_IronRod_C", tier: 3 }]);
+  // A belt between the two groups — #132 pins that filter dimming follows it —
+  // plus a port-fed belt to pin the carve-out: port/junction endpoints never
+  // filter-dim an edge, so a boundary belt stays lit whatever the filter says.
+  const beltGG = (await edit(request, [{ type: "add_edge", factory: f, from: { kind: "group", id: rod }, to: { kind: "group", id: screw }, item: "Desc_IronRod_C", tier: 3 }])).created[0];
+  const ingot = (await edit(request, [{ type: "add_port", factory: f, direction: "in", item: "Desc_IronIngot_C", rate: 0, rateCeiling: 200, graphPos: { x: 0, y: 120 } }])).created[0];
+  const beltPG = (await edit(request, [{ type: "add_edge", factory: f, from: { kind: "port", id: ingot }, to: { kind: "group", id: rod }, item: "Desc_IronIngot_C", tier: 3 }])).created[0];
 
   try {
     await page.goto("/");
@@ -54,12 +58,14 @@ test("graph search dims non-matching machines, clears on empty", async ({ page, 
     await gsearch.fill("screw");
     const rodNode = page.locator(`.react-flow__node[data-id="${rod}"]`);
     const screwNode = page.locator(`.react-flow__node[data-id="${screw}"]`);
-    const beltLabel = page.locator(".belt-label");
+    const pathGG = page.locator(`.react-flow__edge[data-id="${beltGG}"] .react-flow__edge-path`);
+    const pathPG = page.locator(`.react-flow__edge[data-id="${beltPG}"] .react-flow__edge-path`);
     // non-matching rod dims; matching screw stays lit
     await expect(rodNode).toHaveCSS("opacity", "0.15");
     await expect(screwNode).toHaveCSS("opacity", "1");
-    // the belt keeps ONE lit endpoint (screw) → it stays lit with it (#132)
-    await expect(beltLabel).not.toHaveClass(/dimmed/);
+    // the group→group belt keeps ONE lit endpoint (screw) → stays lit (#132)
+    await expect(pathGG).toHaveCSS("opacity", "1");
+    await expect(page.locator(".belt-label.dimmed")).toHaveCount(0);
 
     // items match too — including INGREDIENTS ("iron ingot" is consumed only
     // by the rod line; the screw line consumes rods, not ingots)
@@ -67,12 +73,15 @@ test("graph search dims non-matching machines, clears on empty", async ({ page, 
     await expect(rodNode).toHaveCSS("opacity", "1");
     await expect(screwNode).toHaveCSS("opacity", "0.15");
 
-    // a filter matching NEITHER endpoint dims the belt along with its groups
-    // (#132 — belts used to stay full-brightness over a dimmed graph)
+    // a filter matching NEITHER group dims the group→group belt with them
+    // (#132 — belts used to stay full-brightness over a dimmed graph), while
+    // the port-fed belt is exempt: port endpoints never filter-dim an edge.
     await gsearch.fill("coal");
     await expect(rodNode).toHaveCSS("opacity", "0.15");
     await expect(screwNode).toHaveCSS("opacity", "0.15");
-    await expect(beltLabel).toHaveClass(/dimmed/);
+    await expect(pathGG).toHaveCSS("opacity", "0.15");
+    await expect(pathPG).toHaveCSS("opacity", "1");
+    await expect(page.locator(".belt-label.dimmed")).toHaveCount(1);
 
     // Escape clears the filter and restores everything
     await gsearch.press("Escape");
