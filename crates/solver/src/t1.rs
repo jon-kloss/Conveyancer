@@ -40,6 +40,16 @@ const SHORTFALL_PENALTY: f64 = 1e6;
 /// cannot cannibalize the edited target's achievable ceiling.
 const GEN_PENALTY: f64 = 1e3;
 
+/// Piecewise-linear CONCAVE fairness reward on each parallel-class member's
+/// per-count utilization: `(segment length, marginal reward)`, low
+/// utilization first, marginals strictly decreasing (that concavity is what
+/// makes the LP water-fill a class into balance — a loaded sibling's next
+/// unit is always worth less than a starved sibling's). Segments span
+/// utilization 0..2.5 (the overclock ceiling). Every marginal is far below
+/// the machines cost (1.0 per machine-equivalent), so fairness can NEVER buy
+/// an extra machine or trade a target — it only breaks exact ties.
+const FAIRNESS_SEGMENTS: [(f64, f64); 4] = [(0.25, 4e-3), (0.25, 3e-3), (0.5, 2e-3), (1.5, 1e-3)];
+
 struct Lp {
     group_vars: Vec<Variable>,
     edge_vars: Vec<Variable>,
@@ -118,6 +128,58 @@ fn run_lp(
         .map(|g| g.driven_cycles.map(|_| vars.add(variable().min(0.0))))
         .collect();
 
+    // Parallel-split fairness: a demand several IDENTICAL groups (same recipe
+    // id + machine) can serve costs the same machines however it is split, so
+    // the objective below is degenerate across those splits and the simplex
+    // vertex was free to load ONE branch and idle its siblings — while the T0
+    // drag preview splits proportionally ("T1 settles the exact split").
+    //
+    // Every member of a class of ≥2 identical groups earns a piecewise-linear
+    // CONCAVE reward on its per-count utilization (cycles_i / count_i):
+    // utilization fills reward segments of DECREASING marginal value, so
+    // moving a unit of cycles from a loaded sibling to a starved one always
+    // gains reward — the LP water-fills the class into the most balanced
+    // FEASIBLE split, and belt caps merely bend it. (A single per-class
+    // max-min variable was not enough: one belt-throttled sibling pinned the
+    // class floor and the healthy members above it were degenerate again.)
+    //
+    // Weight by COUNT, never count·clock: a planned group's clock is itself
+    // an OUTPUT of the previous solve (the idle write-back sets it to 0), so
+    // weighting by it is circular — one concentrated solve would eject the
+    // starved sibling from its class and every later settle would re-conc-
+    // entrate. Count is the built/planned capacity share and stays honest.
+    // Driven generators keep their own law; count-0 groups have no share.
+    let mut classes: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (gi, g) in snapshot.groups.iter().enumerate() {
+        if g.driven_cycles.is_some() || g.count == 0 {
+            continue;
+        }
+        classes
+            .entry((g.recipe.id.clone(), g.recipe.machine.clone()))
+            .or_default()
+            .push(gi);
+    }
+    // Per class member: one variable per reward segment, in CYCLES units with
+    // the segment length scaled by the member's count (so the marginal reward
+    // per cycle is identical across members at equal per-count utilization —
+    // scaling the reward instead would make small-count members cheaper per
+    // reward unit and pull flow INTO them). Their sum is capped by the
+    // member's cycles via the constraint below; greedy low-segment fill is
+    // optimal because marginals decrease.
+    let fairness_vars: Vec<(usize, Vec<Variable>)> = classes
+        .into_values()
+        .filter(|members| members.len() >= 2)
+        .flatten()
+        .map(|gi| {
+            let count = snapshot.groups[gi].count as f64;
+            let segs = FAIRNESS_SEGMENTS
+                .iter()
+                .map(|(len, _)| vars.add(variable().min(0.0).max(*len * count)))
+                .collect();
+            (gi, segs)
+        })
+        .collect();
+
     let lp = Lp {
         group_vars,
         edge_vars,
@@ -144,17 +206,35 @@ fn run_lp(
         .flatten()
         .map(|&v| v * GEN_PENALTY)
         .sum();
+    let fairness: Expression = fairness_vars
+        .iter()
+        .flat_map(|(_, segs)| {
+            segs.iter()
+                .zip(FAIRNESS_SEGMENTS.iter())
+                .map(|(&z, (_, reward))| z * *reward)
+        })
+        .sum();
     let objective: Expression = match target_var {
         // Ceiling pass: maximize the edited port WITHOUT gen_penalty. Including it
         // let a driven generator sharing capped fuel outbid the -1000·t maximize
         // term (GEN_PENALTY ≫ 1000), starving the edited port so its ceiling read
         // ~0. The driven constraint (m + s == n) still holds, but with s free the
         // generator simply yields all contested fuel to the port being measured.
-        Some(t) => shortfall_penalty - 1000.0 * t + machines.clone() + power_tiebreak,
-        None => shortfall_penalty + gen_penalty + machines.clone() + power_tiebreak,
+        Some(t) => {
+            shortfall_penalty - 1000.0 * t + machines.clone() + power_tiebreak - fairness.clone()
+        }
+        None => shortfall_penalty + gen_penalty + machines.clone() + power_tiebreak - fairness,
     };
 
     let mut model = vars.minimise(objective).using(microlp);
+
+    // Fairness segment fill (see fairness_vars above): a member's segments —
+    // already count-scaled, i.e. in cycles units — can only fill up to its
+    // actual cycles: cycles_i ≥ Σz.
+    for (gi, segs) in &fairness_vars {
+        let filled: Expression = segs.iter().map(|&z| z * 1.0).sum();
+        model = model.with(constraint!(lp.group_vars[*gi] - filled >= 0.0));
+    }
 
     for (gi, g) in snapshot.groups.iter().enumerate() {
         let node = NodeRef::Group(g.id.clone());
