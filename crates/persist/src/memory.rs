@@ -248,6 +248,15 @@ impl PlanStore for MemoryPlanStore {
         self.get_meta("last_import")
     }
 
+    fn set_sync_meta(&self, json: &str) -> Result<(), PersistError> {
+        self.set_meta("sync_meta", json);
+        Ok(())
+    }
+
+    fn sync_meta(&self) -> Option<String> {
+        self.get_meta("sync_meta")
+    }
+
     fn set_unlocked(&self, json: &str) -> Result<(), PersistError> {
         self.set_meta("unlocked", json);
         Ok(())

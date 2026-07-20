@@ -1641,6 +1641,18 @@ impl Session {
         Ok(())
     }
 
+    /// Remembered save-sync target (desktop save-sync): the native path + name +
+    /// lastSyncedAt of the last-synced save, as an opaque JSON blob the renderer
+    /// owns. A device choice, not plan data — it survives `new_empire`.
+    pub fn set_sync_meta(&mut self, json: &str) -> Result<(), SessionError> {
+        self.store.set_sync_meta(json)?;
+        Ok(())
+    }
+
+    pub fn sync_meta(&self) -> Option<String> {
+        self.store.sync_meta()
+    }
+
     fn applied_count(&self) -> usize {
         self.undo.entries().len()
     }
@@ -1656,7 +1668,15 @@ impl Session {
     /// the projection of the now-empty plan (same shape as undo/import); the
     /// renderer re-hydrates after it regardless.
     pub fn new_empire(&mut self) -> Result<EditResponse, SessionError> {
+        // The remembered save-sync target is a device choice, not plan data —
+        // carry it across the wipe so auto-sync survives a "new empire" (reset()
+        // clears the whole meta store; re-write it after). Web keeps its
+        // equivalent in a separate store for the same reason.
+        let sync_meta = self.store.sync_meta();
         self.store.reset()?;
+        if let Some(json) = sync_meta {
+            let _ = self.store.set_sync_meta(&json);
+        }
         self.state = PlanState::default();
         self.undo = UndoLog::new();
         self.slow_solves.clear();

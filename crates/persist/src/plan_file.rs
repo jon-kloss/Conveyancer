@@ -360,6 +360,15 @@ impl PlanStore for SqlitePlanStore {
         self.get_meta("last_import").ok()
     }
 
+    fn set_sync_meta(&self, json: &str) -> Result<(), PersistError> {
+        self.set_meta("sync_meta", json)?;
+        Ok(())
+    }
+
+    fn sync_meta(&self) -> Option<String> {
+        self.get_meta("sync_meta").ok()
+    }
+
     /// Unlocked recipe set (W2b) — the recipe classes the imported save has
     /// purchased (mPurchasedSchematics × FGSchematic unlocks), stored as a JSON
     /// array blob. A save-derived fact, so it lives in the meta KV store beside
