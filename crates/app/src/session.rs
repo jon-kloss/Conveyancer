@@ -1707,6 +1707,45 @@ impl Session {
     }
 
     /// Build the pure solver snapshot for one factory from canonical state + gamedata.
+    /// Recipe-less generators (imported ◆ built plants carry an empty recipe;
+    /// geothermal has no synthesized burn recipe) are skipped by the material
+    /// solve, so they never get a derived group and their factory-graph card
+    /// reads a false 0 MW — contradicting the empire total, which credits their
+    /// nameplate (#124). Credit each such generator that same nameplate as its
+    /// POWER_ITEM out-rate so the per-generator card agrees with the empire: the
+    /// identical count×clock×nameplate the per-grid pass (`group_gen_mw`) uses.
+    /// A generator WITH a resolved burn recipe already carries its real,
+    /// fuel-limited output from the solve and is left untouched (already keyed).
+    fn inject_generator_nameplates(&self, fid: &Id, df: &mut DerivedFactory) {
+        let Some(factory) = self.state.factories.get(fid) else {
+            return;
+        };
+        for gid in &factory.groups {
+            if df.groups.contains_key(gid) {
+                continue;
+            }
+            let Some(g) = self.state.groups.get(gid) else {
+                continue;
+            };
+            if let Some(gamedata::docs::MachineKind::Generator {
+                power_production_mw,
+            }) = self.gamedata.machines.get(&g.machine).map(|m| &m.kind)
+            {
+                let mw = power_production_mw * g.effective_count() as f64 * g.effective_clock();
+                let mut out_rates = BTreeMap::new();
+                out_rates.insert(gamedata::docs::POWER_ITEM.to_string(), mw);
+                df.groups.insert(
+                    gid.clone(),
+                    DerivedGroup {
+                        in_rates: BTreeMap::new(),
+                        out_rates,
+                        power_mw: 0.0,
+                    },
+                );
+            }
+        }
+    }
+
     pub fn snapshot(&self, fid: &Id) -> Option<FactorySnapshot> {
         let factory = self.state.factories.get(fid)?;
         let mut groups = Vec::new();
@@ -2010,6 +2049,11 @@ impl Session {
                 // most — so surface the warning instead of a bare "no groups".
                 let mut ef = Self::error_factory("no machine groups yet");
                 ef.warnings = self.unknown_recipe_warnings(fid);
+                // A pure-generator factory (an imported ◆ coal/fuel plant with
+                // no production machines) lands here — every group was skipped
+                // as recipe-less. Still credit each generator its nameplate so
+                // the graph cards show their MW, matching the empire total.
+                self.inject_generator_nameplates(fid, &mut ef);
                 derived.factories.insert(fid.clone(), ef);
                 self.feed_downstream(fid, &BTreeMap::new(), &mut supplies, &mut route_supply);
                 continue;
@@ -2112,6 +2156,7 @@ impl Session {
             derived.total_power_mw += result.total_power_mw;
             let mut df = to_derived(&result, solve_on_release);
             df.warnings = self.unknown_recipe_warnings(fid);
+            self.inject_generator_nameplates(fid, &mut df);
             derived.factories.insert(fid.clone(), df);
         }
 

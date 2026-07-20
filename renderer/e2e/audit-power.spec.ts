@@ -102,6 +102,20 @@ test("geothermal grid card reads nameplate generation, not 0", async ({ page, re
     // generation to the grid — the same figure the empire status bar shows.
     const gridCard = page.getByTestId("audit-drawer").locator(".audit-row", { hasText: "GEO FARM" });
     await expect(gridCard).toContainText("400 MW generated");
+
+    // ...and drilling into the factory graph, the recipe-less generator's own
+    // card must read that same nameplate, not a false 0 MW: the derive credits
+    // it (session.rs inject_generator_nameplates) and the card detects a
+    // generator by MACHINE KIND, so its "⚡ GENERATES" line shows 400 MW — the
+    // per-generator display agrees with the grid + empire it feeds.
+    await page.keyboard.press("Tab"); // close the audit drawer
+    await page.locator(".searchbox input").fill("GEO FARM");
+    await page.keyboard.press("Enter");
+    await page.getByTestId("btn-open-factory").click();
+    const genCard = page.locator(".group-card").filter({ hasText: "GENERATES" });
+    await expect(genCard).toBeVisible();
+    await expect(genCard.locator(".gen-mw")).toHaveText("400 MW");
+    await page.keyboard.press("Escape"); // back to the map for the finally cleanup
   } finally {
     await edit(request, [{ type: "delete_factory", id: gf }]).catch(() => {});
     await edit(request, [{ type: "delete_factory", id: ls }]).catch(() => {});
