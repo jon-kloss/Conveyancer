@@ -3,12 +3,16 @@
 
 import { useEffect, useState } from "react";
 
-export type LayoutMode = "reference" | "compact" | "overlay";
+export type LayoutMode = "reference" | "compact" | "overlay" | "phone";
 
 export function layoutModeFor(width: number, _height: number): LayoutMode {
   // No hard floor: below the A1 reference sizes everything degrades to the
   // overlay layout (panels slide over the canvas). The shell additionally
   // auto-zooms out on low-logical-resolution displays (useAutoZoom).
+  // Under the phone breakpoint the editing surfaces (React Flow box-select,
+  // precise belt wiring, map editing) degrade badly on touch — the app swaps
+  // to the read-only MobileDashboard instead (#110).
+  if (width < 640) return "phone";
   if (width < 1600) return "overlay";
   if (width < 1920) return "compact";
   return "reference";
