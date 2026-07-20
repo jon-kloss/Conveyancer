@@ -81,6 +81,14 @@ test("reuse+redirect is not blocked when a fully-claimed node's line is exported
   await edit(request, [{ type: "set_port_rate", id: rodOut, rate: 30 }]); // whole rod output exported
 
   try {
+    // Settle gate (#133): the modal's redirect guard reads the DERIVED
+    // committed export of the rod line; the empire solve is async, and a
+    // reload that hydrates before it settles reads committed=0 and shows a
+    // phantom shortfall. Wait for the server-side solve to reach the full
+    // 30/min export before booting the page.
+    await expect
+      .poll(async () => (await hydrate(request)).derived?.factories?.[f]?.ports?.[rodOut] ?? 0)
+      .toBeGreaterThan(30 - 1e-6);
     await openGraph(page, "REUSE TIGHT");
     // sanity: the export target really is the full 30/min before the build
     expect((await hydrate(request)).plan.ports[rodOut].rate).toBe(30);

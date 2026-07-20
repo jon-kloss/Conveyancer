@@ -27,6 +27,12 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { Buffer } from "node:buffer";
+import { fileURLToPath } from "node:url";
+
+// The bundled fixture catalog as an on-disk file — PROBE 3's "good upload".
+const DOCS_FIXTURE = fileURLToPath(
+  new URL("../../crates/gamedata/assets/docs-fixture.json", import.meta.url),
+);
 
 // NOTE: no serial mode — the runner uses --workers=1, and per-test isolation
 // (each test seeds + deletes its own factories) means a failure must NOT
@@ -51,9 +57,12 @@ interface StoreWin {
   };
 }
 
-/** Wait for the wasm session to boot and hydrate (or surface a fatal error). */
-async function waitReady(page: Page): Promise<void> {
-  await expect(page.getByTestId("map-root")).toBeVisible({ timeout: 30_000 });
+/** Wait for the wasm session to boot and hydrate (or surface a fatal error).
+ *  Graph-aware (#133 rootcause `web-viewstate`): a boot with a persisted
+ *  openFactory correctly renders GraphView (`graph-root`), not MapView — the
+ *  old map-only gate timed out on exactly the behavior it should assert. */
+async function waitReady(page: Page, root: "map-root" | "graph-root" = "map-root"): Promise<void> {
+  await expect(page.getByTestId(root)).toBeVisible({ timeout: 30_000 });
   await page.waitForFunction(
     () => {
       const w = window as unknown as Partial<StoreWin>;
@@ -211,5 +220,125 @@ test("empty-array Docs.json upload is rejected with the catalog kept", async ({ 
   expect(err, "the rejected empty upload records a cmdError").not.toBeNull();
   const errToast = page.locator(".toast.toast-error");
   await expect(errToast, "a red error toast is shown for the rejected empty catalog").toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// PROBE 3 (promoted, #133) — A GOOD Docs.json upload preserves the existing
+// plan through the catalog swap and a reload.
+//
+// EXPECTED: seed factory "SURVIVOR" on the fixture catalog; upload the bundled
+// fixture catalog itself as a file → buildVersion flips to "uploaded" and the
+// plan survives the swap in-memory (the worker rebuilt the WebSession over the
+// new catalog from the preserved plan snapshot). After page.reload() +
+// waitReady: buildVersion === "uploaded" AND "SURVIVOR" is still present
+// (saveDocsAndPlan wrote docs + plan atomically). web-smoke only corrupts the
+// plan away on upload; no other test asserts a GOOD plan survives a GOOD one.
+// ---------------------------------------------------------------------------
+test("a good Docs.json upload preserves the existing plan through the swap and reload", async ({ page }) => {
+  await page.goto("/");
+  await waitReady(page);
+
+  const seeded = await dispatchFactory(page, "SURVIVOR", { x: 3, y: 4, z: 0 });
+  expect(seeded, "the seed edit minted one factory id").toHaveLength(1);
+  expect(await factoryCount(page)).toBe(1);
+  expect(await buildVersion(page), "boots on the bundled fixture catalog").toBe("fixture");
+
+  // GOOD upload: the bundled fixture catalog itself. The wasm tags it
+  // "uploaded" and the worker rebuilds the session over it from the plan
+  // snapshot it just preserved.
+  await page.getByTestId("docs-file-input").setInputFiles(DOCS_FIXTURE);
+  await expect.poll(() => buildVersion(page), { timeout: 30_000 }).toBe("uploaded");
+
+  // The plan survived the catalog swap in-memory.
+  expect(await factoryCount(page), "the plan survives the catalog swap").toBe(1);
+  expect(await factoryNames(page)).toContain("SURVIVOR");
+
+  // ...and survives a reload, still on the uploaded catalog (docs + plan were
+  // written atomically).
+  await page.reload();
+  await waitReady(page);
+  expect(await buildVersion(page), "the uploaded catalog persisted across reload").toBe("uploaded");
+  expect(await factoryCount(page), "the plan persisted across reload").toBe(1);
+  expect(await factoryNames(page)).toContain("SURVIVOR");
+});
+
+// ---------------------------------------------------------------------------
+// PROBE 4 (promoted, #133) — A wasm undo snapshot persists the UNDONE state
+// across a reload.
+//
+// EXPECTED: create ALPHA then BETA (2 factories); undo() removes BETA's
+// creation leaving 1 factory (ALPHA); after page.reload() + waitReady
+// factoryCount === 1 and the only factory is ALPHA — BETA does NOT resurrect.
+// Pins that the dispatch "undo" arm's mutated=true envelope actually wrote the
+// POST-undo store to IndexedDB (the path web-smoke does not exercise).
+// ---------------------------------------------------------------------------
+test("a wasm undo snapshot persists the undone state across reload", async ({ page }) => {
+  await page.goto("/");
+  await waitReady(page);
+
+  const a = await dispatchFactory(page, "ALPHA", { x: 1, y: 1, z: 0 });
+  expect(a, "ALPHA minted").toHaveLength(1);
+  const b = await dispatchFactory(page, "BETA", { x: 2, y: 2, z: 0 });
+  expect(b, "BETA minted").toHaveLength(1);
+  expect(await factoryCount(page)).toBe(2);
+
+  // Undo BETA's creation through the real store path.
+  await page.evaluate(() => (window as unknown as StoreWin).__ficsitStore.getState().undo());
+  expect(await factoryCount(page), "undo removed BETA").toBe(1);
+  expect(await factoryNames(page), "ALPHA is the sole survivor after undo").toEqual(["ALPHA"]);
+
+  // The undone state must persist — BETA must not come back on reload.
+  await page.reload();
+  await waitReady(page);
+  expect(await factoryCount(page), "the undone state persisted across reload").toBe(1);
+  expect(await factoryNames(page), "BETA did not resurrect").toEqual(["ALPHA"]);
+});
+
+// ---------------------------------------------------------------------------
+// PROBE 5 (promoted, #133) — View-state (openFactory) round-trips through
+// IndexedDB on reload.
+//
+// EXPECTED: after opening factory F via setView({mode:"factory", factoryId:F})
+// (which persists openFactory via the debounced set_view_state) and then a
+// REAL mutation (create "FLUSH") that snapshots inline — flushing the pending
+// debounced view write — a page.reload() boots INTO THE FACTORY GRAPH
+// (graph-root, the graph-aware waitReady) with view deep-equal to
+// {mode:"factory", factoryId:F}, NOT {mode:"map"}. Pins view-state hydrate
+// fidelity and that a real mutation flushes the coalesced view-state snapshot.
+// ---------------------------------------------------------------------------
+test("view-state (openFactory) round-trips through IndexedDB on reload", async ({ page }) => {
+  await page.goto("/");
+  await waitReady(page);
+
+  const home = await page.evaluate(() =>
+    (window as unknown as StoreWin).__ficsitStore.getState().dispatch(
+      [{ type: "create_factory", name: "HOME", position: { x: 7, y: 8, z: 0 }, region: "GRASS FIELDS" }],
+      { select: true },
+    ),
+  );
+  expect(home, "HOME minted").toHaveLength(1);
+  const F = home![0];
+
+  // Open the factory — persists openFactory via the debounced set_view_state.
+  await page.evaluate(
+    (id) => (window as unknown as StoreWin).__ficsitStore.getState().setView({ mode: "factory", factoryId: id }),
+    F,
+  );
+  expect(await page.evaluate(() => (window as unknown as StoreWin).__ficsitStore.getState().view)).toEqual({
+    mode: "factory",
+    factoryId: F,
+  });
+
+  // A real mutation snapshots inline and flushes the pending view-state write
+  // with it (wasmWorker: every non-set_view_state mutation calls snapshotNow(),
+  // which cancels the debounce and writes the current blob).
+  const flush = await dispatchFactory(page, "FLUSH", { x: 9, y: 10, z: 0 });
+  expect(flush, "FLUSH minted (forces the inline snapshot)").toHaveLength(1);
+
+  // After reload the app reopens factory F — GraphView renders, not the map.
+  await page.reload();
+  await waitReady(page, "graph-root");
+  const view = await page.evaluate(() => (window as unknown as StoreWin).__ficsitStore.getState().view);
+  expect(view, "the app reopened the factory it was in").toEqual({ mode: "factory", factoryId: F });
 });
 

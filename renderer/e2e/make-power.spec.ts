@@ -44,7 +44,9 @@ test("MAKE POWER builds a coal generator bank from pooled coal claims", async ({
     expect(defaultMw).toBeGreaterThan(0);
 
     await modal.getByTestId("mfr-power-build-Desc_Coal_C").click();
-    await expect(modal).toBeHidden();
+    // The modal closes only after the build dispatch lands (empire solve +
+    // settle) — on a loaded shared plan that can exceed the 5s default (#133).
+    await expect(modal).toBeHidden({ timeout: 15_000 });
 
     // a generator bank exists, fed by BOTH claims through a merger
     const hydrated = await (await page.request.get(`${API}/hydrate`)).json();
@@ -95,7 +97,7 @@ test("MAKE POWER builds a coal generator bank from pooled coal claims", async ({
       const mwField = modal2.getByTestId("mfr-power-mw-Desc_Coal_C");
       const shown = Number(await mwField.inputValue());
       await modal2.getByTestId("mfr-power-build-Desc_Coal_C").click();
-      await expect(modal2).toBeHidden();
+      await expect(modal2).toBeHidden({ timeout: 15_000 });
       const h2 = await (await page.request.get(`${API}/hydrate`)).json();
       const bank2 = (Object.values(h2.plan.groups) as { factory: string; machine: string; count: number }[]).find(
         (g) => g.factory === f2 && g.machine.toLowerCase().includes("generator"),

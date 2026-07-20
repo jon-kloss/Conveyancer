@@ -195,3 +195,95 @@ test("PWR chip shows the generation segment only when generation > 0", async ({ 
     if (genFactory) await edit(request, [{ type: "delete_factory", id: genFactory }]).catch(() => {});
   }
 });
+
+// ---------------------------------------------------------------------------
+// PROBE (promoted from the audit gamedata probes, #133) — Variable-power
+// recipe draw is the per-recipe average, not the machine's fixed/zero draw.
+//
+// EXPECTED: with Recipe_Diamond_C the factory totalPowerMw = 500 MW (variable
+// constant 250 + factor 500/2), and with Recipe_DarkMatter_C on the SAME
+// machine it = 1000 MW (500 + 1000/2) — the hungrier recipe beats the machine
+// estimate. It must NOT read the machine's raw mPowerConsumption (~0) nor a
+// fixed per-machine number.
+//
+// Harness note (rootcause-pass `hadron`, PROBE_INFRA): 30 diamond/min consumes
+// 600 coal/min — the original probe wired the coal belt at Mk.3 (270/min) and
+// starved the collider. The coal edge must be Mk.5 (780/min).
+// ---------------------------------------------------------------------------
+test("hadron variable-power draw follows the recipe, not the machine", async ({ request }) => {
+  await resetView(request);
+  const ac = (
+    await edit(request, [
+      { type: "create_factory", name: "ACCEL", position: { x: -2600, y: 1600 }, region: "GRASS FIELDS" },
+    ])
+  ).created[0];
+
+  try {
+    // Recipe_Diamond_C: 20 Coal -> 1 Diamond @ 2s ⇒ 30 Diamond/min at one
+    // machine, clock 1 — drive the out-port at exactly that rate.
+    const coalIn = (
+      await edit(request, [
+        { type: "add_port", factory: ac, direction: "in", item: "Desc_Coal_C", rate: 0, rateCeiling: null, graphPos: { x: 0, y: 100 } },
+      ])
+    ).created[0];
+    const diamondOut = (
+      await edit(request, [
+        { type: "add_port", factory: ac, direction: "out", item: "Desc_Diamond_C", rate: 0, rateCeiling: null, graphPos: { x: 600, y: 100 } },
+      ])
+    ).created[0];
+    const grp = (
+      await edit(request, [
+        { type: "add_group", factory: ac, machine: "Build_HadronCollider_C", recipe: "Recipe_Diamond_C", count: 1, clock: 1.0, graphPos: { x: 300, y: 100 }, floor: 0 },
+      ])
+    ).created[0];
+    const eCoal = (
+      await edit(request, [
+        { type: "add_edge", factory: ac, from: { kind: "port", id: coalIn }, to: { kind: "group", id: grp }, item: "Desc_Coal_C", tier: 5 },
+      ])
+    ).created[0];
+    const eDiamond = (
+      await edit(request, [
+        { type: "add_edge", factory: ac, from: { kind: "group", id: grp }, to: { kind: "port", id: diamondOut }, item: "Desc_Diamond_C", tier: 3 },
+      ])
+    ).created[0];
+    await edit(request, [{ type: "set_port_rate", id: diamondOut, rate: 30 }]);
+
+    let df = (await hydrate(request)).derived.factories[ac];
+    expect(df.solveError).toBeNull();
+    // 250 constant + 500/2 factor = 500 MW at one machine, clock 1.
+    expect(df.totalPowerMw).toBeCloseTo(500, 3);
+
+    // Swap the SAME machine to Recipe_DarkMatter_C (1 Diamond -> 1 DarkMatter
+    // @ 2s ⇒ 30/min); rewire to the new recipe's items so the group stays
+    // demand-driven at count 1 — the recipe swap is the point.
+    await edit(request, [
+      { type: "delete_edge", id: eCoal },
+      { type: "delete_edge", id: eDiamond },
+    ]);
+    await edit(request, [
+      { type: "set_group_recipe", id: grp, machine: "Build_HadronCollider_C", recipe: "Recipe_DarkMatter_C" },
+    ]);
+    const diamondIn = (
+      await edit(request, [
+        { type: "add_port", factory: ac, direction: "in", item: "Desc_Diamond_C", rate: 0, rateCeiling: null, graphPos: { x: 0, y: 260 } },
+      ])
+    ).created[0];
+    const dmOut = (
+      await edit(request, [
+        { type: "add_port", factory: ac, direction: "out", item: "Desc_DarkMatter_C", rate: 0, rateCeiling: null, graphPos: { x: 600, y: 260 } },
+      ])
+    ).created[0];
+    await edit(request, [
+      { type: "add_edge", factory: ac, from: { kind: "port", id: diamondIn }, to: { kind: "group", id: grp }, item: "Desc_Diamond_C", tier: 3 },
+      { type: "add_edge", factory: ac, from: { kind: "group", id: grp }, to: { kind: "port", id: dmOut }, item: "Desc_DarkMatter_C", tier: 3 },
+    ]);
+    await edit(request, [{ type: "set_port_rate", id: dmOut, rate: 30 }]);
+
+    df = (await hydrate(request)).derived.factories[ac];
+    expect(df.solveError).toBeNull();
+    // 500 constant + 1000/2 factor = 1000 MW — the hungrier recipe wins.
+    expect(df.totalPowerMw).toBeCloseTo(1000, 3);
+  } finally {
+    await edit(request, [{ type: "delete_factory", id: ac }]).catch(() => {});
+  }
+});
