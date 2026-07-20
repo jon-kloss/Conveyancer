@@ -674,3 +674,123 @@ fn chat_rate_commas_preserve_magnitude() {
         ),
     }
 }
+
+/// Audit #130 (1): SELECTION-scope context resolves a non-factory selection to
+/// a real subject payload — a selected route must never come back as the
+/// factory arm's all-null snapshot.
+#[test]
+fn selection_context_resolves_a_route_subject() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_fa, _out, route) = build_chain(&mut s, 120.0, 3, 30.0, 30.0);
+
+    let ctx = app::chat::compact_state(
+        &mut s,
+        &app::chat::ContextScope::Selection { id: route.clone() },
+    );
+    assert_eq!(ctx.payload["scope"], "selection");
+    assert_eq!(ctx.payload["kind"], "route");
+    let text = ctx.payload.to_string();
+    assert!(
+        text.contains(&route),
+        "the selected route's id survives: {text}"
+    );
+    assert!(
+        !ctx.payload["from"].is_null() && !ctx.payload["to"].is_null(),
+        "endpoints described"
+    );
+
+    // A group selection resolves too (grab any group from the chain).
+    let gid = s.state.groups.keys().next().unwrap().clone();
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Selection { id: gid });
+    assert_eq!(ctx.payload["kind"], "group");
+    assert!(!ctx.payload["subject"].is_null());
+
+    // And a factory id still gets the full factory snapshot.
+    let fid = s.state.factories.keys().next().unwrap().clone();
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Selection { id: fid });
+    assert_eq!(ctx.payload["scope"], "factory");
+    assert!(!ctx.payload["factory"].is_null());
+}
+
+/// Audit #130 (2): the Empire context clamps its factory list deterministically
+/// (first 48 in id order) and counts the omitted remainder honestly.
+#[test]
+fn empire_context_clamps_factory_list_with_honest_remainder() {
+    let mut s = Session::in_memory(None).unwrap();
+    for i in 0..52 {
+        s.edit(vec![Command::CreateFactory {
+            name: format!("F{i:02}"),
+            position: MapPos {
+                x: 100.0 * i as f64,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: String::new(),
+        }])
+        .unwrap();
+    }
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Empire);
+    let factories = ctx.payload["factories"].as_array().unwrap();
+    assert_eq!(factories.len(), 48);
+    assert_eq!(ctx.payload["factoriesOmitted"], 4);
+    assert_eq!(ctx.payload["totals"]["factories"], 52);
+    // Retention order is pinned too: id order == creation order (ULIDs), so
+    // the earliest 48 survive and the last 4 are the omitted ones.
+    let names: Vec<&str> = factories
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"F00") && names.contains(&"F47"));
+    assert!(!names.contains(&"F48") && !names.contains(&"F51"));
+}
+
+/// PR #60 review: a selected BELT (edge) and a selected WORLD NODE resolve to
+/// real subjects too — the two selection kinds the first cut missed.
+#[test]
+fn selection_context_resolves_edges_and_world_nodes() {
+    let mut s = Session::in_memory(None).unwrap();
+    let (_fa, _out, _route) = build_chain(&mut s, 120.0, 3, 30.0, 30.0);
+
+    // Any belt from the chain resolves with its factory and derived flow.
+    let eid = s.state.edges.keys().next().unwrap().clone();
+    let ctx = app::chat::compact_state(
+        &mut s,
+        &app::chat::ContextScope::Selection { id: eid.clone() },
+    );
+    assert_eq!(ctx.payload["kind"], "edge");
+    assert!(!ctx.payload["subject"].is_null());
+    assert!(ctx.payload.to_string().contains(&eid));
+
+    // A CLAIMED world node resolves from the catalog + claim overlay.
+    let node = s
+        .world
+        .nodes
+        .first()
+        .expect("bundled catalog node")
+        .id
+        .clone();
+    let fid = s.state.factories.keys().next().unwrap().clone();
+    s.edit(vec![Command::ClaimNode {
+        factory: fid,
+        node: node.clone(),
+        extractor: "Build_MinerMk1_C".into(),
+        clock: 1.0,
+    }])
+    .unwrap();
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Selection { id: node });
+    assert_eq!(ctx.payload["kind"], "node");
+    assert!(!ctx.payload["subject"].is_null(), "catalog node surfaced");
+    assert!(!ctx.payload["claim"].is_null(), "claim status surfaced");
+
+    // An UNCLAIMED catalog node still resolves (claim: null).
+    let free = s
+        .world
+        .nodes
+        .get(1)
+        .expect("second catalog node")
+        .id
+        .clone();
+    let ctx = app::chat::compact_state(&mut s, &app::chat::ContextScope::Selection { id: free });
+    assert_eq!(ctx.payload["kind"], "node");
+    assert!(ctx.payload["claim"].is_null());
+}

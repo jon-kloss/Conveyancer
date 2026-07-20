@@ -29,14 +29,35 @@ pub struct ContextSnapshot {
     pub snapshot_time: String,
 }
 
+/// Deterministic clamp for the Empire factory list: id order (BTreeMap), the
+/// first N kept, and the honest remainder counted — an on-device model gets a
+/// bounded, stable context instead of silently truncating a huge plan itself.
+const EMPIRE_FACTORY_CAP: usize = 48;
+
+/// The factory-scope snapshot, shared by the Factory scope and a Selection
+/// whose id names a factory.
+fn factory_payload(s: &Session, derived: &crate::session::Derived, id: &Id) -> serde_json::Value {
+    let f = s.state.factories.get(id);
+    let df = derived.factories.get(id);
+    serde_json::json!({
+        "scope": "factory",
+        "factory": f,
+        "groups": f.map(|f| f.groups.iter().filter_map(|g| s.state.groups.get(g)).collect::<Vec<_>>()),
+        "ports": f.map(|f| f.ports.iter().filter_map(|p| s.state.ports.get(p)).collect::<Vec<_>>()),
+        "derived": df,
+    })
+}
+
 pub fn compact_state(s: &mut Session, scope: &ContextScope) -> ContextSnapshot {
     let derived = s.solve_all_readonly();
     let payload = match scope {
         ContextScope::Empire => {
+            let total_factories = s.state.factories.len();
             let factories: Vec<serde_json::Value> = s
                 .state
                 .factories
                 .values()
+                .take(EMPIRE_FACTORY_CAP)
                 .map(|f| {
                     let df = derived.factories.get(&f.id);
                     let outputs: serde_json::Map<String, serde_json::Value> = f
@@ -61,8 +82,10 @@ pub fn compact_state(s: &mut Session, scope: &ContextScope) -> ContextSnapshot {
             serde_json::json!({
                 "scope": "empire",
                 "factories": factories,
+                "factoriesOmitted": total_factories.saturating_sub(EMPIRE_FACTORY_CAP),
                 "deficits": derived.deficits.iter().take(10).collect::<Vec<_>>(),
-                "circuits": derived.circuits,
+                "circuits": derived.circuits.iter().take(EMPIRE_FACTORY_CAP).collect::<Vec<_>>(),
+                "circuitsOmitted": derived.circuits.len().saturating_sub(EMPIRE_FACTORY_CAP),
                 "totals": {
                     "factories": s.state.factories.len(),
                     "groups": s.state.groups.len(),
@@ -72,16 +95,99 @@ pub fn compact_state(s: &mut Session, scope: &ContextScope) -> ContextSnapshot {
                 },
             })
         }
-        ContextScope::Factory { id } | ContextScope::Selection { id } => {
-            let f = s.state.factories.get(id);
-            let df = derived.factories.get(id);
-            serde_json::json!({
-                "scope": "factory",
-                "factory": f,
-                "groups": f.map(|f| f.groups.iter().filter_map(|g| s.state.groups.get(g)).collect::<Vec<_>>()),
-                "ports": f.map(|f| f.ports.iter().filter_map(|p| s.state.ports.get(p)).collect::<Vec<_>>()),
-                "derived": df,
-            })
+        ContextScope::Factory { id } => factory_payload(s, &derived, id),
+        ContextScope::Selection { id } => {
+            // A selection is a route/claim/port/group/junction/switch at
+            // least as often as a factory — resolve the subject across every
+            // collection instead of falling through the factory arm and
+            // handing the model an all-null snapshot.
+            let st = &s.state;
+            let fname = |fid: &Id| st.factories.get(fid).map(|f| f.name.clone());
+            if st.factories.contains_key(id) {
+                factory_payload(s, &derived, id)
+            } else if let Some(g) = st.groups.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "group", "subject": g,
+                    "factory": fname(&g.factory),
+                    "derived": derived.factories.get(&g.factory).and_then(|d| d.groups.get(id)),
+                })
+            } else if let Some(p) = st.ports.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "port", "subject": p,
+                    "factory": fname(&p.factory),
+                    "solvedRate": derived.factories.get(&p.factory).and_then(|d| d.ports.get(id)),
+                })
+            } else if let Some(e) = st.edges.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "edge", "subject": e,
+                    "factory": fname(&e.factory),
+                    "derived": derived.factories.get(&e.factory).and_then(|d| d.edges.get(id)),
+                })
+            } else if let Some(r) = st.routes.get(id) {
+                // Belt/rail/truck/drone endpoints are ports; power-route
+                // endpoints are factories — describe whichever the id names.
+                let end = |eid: &Id| -> serde_json::Value {
+                    if let Some(p) = st.ports.get(eid) {
+                        serde_json::json!({
+                            "port": p.id, "item": p.item, "rate": p.rate,
+                            "factory": fname(&p.factory),
+                        })
+                    } else {
+                        serde_json::json!({ "factory": fname(eid) })
+                    }
+                };
+                serde_json::json!({
+                    "scope": "selection", "kind": "route", "subject": r,
+                    "from": end(&r.endpoints.0), "to": end(&r.endpoints.1),
+                })
+            } else if let Some(c) = st.node_claims.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "nodeClaim", "subject": c,
+                    "factory": fname(&c.factory),
+                    "extractionCeiling": s.claim_rate(c),
+                })
+            } else if let Some(j) = st.junctions.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "junction", "subject": j,
+                    "factory": fname(&j.factory),
+                })
+            } else if let Some(sw) = st.switches.get(id) {
+                serde_json::json!({
+                    "scope": "selection", "kind": "switch", "subject": sw,
+                    "route": st.routes.get(&sw.route),
+                })
+            } else if let Some(n) = s.world.nodes.iter().find(|n| &n.id == id) {
+                // A WORLD resource node: not a plan entity, so resolve it from
+                // the catalog plus the plan's overlays — the claim (if any) is
+                // keyed by claim id with the node id as a value, so reverse-scan.
+                let claim = st.node_claims.values().find(|c| &c.node == id);
+                serde_json::json!({
+                    "scope": "selection", "kind": "node", "subject": n,
+                    "override": st.node_overrides.get(id),
+                    "claim": claim.map(|c| serde_json::json!({
+                        "factory": fname(&c.factory),
+                        "extractor": c.extractor,
+                        "clock": c.clock,
+                        "extractionCeiling": s.claim_rate(c),
+                    })),
+                })
+            } else if let Some(c) = st.node_claims.values().find(|c| &c.node == id) {
+                // A save-only node ("save:<id>") has no catalog entry — the
+                // claim + override overlay is its whole identity.
+                serde_json::json!({
+                    "scope": "selection", "kind": "node", "subject": st.node_overrides.get(id),
+                    "claim": {
+                        "factory": fname(&c.factory),
+                        "extractor": c.extractor,
+                        "clock": c.clock,
+                        "extractionCeiling": s.claim_rate(c),
+                    },
+                })
+            } else {
+                serde_json::json!({
+                    "scope": "selection", "kind": "unknown", "subject": null, "id": id,
+                })
+            }
         }
     };
     let bytes = payload.to_string().len();
