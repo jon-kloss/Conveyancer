@@ -403,8 +403,14 @@ pub fn global_solve(
                 if alts == 1 { "" } else { "s" }
             ),
         );
+        // Clock-scaled like the solver (power ∝ clock^1.321928) — nameplate ×
+        // count alone overstates the impact of every underclocked stage.
         let power_mw = machine
-            .map(|_| gamedata::db::recipe_power(gd, r, &machine_class) * count as f64)
+            .map(|_| {
+                gamedata::db::recipe_power(gd, r, &machine_class)
+                    * count as f64
+                    * clock.powf(solver::model::POWER_EXPONENT)
+            })
             .unwrap_or(0.0);
         stages.push(Stage {
             item: item.clone(),
@@ -634,28 +640,28 @@ pub fn global_solve(
         );
         y += 128.0;
     }
-    let goal_item = goal
-        .items
-        .first()
-        .map(|(i, _)| i.clone())
-        .unwrap_or_default();
+    // EVERY goal item ships: one OUT port each (a multi-output replacement
+    // that only shipped its first item would silently starve the second
+    // item's consumers after the dismantle).
     let goal_rate = goal.items.first().map(|(_, r)| *r).unwrap_or(0.0);
-    push(
-        &mut cmds,
-        &mut aliases,
-        Command::AddPort {
-            factory: "$site".into(),
-            direction: PortDirection::Out,
-            item: goal_item.clone(),
-            rate: 0.0,
-            rate_ceiling: None,
-            graph_pos: GraphPos {
-                x: 1400.0,
-                y: 200.0,
+    for (i, (item, _)) in goal.items.iter().enumerate() {
+        push(
+            &mut cmds,
+            &mut aliases,
+            Command::AddPort {
+                factory: "$site".into(),
+                direction: PortDirection::Out,
+                item: item.clone(),
+                rate: 0.0,
+                rate_ceiling: None,
+                graph_pos: GraphPos {
+                    x: 1400.0,
+                    y: 200.0 + 128.0 * i as f64,
+                },
             },
-        },
-        Some("site.out"),
-    );
+            Some(&format!("out.{item}")),
+        );
+    }
 
     // stage groups laid out by depth, then edges along the recipe graph
     let mut total_mw = 0.0;
@@ -723,42 +729,44 @@ pub fn global_solve(
             );
         }
     }
-    // The out port's feed depends on how the goal is produced: a stage group
+    // Each out port's feed depends on how its item is produced: a stage group
     // when one exists, else the raw in port (extraction-and-ship — the claims
     // feed the in port, which feeds the out port). A supply-assumed raw
-    // (water, well gases) has no in port: leave the out port unwired — an
+    // (water, well gases) has no in port: leave that out port unwired — an
     // honest T1 shortfall, not a dangling `$g.` alias that would roll back
     // the whole accept.
-    let goal_from = if stages.iter().any(|s| s.item == goal_item) {
-        Some(EdgeEnd::Group(format!("$g.{goal_item}")))
-    } else if raw.contains_key(&goal_item) && !supply_assumed(&goal_item) {
-        Some(EdgeEnd::Port(format!("$in.{goal_item}")))
-    } else {
-        None
-    };
-    if let Some(from) = goal_from {
+    for (item, rate) in &goal.items {
+        let from = if stages.iter().any(|s| &s.item == item) {
+            Some(EdgeEnd::Group(format!("$g.{item}")))
+        } else if raw.contains_key(item) && !supply_assumed(item) {
+            Some(EdgeEnd::Port(format!("$in.{item}")))
+        } else {
+            None
+        };
+        if let Some(from) = from {
+            push(
+                &mut cmds,
+                &mut aliases,
+                Command::AddEdge {
+                    factory: "$site".into(),
+                    from,
+                    to: EdgeEnd::Port(format!("$out.{item}")),
+                    item: item.clone(),
+                    tier: tier_for(*rate),
+                },
+                None,
+            );
+        }
         push(
             &mut cmds,
             &mut aliases,
-            Command::AddEdge {
-                factory: "$site".into(),
-                from,
-                to: EdgeEnd::Port("$site.out".into()),
-                item: goal_item.clone(),
-                tier: tier_for(goal_rate),
+            Command::SetPortRate {
+                id: format!("$out.{item}"),
+                rate: *rate,
             },
             None,
         );
     }
-    push(
-        &mut cmds,
-        &mut aliases,
-        Command::SetPortRate {
-            id: "$site.out".into(),
-            rate: goal_rate,
-        },
-        None,
-    );
 
     let create_id = new_id();
     let machines_total: u32 = stages.iter().map(|s| s.count).sum();
@@ -768,13 +776,16 @@ pub fn global_solve(
         included: true,
         label: format!("+ {site_name} — NEW"),
         detail: format!(
-            "{} stage{} · {} machine{} · {} {:.1}/min",
+            "{} stage{} · {} machine{} · {}",
             stages.len(),
             if stages.len() == 1 { "" } else { "s" },
             machines_total,
             if machines_total == 1 { "" } else { "s" },
-            goal_name,
-            goal_rate
+            goal.items
+                .iter()
+                .map(|(i, r)| format!("{} {:.1}/min", item_name(i), r))
+                .collect::<Vec<_>>()
+                .join(" + ")
         ),
         impact: format!("+{total_mw:.0} MW"),
         commands: cmds,
@@ -816,10 +827,20 @@ pub fn global_solve(
 
     // ---------- phase 4: routing + power sourcing (A2.4) ----------
     let phase = "ROUTING";
-    // deliver the goal item to an existing unbound IN port if one exists
-    if let Some(consumer) = state.ports.values().find(|p| {
-        p.direction == PortDirection::In && p.item == goal_item && p.bound_route.is_none()
-    }) {
+    // deliver EACH goal item to an existing unbound IN port if one exists —
+    // a port can bind only one route, so claim each candidate port once.
+    let mut routed_ports: std::collections::BTreeSet<Id> = std::collections::BTreeSet::new();
+    for (item, rate) in &goal.items {
+        let Some(consumer) = state.ports.values().find(|p| {
+            p.direction == PortDirection::In
+                && &p.item == item
+                && p.bound_route.is_none()
+                && !routed_ports.contains(&p.id)
+        }) else {
+            continue;
+        };
+        routed_ports.insert(consumer.id.clone());
+        let item_label = item_name(item);
         let dst = state.factories.get(&consumer.factory);
         let dst_name = dst.map(|f| f.name.clone()).unwrap_or_default();
         let dst_pos = dst.map(|f| f.position).unwrap_or(MapPos {
@@ -829,7 +850,7 @@ pub fn global_solve(
         });
         // A3.3: pick the transport by distance/rate thresholds
         let dist = ((dst_pos.x - site_pos.x).powi(2) + (dst_pos.y - site_pos.y).powi(2)).sqrt();
-        let picked = planner_core::transport::pick_transport(dist, goal_rate);
+        let picked = planner_core::transport::pick_transport(dist, *rate);
         let route_kind = match picked {
             "rail" => RouteKind::Rail {
                 spec: RailSpec::default(),
@@ -838,7 +859,7 @@ pub fn global_solve(
                 spec: DroneSpec::default(),
             },
             _ => RouteKind::Belt {
-                tier: tier_for(goal_rate),
+                tier: tier_for(*rate),
             },
         };
         log(
@@ -847,8 +868,8 @@ pub fn global_solve(
                 "route: {} ⟶ {} ({} {:.1}/min · {} — {:.1} km)",
                 site_name,
                 dst_name,
-                goal_name,
-                goal_rate,
+                item_label,
+                rate,
                 picked.to_uppercase(),
                 dist / 1000.0
             ),
@@ -858,19 +879,11 @@ pub fn global_solve(
             kind: ProposalItemKind::RouteAdd,
             included: true,
             label: format!("⟶ {} ⟶ {}", site_name, dst_name.to_uppercase()),
-            detail: format!(
-                "{} {:.1}/min · MK.{}",
-                goal_name,
-                goal_rate,
-                tier_for(goal_rate)
-            ),
-            impact: format!(
-                "proj {:.0}%",
-                100.0 * goal_rate / belt_capacity(tier_for(goal_rate))
-            ),
+            detail: format!("{} {:.1}/min · MK.{}", item_label, rate, tier_for(*rate)),
+            impact: format!("proj {:.0}%", 100.0 * rate / belt_capacity(tier_for(*rate))),
             commands: vec![Command::AddRoute {
                 kind: route_kind,
-                from: "$site.out".into(),
+                from: format!("$out.{item}"),
                 to: consumer.id.clone(),
                 path: vec![site_pos, dst_pos],
             }],
@@ -1365,8 +1378,16 @@ pub fn t2_optimize(
     // in-factory sources: producing group (primary product) or boundary IN port
     let source_of = |item: &str| -> Option<EdgeEnd> {
         for gid in &factory.groups {
-            let g = state.groups.get(gid)?;
-            let r = gd.recipes.get(&g.recipe)?;
+            // Skip unresolvable groups (imported factories carry recipes
+            // outside the loaded catalog) — one unknown recipe must not veto
+            // sourcing for the whole factory, or imported factories never get
+            // a T2 proposal at all.
+            let Some(g) = state.groups.get(gid) else {
+                continue;
+            };
+            let Some(r) = gd.recipes.get(&g.recipe) else {
+                continue;
+            };
             if r.products.first().map(|(i, _)| i == item).unwrap_or(false) {
                 return Some(EdgeEnd::Group(gid.clone()));
             }

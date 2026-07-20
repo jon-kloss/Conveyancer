@@ -831,7 +831,7 @@ fn raw_goal_builds_extraction_and_ship_site_that_accepts() {
                 from: EdgeEnd::Port(f),
                 to: EdgeEnd::Port(t),
                 ..
-            } if f == "$in.Desc_OreIron_C" && t == "$site.out"
+            } if f == "$in.Desc_OreIron_C" && t == "$out.Desc_OreIron_C"
         )),
         "pass-through edge wires the raw in port to the out port: {:?}",
         create.commands
@@ -1966,4 +1966,186 @@ fn nodeless_resource_is_supply_assumed() {
                 if item == "Desc_OreIron_C" && *direction == PortDirection::In))),
         "iron ore gets a metered in port"
     );
+}
+
+/// Audit #129 (1): one unknown-recipe group (imported factories carry recipes
+/// outside the loaded catalog) must not veto T2 for the whole factory —
+/// source_of skips the group, and the cast-screw swap still lands.
+#[test]
+fn t2_tolerates_unknown_recipe_groups() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = s
+        .edit(vec![Command::CreateFactory {
+            name: "MODDED SHOP".into(),
+            position: MapPos {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let ingot_in = s
+        .edit(vec![Command::AddPort {
+            factory: f.clone(),
+            direction: PortDirection::In,
+            item: "Desc_IronIngot_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(120.0),
+            graph_pos: gp(0.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let screw_out = s
+        .edit(vec![Command::AddPort {
+            factory: f.clone(),
+            direction: PortDirection::Out,
+            item: "Desc_IronScrew_C".into(),
+            rate: 0.0,
+            rate_ceiling: None,
+            graph_pos: gp(900.0, 100.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    // The saboteur: a group whose recipe is not in the catalog, listed FIRST
+    // so any early-return in source_of trips over it.
+    s.edit(vec![Command::AddGroup {
+        factory: f.clone(),
+        machine: "Build_ModdedThing_C".into(),
+        recipe: "Recipe_FromAMod_C".into(),
+        count: 1,
+        clock: 1.0,
+        graph_pos: gp(300.0, 400.0),
+        floor: 0,
+    }])
+    .unwrap();
+    let screws = s
+        .edit(vec![Command::AddGroup {
+            factory: f.clone(),
+            machine: "Build_ConstructorMk1_C".into(),
+            recipe: "Recipe_Screw_C".into(),
+            count: 1,
+            clock: 1.0,
+            graph_pos: gp(600.0, 100.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let rods = s
+        .edit(vec![Command::AddGroup {
+            factory: f.clone(),
+            machine: "Build_ConstructorMk1_C".into(),
+            recipe: "Recipe_IronRod_C".into(),
+            count: 1,
+            clock: 1.0,
+            graph_pos: gp(300.0, 100.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    s.edit(vec![
+        Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(ingot_in),
+            to: EdgeEnd::Group(rods.clone()),
+            item: "Desc_IronIngot_C".into(),
+            tier: 2,
+        },
+        Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Group(rods),
+            to: EdgeEnd::Group(screws.clone()),
+            item: "Desc_IronRod_C".into(),
+            tier: 2,
+        },
+        Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Group(screws),
+            to: EdgeEnd::Port(screw_out.clone()),
+            item: "Desc_IronScrew_C".into(),
+            tier: 2,
+        },
+        Command::SetPortRate {
+            id: screw_out,
+            rate: 80.0,
+        },
+    ])
+    .unwrap();
+
+    let proposal = app::wizard::t2_optimize(&s.state, &s.gamedata, &s.unlocked, &f)
+        .expect("unknown recipe must not veto the whole factory's T2");
+    assert!(
+        proposal
+            .items
+            .iter()
+            .any(|i| i.label.contains("Cast Screw")),
+        "cast screw swap still offered: {:?}",
+        proposal.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+/// Audit #129 (2): a multi-output ◆ factory replacement ships EVERY output —
+/// one OUT port + target per item — not just the alphabetically-first one.
+#[test]
+fn replacement_ships_every_output_of_a_multi_output_factory() {
+    use app::import::{ImportMachine, ImportSnapshot};
+    let mut s = Session::in_memory(None).unwrap();
+    // Imported ◆ factory: 2 smelters + 1 constructor → auto-wired exports of
+    // BOTH iron ingot (45/min surplus) and iron rod (15/min).
+    let m = |class: &str, recipe: &str, x: f64| ImportMachine {
+        class: class.into(),
+        recipe: Some(recipe.into()),
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+        ..Default::default()
+    };
+    s.import_save(ImportSnapshot {
+        save_name: "MULTI".into(),
+        machines: vec![
+            m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 0.0),
+            m("Build_SmelterMk1_C", "Recipe_IngotIron_C", 50.0),
+            m("Build_ConstructorMk1_C", "Recipe_IronRod_C", 100.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let fid = s.state.factories.keys().next().unwrap().clone();
+
+    let proposal = s.plan_replacement(fid, None).expect("replacement proposal");
+    let create = proposal
+        .items
+        .iter()
+        .find(|i| i.kind == planner_core::proposals::ProposalItemKind::Create)
+        .expect("CREATE item");
+    let out_items: Vec<&str> = create
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::AddPort {
+                direction: PortDirection::Out,
+                item,
+                ..
+            } => Some(item.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        out_items.contains(&"Desc_IronIngot_C") && out_items.contains(&"Desc_IronRod_C"),
+        "BOTH outputs ship, got {out_items:?}"
+    );
+    // ...and each out port gets its own target.
+    let rate_sets = create
+        .commands
+        .iter()
+        .filter(|c| matches!(c, Command::SetPortRate { .. }))
+        .count();
+    assert_eq!(rate_sets, out_items.len(), "one target per shipped output");
 }
