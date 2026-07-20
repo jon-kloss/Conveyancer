@@ -7,33 +7,15 @@
 
 import { useMemo, useState } from "react";
 import { useStore } from "../state/store";
-import { POWER_ITEM } from "../state/types";
 import type { DeficitRow, DerivedCircuit, Id } from "../state/types";
-import { circuitHeadroom, fmtPower, fmtRate, itemLabel, powerLevel } from "../lib/format";
+import { circuitHeadroom, fmtPower, fmtRate, powerLevel } from "../lib/format";
+import { buildLedgerRows, type LedgerRow as Row } from "../lib/ledger";
 import { minBeltTier } from "../graph/logistics";
 import ItemIcon from "../lib/ItemIcon";
 
 type PanelState = "collapsed" | "brief" | "detailed";
 type KindFilter = "all" | "raw" | "made";
 type BalFilter = "all" | "surplus" | "deficit";
-
-interface Contribution {
-  factory: Id;
-  name: string;
-  rate: number;
-}
-
-interface Row {
-  item: string;
-  label: string;
-  /** received raw boundary supply (a claimed node / assumed external feed) */
-  raw: boolean;
-  produced: number;
-  consumed: number;
-  net: number;
-  makers: Contribution[];
-  users: Contribution[];
-}
 
 /** How many rows the brief state shows — busiest first; the footer names the rest. */
 const BRIEF_MAX = 8;
@@ -63,79 +45,10 @@ export default function ResourceOverview() {
   const [bal, setBal] = useState<BalFilter>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const rows = useMemo<Row[]>(() => {
-    const produced = new Map<string, number>();
-    const consumed = new Map<string, number>();
-    // per-item, per-factory contributions — the drill-down's evidence
-    const makers = new Map<string, Map<Id, number>>();
-    const users = new Map<string, Map<Id, number>>();
-    const raw = new Set<string>();
-    const add = (m: Map<string, number>, item: string, rate: number) => {
-      if (!rate) return;
-      m.set(item, (m.get(item) ?? 0) + rate);
-    };
-    const bump = (m: Map<string, Map<Id, number>>, item: string, fid: Id, rate: number) => {
-      if (rate < 1e-9) return;
-      let per = m.get(item);
-      if (!per) {
-        per = new Map();
-        m.set(item, per);
-      }
-      per.set(fid, (per.get(fid) ?? 0) + rate);
-    };
-    for (const [fid, df] of Object.entries(derived.factories)) {
-      for (const g of Object.values(df.groups)) {
-        for (const [item, rate] of Object.entries(g.outRates)) {
-          if (item === POWER_ITEM) continue;
-          add(produced, item, rate);
-          bump(makers, item, fid, rate);
-        }
-        for (const [item, rate] of Object.entries(g.inRates)) {
-          if (item === POWER_ITEM) continue;
-          add(consumed, item, rate);
-          bump(users, item, fid, rate);
-        }
-      }
-    }
-    // Raw feedstock: a boundary IN port that is NOT bound to an inter-factory
-    // route is new supply entering the empire (a claimed node, or assumed
-    // external supply) — count its realized rate as production so raw ores
-    // don't read as a pure deficit. Route-bound in-ports are skipped: that item
-    // was already counted at the group that produced it upstream.
-    for (const p of Object.values(plan.ports)) {
-      if (p.direction !== "in" || p.boundRoute) continue;
-      const realized = derived.factories[p.factory]?.ports[p.id];
-      if (realized) {
-        add(produced, p.item, realized);
-        bump(makers, p.item, p.factory, realized);
-        raw.add(p.item);
-      }
-    }
-    const contribs = (m: Map<string, Map<Id, number>> | undefined, item: string): Contribution[] =>
-      [...(m?.get(item)?.entries() ?? [])]
-        .map(([factory, rate]) => ({ factory, name: plan.factories[factory]?.name ?? "?", rate }))
-        .sort((a, b) => b.rate - a.rate);
-    const items = new Set([...produced.keys(), ...consumed.keys()]);
-    const out: Row[] = [];
-    for (const item of items) {
-      const pr = produced.get(item) ?? 0;
-      const co = consumed.get(item) ?? 0;
-      if (pr < 1e-6 && co < 1e-6) continue;
-      out.push({
-        item,
-        label: itemLabel(gamedata.items, item),
-        raw: raw.has(item),
-        produced: pr,
-        consumed: co,
-        net: pr - co,
-        makers: contribs(makers, item),
-        users: contribs(users, item),
-      });
-    }
-    // Busiest resources first — biggest total throughput at the top.
-    out.sort((a, b) => b.produced + b.consumed - (a.produced + a.consumed));
-    return out;
-  }, [derived, plan.ports, plan.factories, gamedata.items]);
+  const rows = useMemo<Row[]>(
+    () => buildLedgerRows(derived, plan, gamedata.items),
+    [derived, plan, gamedata.items],
+  );
 
   const deficitsByItem = useMemo(() => {
     const m = new Map<string, DeficitRow[]>();

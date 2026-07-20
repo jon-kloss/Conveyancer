@@ -1,0 +1,200 @@
+/* #110 — read-only mobile companion dashboard (phone breakpoint). */
+
+.mobile-dash {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--steel-900, #0d1117);
+  color: var(--ink-100);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  z-index: 40;
+}
+
+.md-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.md-brand {
+  letter-spacing: 0.14em;
+}
+.md-note {
+  font-size: 10px;
+  color: var(--ink-500);
+  letter-spacing: 0.06em;
+}
+
+.md-card {
+  background: var(--steel-800);
+  border: 1px solid var(--steel-700);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.md-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.md-level {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.md-level.ok { color: var(--flow-ok); border: 1px solid var(--flow-ok); }
+.md-level.warn { color: var(--flow-warn); border: 1px solid var(--flow-warn); }
+.md-level.crit { color: var(--flow-crit); border: 1px solid var(--flow-crit); }
+
+.md-power-net {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.md-net-big {
+  font-family: var(--font-mono);
+  font-size: 26px;
+}
+.md-headroom {
+  font-size: 11px;
+  color: var(--ink-300);
+}
+.md-genline {
+  font-size: 11px;
+  color: var(--ink-300);
+  margin: 4px 0 6px;
+}
+.md-genline.ghost { color: var(--ink-faint); }
+.md-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--steel-700);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.md-bar > span {
+  display: block;
+  height: 100%;
+  transition: width 200ms var(--ease);
+}
+.md-bar > span.ok { background: var(--flow-ok); }
+.md-bar > span.warn { background: var(--flow-warn); }
+.md-bar > span.crit { background: var(--flow-crit); }
+
+.md-grid-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--steel-700);
+  font-size: 11px;
+}
+.md-grid-name { flex: 1; color: var(--ink-100); }
+.md-grid-figs { color: var(--ink-300); }
+.md-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.md-dot.ok { background: var(--flow-ok); }
+.md-dot.warn { background: var(--flow-warn); }
+.md-dot.crit { background: var(--flow-crit); }
+
+.md-alert {
+  font-size: 11px;
+  color: var(--flow-warn);
+  padding: 4px 0;
+  border-top: 1px solid var(--steel-700);
+}
+
+.md-ledger-head {
+  display: grid;
+  grid-template-columns: 1fr 56px 56px 64px;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--ink-500);
+  letter-spacing: 0.08em;
+  padding: 0 2px 4px;
+  text-align: right;
+}
+.md-row {
+  display: grid;
+  grid-template-columns: 1fr 56px 56px 64px;
+  gap: 4px;
+  width: 100%;
+  align-items: center;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--steel-700);
+  color: var(--ink-100);
+  padding: 8px 2px;
+  font-size: 12px;
+  text-align: right;
+  cursor: pointer;
+}
+.md-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  text-align: left;
+}
+.md-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-tag-raw {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--bp-400);
+  border: 1px solid var(--bp-400);
+  border-radius: 2px;
+  padding: 0 3px;
+  flex: none;
+}
+.md-cell { font-size: 11px; color: var(--ink-300); }
+.md-cell.surplus, .md-drill-row .surplus { color: var(--flow-ok); }
+.md-cell.deficit, .md-drill-row .deficit { color: var(--flow-crit); }
+
+.md-drill {
+  padding: 4px 8px 10px;
+  background: var(--steel-900, #0d1117);
+  border-radius: 4px;
+  margin-bottom: 6px;
+}
+.md-drill-h {
+  font-size: 9px;
+  color: var(--ink-500);
+  letter-spacing: 0.08em;
+  margin: 8px 0 2px;
+}
+.md-drill-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  padding: 3px 0;
+  color: var(--ink-100);
+}
+
+.md-empty {
+  font-size: 11px;
+  color: var(--ink-500);
+  padding: 6px 0;
+}
+
+.md-footer {
+  font-size: 10px;
+  color: var(--ink-faint);
+  text-align: center;
+  letter-spacing: 0.08em;
+  padding: 6px 0 2px;
+}

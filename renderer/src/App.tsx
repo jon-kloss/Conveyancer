@@ -13,6 +13,7 @@ import AdvisorPanel from "./advisor/AdvisorPanel";
 import Onboarding from "./shell/Onboarding";
 import ToastHost from "./shell/ToastHost";
 import Dashboard from "./dashboard/Dashboard";
+import MobileDashboard from "./mobile/MobileDashboard";
 import { useStore, errText } from "./state/store";
 import { isEditableTarget } from "./lib/keys";
 import "./shell/shell.css";
@@ -64,6 +65,9 @@ export default function App() {
   // reopen it on demand.
   useEffect(() => {
     if (!ready) return;
+    // Phone breakpoint renders the read-only MobileDashboard — never burn the
+    // once-per-plan resume greeting (a WRITE) from a glance-only surface.
+    if (mode === "phone") return;
     const st = useStore.getState();
     if (st.viewState.resumeSeen) return;
     const hasDrift = Object.values(st.plan.proposals).some(
@@ -78,7 +82,7 @@ export default function App() {
       st.saveViewState({ resumeSeen: true });
       st.setDashboardOpen(true);
     }
-  }, [ready]);
+  }, [ready, mode]);
 
   // PR 9 openAudit action: the drawer's open flag is local state here, so a
   // store-level request opens it; the drawer itself selects the requested tab
@@ -180,10 +184,12 @@ export default function App() {
   }, [undo, redo]);
 
   // Early screens (error / hydrating) still get the titlebar: the frameless
-  // window must never lose its drag region and min/max/close.
+  // window must never lose its drag region and min/max/close. At the phone
+  // breakpoint (web build — Tauri's minWidth 800 can't get here) the window
+  // controls are inert browser chrome, so the card stands alone.
   const screen = (body: ReactNode) => (
-    <div className="app-frame" data-layout="overlay">
-      <Titlebar overlayMode={false} />
+    <div className="app-frame" data-layout={mode === "phone" ? "phone" : "overlay"}>
+      {mode !== "phone" && <Titlebar overlayMode={false} />}
       <main className="app-canvas">
         <div className="refuse-wrap">{body}</div>
       </main>
@@ -203,9 +209,20 @@ export default function App() {
   // ready flip — an early `!ready` return would remount it at a different
   // tree position mid-choreography, resetting the sim (and misreading a slow
   // boot as the fast path).
+  // Phone breakpoint (#110): the editing surfaces degrade badly on touch, so
+  // the ready app swaps the whole shell for the read-only companion dashboard —
+  // empire power, alerts, and the resource ledger at a glance. Resizing back
+  // re-enters the full app (same store, only component trees swap). The branch
+  // lives INSIDE the single return so BootScreen keeps its one identity.
   return (
     <>
-      {ready && (
+      {ready && mode === "phone" && (
+        <>
+          <MobileDashboard />
+          <ToastHost />
+        </>
+      )}
+      {ready && mode !== "phone" && (
         <div className={`app-frame ${bootPhase === "reveal" ? "boot-reveal" : ""}`} data-layout={mode}>
       <Titlebar overlayMode={mode === "overlay"} />
       <main className="app-canvas">
