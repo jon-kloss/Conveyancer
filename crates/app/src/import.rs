@@ -195,42 +195,39 @@ fn water_extract_recipes(gd: &gamedata::docs::GameData) -> BTreeMap<&str, &str> 
         .collect()
 }
 
-/// Fracking extractors: extractors with MORE THAN ONE zero-ingredient recipe
-/// (oil / nitrogen / water) → class → (produced item → recipe). Which recipe a
-/// given extractor uses is resolved per-instance from the fracking satellite it
+/// Fracking extractors: extractors with MORE THAN ONE zero-ingredient recipe —
+/// the multi-resource well extractor synthesizes one recipe per (resource,
+/// purity), so it has many, while a water pump has exactly one. The exact recipe
+/// for a given imported extractor is resolved per-instance from the satellite it
 /// sits on (see [`fracking_group_for`]).
-fn fracking_extract_recipes(gd: &gamedata::docs::GameData) -> BTreeMap<&str, BTreeMap<&str, &str>> {
+fn fracking_classes(gd: &gamedata::docs::GameData) -> std::collections::BTreeSet<&str> {
     extract_recipes(gd)
         .into_iter()
         .filter(|(_, recipes)| recipes.len() > 1)
-        .map(|(class, recipes)| (class, recipes.into_iter().collect()))
+        .map(|(class, _)| class)
         .collect()
 }
 
-/// Multiplier the game applies to a fracking satellite's extraction by purity.
-fn purity_factor(purity: &str) -> f64 {
-    match purity {
-        "impure" => 0.5,
-        "pure" => 2.0,
-        _ => 1.0,
-    }
-}
-
-/// Resolve an imported fracking extractor to its producing group: the fracking
-/// satellite it sits on gives the RESOURCE (which of oil/nitrogen/water) and the
-/// PURITY. Returns (recipe class, effective clock = save clock × purity), so the
-/// group's output = normal-rate recipe × purity — the game's per-satellite rate.
-/// `None` if no satellite is in range or the resource has no synthesized recipe
-/// (e.g. a modded resource absent from the catalog).
-fn fracking_group_for<'a>(
+/// Resolve an imported fracking extractor to its producing group. The satellite
+/// it sits on gives the RESOURCE (oil / nitrogen / water) and the catalog PURITY;
+/// the save's own purity (`mPurityOverride`) wins when present, mirroring the
+/// miner path (`bind_extractors`). Returns the per-(resource, purity) synthesized
+/// recipe class — purity lives in the recipe RATE, so the caller keeps the
+/// untouched save overclock as the group clock (never folded, so it can't
+/// overflow the [0.01, 2.5] clock clamp and silently halve a pure well). `None`
+/// if no satellite is in range or the resolved (resource, purity) has no recipe.
+fn fracking_group_for(
     class: &str,
     x: f64,
     y: f64,
-    clock: f64,
+    purity_override: Option<&str>,
     world: &gamedata::worldnodes::WorldSnapshot,
-    recipes: &BTreeMap<&'a str, BTreeMap<&'a str, &'a str>>,
-) -> Option<(String, f64)> {
-    let by_item = recipes.get(class)?;
+    gd: &gamedata::docs::GameData,
+    fracking_classes: &std::collections::BTreeSet<&str>,
+) -> Option<String> {
+    if !fracking_classes.contains(class) {
+        return None;
+    }
     let sat = world
         .nodes
         .iter()
@@ -239,8 +236,14 @@ fn fracking_group_for<'a>(
         .filter(|(_, d)| *d <= NODE_MATCH_M)
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?
         .0;
-    let recipe = by_item.get(sat.item.as_str())?;
-    Some((recipe.to_string(), clock * purity_factor(&sat.purity)))
+    let purity = purity_override.unwrap_or(sat.purity.as_str());
+    let recipe = format!(
+        "Recipe_Extract_{}_{}_{}",
+        class.trim_end_matches("_C"),
+        purity,
+        sat.item
+    );
+    gd.recipes.contains_key(&recipe).then_some(recipe)
 }
 
 /// The plan-local id a save-only node (no catalog match) claims under.
@@ -527,7 +530,7 @@ pub fn cluster(
     // within the same generous radius the count used, so each miner claims one
     // node under exactly one factory.
     let water_recipes = water_extract_recipes(gd);
-    let fracking_recipes = fracking_extract_recipes(gd);
+    let fracking = fracking_classes(gd);
     let mut attributed: Vec<Vec<ClusterExtractor>> = vec![Vec::new(); pre.len()];
     // A water extractor has NO world node to claim (water is drawn from any
     // surface) — it runs a synthesized zero-ingredient extraction recipe. So it's
@@ -535,10 +538,14 @@ pub fn cluster(
     // machine groups, so its water becomes a real routable ◆ built output (and
     // auto-wires to any water consumer in the same cluster) instead of an inert
     // save-only claim that produces nothing.
+    // Named `water_groups`/`orphan_pumps` for history, but these now hold EVERY
+    // recipe-based extraction group: water pumps, fracking extractors (per
+    // resource/purity recipe), and the recipe-less Pressurizer/Activator (empty
+    // recipe, power-only). All fold into ordinary ◆ built groups the same way.
     let mut water_groups: Vec<GroupTally> = vec![BTreeMap::new(); pre.len()];
-    // Water pumps with no machine cluster in range are NOT dropped (that would
-    // silently lose real, producible water); they form standalone water
-    // factories below.
+    // Extractors with no machine cluster in range are NOT dropped (that would
+    // silently lose real production); they form standalone well/water factories
+    // below.
     let mut orphan_pumps: Vec<(String, String, f64, MapPos)> = Vec::new();
     for e in &snapshot.extractors {
         let nearest = pre
@@ -579,13 +586,25 @@ pub fn cluster(
         // A fluid extractor (has a zero-ingredient extraction recipe) → producing
         // group; a node-bound extractor (miner/oil pump) → node claim. Water pumps
         // use one fixed recipe; fracking extractors resolve theirs (resource +
-        // purity) from the satellite they sit on, folding purity into the clock so
-        // the group output equals the game's per-satellite rate.
+        // purity) from the satellite they sit on — the (resource, purity) picks a
+        // synthesized recipe that already carries the purity-scaled rate, so the
+        // group keeps the untouched save clock (purity is NOT folded in).
         let fluid = water_recipes
             .get(e.class.as_str())
-            .map(|&r| (r.to_string(), e.clock))
-            .or_else(|| fracking_group_for(&e.class, e.x, e.y, e.clock, world, &fracking_recipes));
-        if let Some((recipe, clock)) = fluid {
+            .map(|&r| r.to_string())
+            .or_else(|| {
+                fracking_group_for(
+                    &e.class,
+                    e.x,
+                    e.y,
+                    e.purity.as_deref(),
+                    world,
+                    gd,
+                    &fracking,
+                )
+            });
+        if let Some(recipe) = fluid {
+            let clock = e.clock;
             match nearest {
                 Some((i, _)) => {
                     let ent = water_groups[i]
@@ -679,14 +698,15 @@ pub fn cluster(
             .collect();
         // Name the well after the fluid it produces — skip the recipe-less
         // Pressurizer group (it would resolve to nothing) and read the first
-        // group that has a product.
+        // group that has a product. A Pressurizer-only site (no satellites
+        // captured) has no fluid to name it by → "RESOURCE WELL", never "WATER".
         let name = groups
             .iter()
             .find_map(|g| gd.recipes.get(&g.recipe))
             .and_then(|r| r.products.first())
             .and_then(|(item, _)| gd.items.get(item))
             .map(|i| i.display_name.to_uppercase())
-            .unwrap_or_else(|| "WATER".into());
+            .unwrap_or_else(|| "RESOURCE WELL".into());
         clusters.push(Cluster {
             name,
             position,

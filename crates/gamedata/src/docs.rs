@@ -225,12 +225,16 @@ fn parse_item_amounts(raw: &str) -> Vec<(String, f64)> {
     out
 }
 
-/// `("/Game/.../Build_SmelterMk1.Build_SmelterMk1_C")` → `[Build_SmelterMk1_C]`
+/// `("/Game/.../Build_SmelterMk1.Build_SmelterMk1_C")` → `[Build_SmelterMk1_C]`.
+/// Keeps only `_C` class names: some Docs.json fields (e.g. `mAllowedResources`)
+/// wrap each ref as `"/Script/Engine.BlueprintGeneratedClass'/Game/.../Desc_X_C'"`,
+/// whose leading `/Script/…` segment would otherwise yield a spurious
+/// `BlueprintGeneratedClass` token. Every real class we want ends in `_C`.
 fn parse_class_list(raw: &str) -> Vec<String> {
     raw.split(['"', '\''])
         .filter(|s| s.contains('/'))
         .filter_map(|path| path.rsplit(['.', '/']).next())
-        .filter(|c| !c.is_empty())
+        .filter(|c| c.ends_with("_C"))
         .map(|s| s.to_string())
         .collect()
 }
@@ -912,14 +916,16 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         );
     }
 
-    // Synthesize a fracking extraction recipe per (extractor, allowed resource):
-    // no ingredients, one product at the extractor's normal-purity rate. This is
-    // the water-pump pattern, but keyed by resource — a satellite holding oil /
-    // nitrogen / water gets the matching recipe, so its fluid is produced
-    // internally in the well factory (bypassing the pipe gate, exactly like
-    // water) rather than assumed at the boundary. Per-satellite purity is applied
-    // at placement/import via the group clock, not baked into the recipe. Skipped
-    // for a resource with no catalog item (e.g. a trimmed fixture).
+    // Synthesize a fracking extraction recipe per (extractor, allowed resource,
+    // PURITY): no ingredients, one product at that satellite's true rate
+    // (normal-rate × purity factor). This is the water-pump pattern, but keyed by
+    // resource AND purity — a satellite holding oil / nitrogen / water at a given
+    // purity gets the matching recipe, so its fluid is produced internally in the
+    // well factory (bypassing the pipe gate, exactly like water). Purity lives in
+    // the RECIPE rate, NOT the group clock: folding it into the clock would
+    // overflow the [0.01, 2.5] clock clamp for an overclocked pure well and
+    // silently halve its output. The group's clock stays the real save overclock.
+    // Skipped for a resource with no catalog item (e.g. a trimmed fixture).
     for (extractor, resources) in &fracking_extractors {
         let Some(machine) = gd.machines.get(extractor) else {
             continue;
@@ -938,25 +944,31 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             let Some(res) = gd.items.get(item) else {
                 continue;
             };
-            let class_name = format!(
-                "Recipe_Extract_{}_{}",
-                extractor.trim_end_matches("_C"),
-                item
-            );
-            let display_name = format!("{} — {}", machine.display_name, res.display_name);
-            gd.recipes.insert(
-                class_name.clone(),
-                Recipe {
-                    alternate: false,
-                    class_name,
-                    display_name,
-                    duration_s: cycle_time_s,
-                    ingredients: Vec::new(),
-                    products: vec![(item.clone(), items_per_cycle)],
-                    produced_in: vec![extractor.clone()],
-                    variable_power_mw: None,
-                },
-            );
+            for purity in PURITIES {
+                let class_name = format!(
+                    "Recipe_Extract_{}_{}_{}",
+                    extractor.trim_end_matches("_C"),
+                    purity,
+                    item
+                );
+                let display_name = format!(
+                    "{} — {} ({})",
+                    machine.display_name, res.display_name, purity
+                );
+                gd.recipes.insert(
+                    class_name.clone(),
+                    Recipe {
+                        alternate: false,
+                        class_name,
+                        display_name,
+                        duration_s: cycle_time_s,
+                        ingredients: Vec::new(),
+                        products: vec![(item.clone(), items_per_cycle * purity_factor(purity))],
+                        produced_in: vec![extractor.clone()],
+                        variable_power_mw: None,
+                    },
+                );
+            }
         }
     }
 
@@ -977,6 +989,20 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
 }
 
 /// Extraction ceiling for a claim: items/min for a miner class on a node purity.
+/// The three resource-node purity tiers, ascending.
+pub const PURITIES: [&str; 3] = ["impure", "normal", "pure"];
+
+/// The multiplier the game applies to an extractor's rate by node purity.
+/// The single source of truth — extraction rates AND the synthesized
+/// per-purity fracking recipes read this, so the table can't drift.
+pub fn purity_factor(purity: &str) -> f64 {
+    match purity {
+        "impure" => 0.5,
+        "pure" => 2.0,
+        _ => 1.0,
+    }
+}
+
 pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64) -> f64 {
     let MachineKind::Extractor {
         items_per_cycle,
@@ -986,12 +1012,7 @@ pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64) -> f64 {
         return 0.0;
     };
     let base = items_per_cycle / cycle_time_s * 60.0;
-    let purity_factor = match purity {
-        "impure" => 0.5,
-        "pure" => 2.0,
-        _ => 1.0,
-    };
-    base * purity_factor * clock
+    base * purity_factor(purity) * clock
 }
 
 #[cfg(test)]
@@ -1148,31 +1169,37 @@ mod tests {
     #[test]
     fn synthesizes_fracking_extraction_recipes_per_resource() {
         let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
-        // The Resource Well Extractor parses as an Extractor machine, 0 power
-        // (the Pressurizer pays), 1000/cycle ÷ 1 s → 60 m³/min at normal purity.
+        // The Resource Well Extractor parses as an Extractor machine, 0 power (the
+        // Pressurizer pays). NOTE: the fixture uses m³-scale mItemsPerCycle values
+        // (1.0 here, 2.0 for the water pump) rather than the real Docs.json's
+        // larger raw counts, so the solver's raw rate reads DIRECTLY in m³/min in
+        // tests (1/cycle ÷ 1 s = 60). The ÷1000 fluid scaling on real data happens
+        // at DISPLAY (renderer), not on items_per_cycle — do NOT "fix" the fixture
+        // to real values or every fluid test rate would be off by 1000×.
         let fe = &gd.machines["Build_FrackingExtractor_C"];
-        // The fixture scales fluid extractors by ÷1000 (like the water pump's 2.0
-        // vs the real 2000) so the raw rate reads directly in m³/min: 1/cycle ÷
-        // 1 s → 60 m³/min at normal purity, 0 power (the Pressurizer pays).
         assert!(
             matches!(fe.kind, MachineKind::Extractor { items_per_cycle, cycle_time_s }
                 if items_per_cycle == 1.0 && cycle_time_s == 1.0)
         );
         assert_eq!(fe.power_mw, 0.0, "the Pressurizer pays the power");
-        // Unlike the water pump (always Water), it gets ONE synthesized extraction
-        // recipe per allowed resource (oil / nitrogen / water). Each produces its
-        // fluid internally (bypassing the pipe gate) at the normal-purity rate;
-        // per-satellite purity is applied by the group clock at import/placement.
+        // Unlike the water pump (always Water), it gets a synthesized extraction
+        // recipe per allowed resource (oil / nitrogen / water) AND per purity.
+        // PURITY is baked into the recipe rate (30 / 60 / 120 m³/min for impure /
+        // normal / pure), NOT the group clock, so an overclocked pure well never
+        // overflows the clock clamp.
         for item in ["Desc_LiquidOil_C", "Desc_NitrogenGas_C", "Desc_Water_C"] {
-            let r = &gd.recipes[&format!("Recipe_Extract_Build_FrackingExtractor_{item}")];
-            assert!(r.ingredients.is_empty(), "extraction has no inputs");
-            assert_eq!(r.products, vec![(item.to_string(), 1.0)]);
-            assert_eq!(r.produced_in, vec!["Build_FrackingExtractor_C".to_string()]);
-            assert_eq!(
-                r.products[0].1 * 60.0 / r.duration_s,
-                60.0,
-                "60 m³/min normal"
-            );
+            for (purity, rate) in [("impure", 30.0), ("normal", 60.0), ("pure", 120.0)] {
+                let r =
+                    &gd.recipes[&format!("Recipe_Extract_Build_FrackingExtractor_{purity}_{item}")];
+                assert!(r.ingredients.is_empty(), "extraction has no inputs");
+                assert_eq!(r.produced_in, vec!["Build_FrackingExtractor_C".to_string()]);
+                assert_eq!(r.products[0].0, item, "{purity} {item} produces {item}");
+                assert_eq!(
+                    r.products[0].1 * 60.0 / r.duration_s,
+                    rate,
+                    "{purity} {item} = {rate} m³/min"
+                );
+            }
         }
         // The Pressurizer parses as an Activator machine carrying the well's
         // 150 MW draw — it produces nothing; its power is credited by injection.

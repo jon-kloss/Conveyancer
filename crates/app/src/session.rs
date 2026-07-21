@@ -1782,7 +1782,12 @@ impl Session {
                 continue;
             };
             if matches!(machine.kind, gamedata::docs::MachineKind::Activator) {
-                let draw = machine.power_mw * g.effective_count() as f64 * g.effective_clock();
+                // Power DRAW scales by clock^POWER_EXPONENT (like every other draw
+                // in the solver — t0/t1/wizard), NOT linearly: an overclocked
+                // Pressurizer draws more than count×clock would credit.
+                let draw = machine.power_mw
+                    * g.effective_count() as f64
+                    * g.effective_clock().powf(solver::model::POWER_EXPONENT);
                 df.groups.insert(
                     gid.clone(),
                     DerivedGroup {
