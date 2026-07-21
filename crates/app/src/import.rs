@@ -89,11 +89,15 @@ pub struct Cluster {
     pub position: MapPos,
     /// (machine class, recipe class) → (count, mean clock)
     pub groups: Vec<ClusterGroup>,
+    /// Node-bound extractors only (see `extractors`); excludes water pumps, which
+    /// fold into `groups` as producers.
     pub extractor_count: u32,
-    /// Miners/pumps attributed to this cluster (each extractor to its nearest
-    /// centroid) — carry the position + stable node ref so [`write_built_layer`]
-    /// can bind ◆ NodeClaims to real save nodes (W2b-C). serde-default so drift
-    /// proposals persisted before W2b-C (SyncOp::CreateCluster) still load.
+    /// NODE-BOUND extractors (miners, oil pumps) attributed to this cluster (each
+    /// to its nearest centroid) — carry the position + stable node ref so
+    /// [`write_built_layer`] can bind ◆ NodeClaims to real save nodes (W2b-C).
+    /// Water extractors are NOT here: they have no node to claim, so they import
+    /// as producing groups in `groups` instead. serde-default so drift proposals
+    /// persisted before W2b-C (SyncOp::CreateCluster) still load.
     #[serde(default)]
     pub extractors: Vec<ClusterExtractor>,
 }
@@ -129,6 +133,10 @@ pub struct ClusterGroup {
 }
 
 const DBSCAN_EPS_M: f64 = 120.0;
+/// A per-cluster tally of aggregated groups keyed by (machine class, recipe
+/// class) → (count, summed clock); the clock is averaged when the ClusterGroup
+/// is built.
+type GroupTally = BTreeMap<(String, String), (u32, f64)>;
 /// Clusters match an existing Built factory within this range on re-import.
 pub(crate) const REMATCH_M: f64 = 250.0;
 /// Clock drift below this (absolute, on the 0–2.5 scale) is rounding noise,
@@ -145,15 +153,31 @@ const NODE_MATCH_M: f64 = REMATCH_M;
 /// community-extraction coordinate noise so normal binding stays silent.
 pub(crate) const NODE_DRIFT_M: f64 = 30.0;
 
-/// The synthesized zero-ingredient extraction recipe produced in `machine`, if
-/// one exists — i.e. the machine draws its resource from the environment with no
-/// world node to claim (a Water Extractor). Such an extractor imports as a
-/// producing ◆ GROUP, not a node claim.
-fn extract_recipe_for(gd: &gamedata::docs::GameData, machine: &str) -> Option<String> {
-    gd.recipes
-        .values()
-        .find(|r| r.ingredients.is_empty() && r.produced_in.iter().any(|m| m == machine))
-        .map(|r| r.class_name.clone())
+/// Map of extractor machine → its synthesized zero-ingredient extraction recipe
+/// (a Water Extractor draws its resource from the environment with no world node
+/// to claim, so `docs.rs` gives it a recipe that produces from nothing). Built
+/// ONCE per import (not rescanned per extractor — the clustering is near-linear
+/// by design). The `MachineKind::Extractor` gate is load-bearing: it pins the
+/// docs.rs invariant "only extractors get a zero-ingredient recipe" here, so a
+/// future/modded zero-ingredient recipe on a non-extractor can't misclassify it
+/// as a producing group. An extractor in this map imports as a ◆ GROUP; one
+/// absent from it (a node-bound miner/oil pump) imports as a node claim.
+fn water_extract_recipes(gd: &gamedata::docs::GameData) -> BTreeMap<&str, &str> {
+    let mut out = BTreeMap::new();
+    for r in gd.recipes.values() {
+        if !r.ingredients.is_empty() {
+            continue;
+        }
+        for m in &r.produced_in {
+            if matches!(
+                gd.machines.get(m).map(|mc| &mc.kind),
+                Some(gamedata::docs::MachineKind::Extractor { .. })
+            ) {
+                out.entry(m.as_str()).or_insert(r.class_name.as_str());
+            }
+        }
+    }
+    out
 }
 
 /// The plan-local id a save-only node (no catalog match) claims under.
@@ -208,9 +232,10 @@ fn bind_extractors(
             taken.insert(nid.clone());
         }
     }
-    // save-only ids must be unique per miner: many water pumps share one water
-    // volume's actor ref, so a bare `save:<actor>` would collapse them into one
-    // node (a false conflict). Disambiguate against ids already in use.
+    // save-only ids must be unique per extractor: node-bound extractors on the
+    // same resource actor (or several sharing one ref) would collapse into one
+    // node under a bare `save:<actor>` (a false conflict). Disambiguate against
+    // ids already in use. (Water pumps never reach here — they import as groups.)
     let mut used_save: std::collections::BTreeSet<String> = state
         .node_claims
         .values()
@@ -427,6 +452,7 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
     // Second pass: attribute each extractor to its nearest cluster centroid
     // within the same generous radius the count used, so each miner claims one
     // node under exactly one factory.
+    let water_recipes = water_extract_recipes(gd);
     let mut attributed: Vec<Vec<ClusterExtractor>> = vec![Vec::new(); pre.len()];
     // A water extractor has NO world node to claim (water is drawn from any
     // surface) — it runs a synthesized zero-ingredient extraction recipe. So it's
@@ -434,8 +460,11 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
     // machine groups, so its water becomes a real routable ◆ built output (and
     // auto-wires to any water consumer in the same cluster) instead of an inert
     // save-only claim that produces nothing.
-    let mut water_groups: Vec<BTreeMap<(String, String), (u32, f64)>> =
-        vec![BTreeMap::new(); pre.len()];
+    let mut water_groups: Vec<GroupTally> = vec![BTreeMap::new(); pre.len()];
+    // Water pumps with no machine cluster in range are NOT dropped (that would
+    // silently lose real, producible water); they form standalone water
+    // factories below.
+    let mut orphan_pumps: Vec<(String, String, f64, MapPos)> = Vec::new();
     for e in &snapshot.extractors {
         let nearest = pre
             .iter()
@@ -443,15 +472,31 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
             .map(|(i, p)| (i, (p.centroid.x - e.x).hypot(p.centroid.y - e.y)))
             .filter(|(_, d)| *d <= DBSCAN_EPS_M * 3.0)
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        if let Some((i, _)) = nearest {
-            if let Some(recipe) = extract_recipe_for(gd, &e.class) {
-                let ent = water_groups[i]
-                    .entry((e.class.clone(), recipe))
-                    .or_insert((0, 0.0));
-                ent.0 += 1;
-                ent.1 += e.clock;
-                continue;
+        // A water extractor (has a zero-ingredient extraction recipe) → producing
+        // group; a node-bound extractor (miner/oil pump) → node claim.
+        if let Some(&recipe) = water_recipes.get(e.class.as_str()) {
+            match nearest {
+                Some((i, _)) => {
+                    let ent = water_groups[i]
+                        .entry((e.class.clone(), recipe.to_string()))
+                        .or_insert((0, 0.0));
+                    ent.0 += 1;
+                    ent.1 += e.clock;
+                }
+                None => orphan_pumps.push((
+                    e.class.clone(),
+                    recipe.to_string(),
+                    e.clock,
+                    MapPos {
+                        x: e.x,
+                        y: e.y,
+                        z: e.z,
+                    },
+                )),
             }
+            continue;
+        }
+        if let Some((i, _)) = nearest {
             attributed[i].push(ClusterExtractor {
                 class: e.class.clone(),
                 position: MapPos {
@@ -491,6 +536,52 @@ pub fn cluster(snapshot: &ImportSnapshot, gd: &gamedata::docs::GameData) -> Vec<
             extractors,
         })
         .collect();
+
+    // Orphan water pumps (no machine cluster in range) become standalone water
+    // factories rather than vanishing. Greedily group orphans within one DBSCAN
+    // radius so a pump farm reads as one factory, not one per pump.
+    let mut orphan_sites: Vec<(MapPos, GroupTally)> = Vec::new();
+    for (class, recipe, clock, pos) in orphan_pumps {
+        let bucket = match orphan_sites
+            .iter_mut()
+            .find(|(c, _)| (c.x - pos.x).hypot(c.y - pos.y) <= DBSCAN_EPS_M)
+        {
+            Some((_, b)) => b,
+            None => {
+                orphan_sites.push((pos, BTreeMap::new()));
+                &mut orphan_sites.last_mut().unwrap().1
+            }
+        };
+        let ent = bucket.entry((class, recipe)).or_insert((0, 0.0));
+        ent.0 += 1;
+        ent.1 += clock;
+    }
+    for (position, tally) in orphan_sites {
+        let groups: Vec<ClusterGroup> = tally
+            .into_iter()
+            .map(|((machine, recipe), (count, clock_sum))| ClusterGroup {
+                machine,
+                recipe,
+                count,
+                clock: (clock_sum / count as f64 * 1000.0).round() / 1000.0,
+            })
+            .collect();
+        let name = groups
+            .first()
+            .and_then(|g| gd.recipes.get(&g.recipe))
+            .and_then(|r| r.products.first())
+            .and_then(|(item, _)| gd.items.get(item))
+            .map(|i| i.display_name.to_uppercase())
+            .unwrap_or_else(|| "WATER".into());
+        clusters.push(Cluster {
+            name,
+            position,
+            groups,
+            extractor_count: 0,
+            extractors: Vec::new(),
+        });
+    }
+
     // stable numbering per name: IRON ROD WORKS 1, 2, …
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     for c in clusters.iter_mut() {

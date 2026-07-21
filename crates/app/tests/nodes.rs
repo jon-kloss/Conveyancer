@@ -9,7 +9,7 @@ use app::import::{resolved_node_pos, ImportMachine, ImportSnapshot};
 use app::session::ImportOutcome;
 use app::Session;
 use planner_core::commands::Command;
-use planner_core::entities::{CreatedBy, MapPos, NodeOverride, Status};
+use planner_core::entities::{CreatedBy, EdgeEnd, MapPos, NodeOverride, Status};
 
 fn smelter(x: f64, y: f64) -> ImportMachine {
     ImportMachine {
@@ -575,7 +575,176 @@ fn imported_water_extractor_produces_routable_water() {
         .filter_map(|g| g.out_rates.get("Desc_Water_C").copied())
         .sum();
     assert!(
-        water > 0.0,
-        "the imported water extractor actually produces water, got {water}"
+        (water - 120.0).abs() < 1e-4,
+        "one pump at clock 1 produces its full 120 m³/min, got {water}"
+    );
+}
+
+fn water_pump(x: f64, clock: f64, actor: &str) -> ImportMachine {
+    ImportMachine {
+        class: "Build_WaterPump_C".into(),
+        recipe: None,
+        clock,
+        x,
+        y: 0.0,
+        z: 0.0,
+        node_actor_id: Some(actor.into()),
+        ..Default::default()
+    }
+}
+
+fn coal_gen(recipe: Option<String>) -> ImportMachine {
+    ImportMachine {
+        class: "Build_GeneratorCoal_C".into(),
+        recipe,
+        clock: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        ..Default::default()
+    }
+}
+
+/// Several water pumps in one cluster collapse to ONE ◆ group with count = N and
+/// the MEAN clock — not N groups, and not a summed clock.
+#[test]
+fn imported_water_pumps_aggregate_into_one_group() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(ImportSnapshot {
+        save_name: "PUMPS".into(),
+        machines: vec![coal_gen(None)], // seeds the cluster the pumps attach to
+        extractors: vec![
+            water_pump(40.0, 1.0, "wv1"),
+            water_pump(60.0, 0.5, "wv2"),
+            water_pump(80.0, 0.75, "wv3"),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let pumps: Vec<_> = s
+        .state
+        .groups
+        .values()
+        .filter(|g| g.machine == "Build_WaterPump_C")
+        .collect();
+    assert_eq!(pumps.len(), 1, "three pumps collapse to one group");
+    assert_eq!(pumps[0].count, 3, "count aggregates");
+    // mean of 1.0, 0.5, 0.75 = 0.75 (not the 2.25 sum).
+    assert!(
+        (pumps[0].clock - 0.75).abs() < 1e-3,
+        "clock is the mean, got {}",
+        pumps[0].clock
+    );
+}
+
+/// A water pump with no machine cluster in range is NOT dropped — it forms a
+/// standalone ◆ water factory that still produces its water.
+#[test]
+fn imported_lone_water_pump_becomes_standalone_factory() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(ImportSnapshot {
+        save_name: "LONE-WATER".into(),
+        machines: vec![],
+        extractors: vec![water_pump(0.0, 1.0, "wv")],
+        ..Default::default()
+    })
+    .unwrap();
+    let pid = {
+        let pump = s
+            .state
+            .groups
+            .values()
+            .find(|g| g.machine == "Build_WaterPump_C")
+            .expect("a lone water pump forms a standalone factory, not dropped");
+        assert_eq!(pump.status, Status::Built);
+        pump.id.clone()
+    };
+    let d = s.solve_all_readonly();
+    let water: f64 = d
+        .factories
+        .values()
+        .filter_map(|f| f.groups.get(&pid))
+        .filter_map(|g| g.out_rates.get("Desc_Water_C").copied())
+        .sum();
+    assert!(
+        (water - 120.0).abs() < 1e-4,
+        "the standalone pump produces its water, got {water}"
+    );
+}
+
+/// The pump's water auto-wires to a water CONSUMER in the same cluster (an
+/// internal edge), rather than only netting to an OUT port. (A generator carrying
+/// its water-consuming burn recipe stands in for the consumer — the general
+/// write_built_layer producer→consumer wiring, exercised for water.)
+#[test]
+fn imported_water_pump_auto_wires_to_a_same_cluster_consumer() {
+    let mut s = Session::in_memory(None).unwrap();
+    let burn = s
+        .gamedata
+        .recipes
+        .values()
+        .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
+        .unwrap()
+        .class_name
+        .clone();
+    s.import_save(ImportSnapshot {
+        save_name: "WIRED".into(),
+        machines: vec![coal_gen(Some(burn))],
+        extractors: vec![water_pump(40.0, 1.0, "wv")],
+        ..Default::default()
+    })
+    .unwrap();
+    let pump = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_WaterPump_C")
+        .unwrap()
+        .id
+        .clone();
+    let gen = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .unwrap()
+        .id
+        .clone();
+    let wired = s.state.edges.values().any(|e| {
+        e.item == "Desc_Water_C"
+            && matches!(&e.from, EdgeEnd::Group(g) if *g == pump)
+            && matches!(&e.to, EdgeEnd::Group(g) if *g == gen)
+    });
+    assert!(
+        wired,
+        "the pump's water auto-wires to the same-cluster water consumer"
+    );
+}
+
+/// Re-importing the same save re-matches the water group (keyed by machine +
+/// recipe) instead of duplicating it.
+#[test]
+fn reimporting_water_pump_does_not_duplicate() {
+    let mut s = Session::in_memory(None).unwrap();
+    let snap = || ImportSnapshot {
+        save_name: "RE".into(),
+        machines: vec![coal_gen(None)],
+        extractors: vec![water_pump(40.0, 1.0, "wv")],
+        ..Default::default()
+    };
+    s.import_save(snap()).unwrap();
+    let count = |s: &Session| {
+        s.state
+            .groups
+            .values()
+            .filter(|g| g.machine == "Build_WaterPump_C")
+            .count()
+    };
+    assert_eq!(count(&s), 1);
+    s.import_save(snap()).unwrap();
+    assert_eq!(
+        count(&s),
+        1,
+        "re-import re-matches the water group, no duplicate"
     );
 }
