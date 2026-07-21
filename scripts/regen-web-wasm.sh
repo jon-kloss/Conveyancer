@@ -21,13 +21,17 @@ STAMP="renderer/src/wasm/web-pkg/.web-src.sha256"
 # The solve/session/gamedata behavior the web pkg ships lives in those deps, not
 # just crates/web/src — hashing only the wrapper let a session.rs/solver/gamedata
 # change ship a stale binary with a green `check`. Each crate's Cargo.toml is
-# included so dep-edge/feature changes are caught too.
+# included so dep-edge/feature changes are caught too. crates/gamedata/assets is
+# hashed as well: the wasm bakes in docs-fixture.json (the default web game
+# database, via include_str! in session.rs) and world-nodes.json (worldnodes.rs)
+# — both live OUTSIDE src/, so a data-only edit would otherwise ship stale.
 src_hash() {
   {
     for c in web app solver gamedata planner-core persist; do
       find "crates/$c/src" -type f -name '*.rs'
       echo "crates/$c/Cargo.toml"
     done
+    find crates/gamedata/assets -type f
   } | sort | xargs sha256sum | sha256sum | cut -d' ' -f1
 }
 

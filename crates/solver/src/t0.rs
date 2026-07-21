@@ -233,25 +233,28 @@ fn demand_pass(
 /// The portion of each edge's flow that serves SOFT group inputs (a generator's
 /// cooling water). Soft demand is elastic — it never has to be delivered — so
 /// the flow that genuinely competes for a pipe's or port's capacity, and thus
-/// the only flow that may bind a target ceiling, is `total - soft`. This traces
-/// each group's soft demand backward to the edges (and THROUGH junctions) that
-/// carry it, splitting at each node in proportion to the already-computed total
-/// flow so an edge's soft share never exceeds its total. A snapshot with no
-/// soft inputs yields all zeros — identical to ignoring softness — so ordinary
-/// factories are wholly unaffected. This is what makes the soft-input invariant
-/// robust to merged/shared water (a merger junction, or one water port feeding
-/// both a generator and a refinery), which a per-edge structural test cannot be.
-fn soft_edge_flows_with(
-    graph: &Graph,
-    order: &[NodeRef],
-    cycles: &BTreeMap<String, f64>,
-    total_flows: &[f64],
-) -> Vec<f64> {
+/// the only flow that may bind a target ceiling, is `total - soft`.
+///
+/// Every unit a soft group receives of a soft item IS soft, so an edge feeding
+/// such a group directly is fully soft: `soft[e] = total_flows[e]` — the flow
+/// the model actually DELIVERED, not nameplate demand. That distinction matters
+/// for T1, where the LP delivers `demand - shortfall` (< demand when water is
+/// starved); using delivered flow keeps `soft <= total` exactly, so a shared
+/// pipe's hard flow is the genuine hard draw even when the soft consumer is
+/// starved. Softness then propagates backward THROUGH junctions, split by total
+/// flow. A snapshot with no soft inputs yields all zeros — identical to ignoring
+/// softness — so ordinary factories are wholly unaffected. This flow basis is
+/// what makes the invariant robust to merged/shared water (a merger junction, or
+/// one water port feeding both a generator and a refinery), which a per-edge
+/// structural test cannot be.
+fn soft_edge_flows_with(graph: &Graph, order: &[NodeRef], total_flows: &[f64]) -> Vec<f64> {
     let s = graph.snapshot;
     let mut soft = vec![0.0f64; s.edges.len()];
-    // Distribute `amount` of soft demand for `item` entering `node` back across
-    // its incoming edges carrying that item, proportional to their total flow
-    // (equal split only when every candidate carries none).
+    // Distribute `amount` of soft flow for `item` entering `node` back across its
+    // incoming edges carrying that item, proportional to their total flow (equal
+    // split only when every candidate carries none). `amount` is always <= the
+    // total flow available on those edges, so no edge's soft share exceeds its
+    // total.
     let push = |node: &NodeRef, item: &str, amount: f64, soft: &mut Vec<f64>| {
         if amount <= 0.0 {
             return;
@@ -285,18 +288,21 @@ fn soft_edge_flows_with(
                 let Some(group) = s.groups.iter().find(|g| &g.id == gid) else {
                     continue;
                 };
-                let m = cycles.get(gid).copied().unwrap_or(0.0);
-                if m <= 0.0 {
-                    continue;
-                }
-                for (item, _) in &group.recipe.inputs {
-                    if group.soft_inputs.contains(item) {
-                        push(node, item, m * group.recipe.in_rate(item), &mut soft);
+                // A soft group's every incoming unit of a soft item is soft, so
+                // the edge is fully soft at whatever the model delivered.
+                for &ei in graph
+                    .in_edges
+                    .get(node)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[])
+                {
+                    if group.soft_inputs.contains(&s.edges[ei].item) {
+                        soft[ei] = total_flows[ei];
                     }
                 }
             }
             NodeRef::Junction(_) => {
-                // Soft demand leaving on out-edges must be pulled in across the
+                // Soft flow leaving on out-edges must be pulled in across the
                 // junction's in-edges, so softness propagates through mergers.
                 let mut soft_by_item: BTreeMap<&str, f64> = BTreeMap::new();
                 for &ei in graph
@@ -318,19 +324,30 @@ fn soft_edge_flows_with(
 }
 
 /// Standalone soft-flow trace for callers without a prebuilt `Graph` (T1).
-/// Builds the graph and a reverse-topo order; on a cyclic graph it returns all
-/// zeros (no soft subtraction — safe, never over-reports a binding).
+/// Builds the graph and a reverse-topo order for the full through-junction
+/// trace. On a CYCLIC graph (T1 accepts them; T0 rejects them earlier) there is
+/// no reverse-topo, so it falls back to the invariant-SAFE direct-edge rule: an
+/// edge feeding a soft group's soft input is fully soft (`hard = 0`), so a
+/// directly-piped cooling-water pipe/ceiling is still never named. Junction-
+/// routed soft water on a cyclic graph is the residual gap — diagnostic only,
+/// since power correctness comes from the LP's elastic slack, not this trace.
 #[cfg(feature = "lp")]
-pub(crate) fn soft_edge_flows(
-    snapshot: &FactorySnapshot,
-    cycles: &BTreeMap<String, f64>,
-    total_flows: &[f64],
-) -> Vec<f64> {
+pub(crate) fn soft_edge_flows(snapshot: &FactorySnapshot, total_flows: &[f64]) -> Vec<f64> {
     let graph = Graph::build(snapshot);
-    match graph.reverse_topo() {
-        Ok(order) => soft_edge_flows_with(&graph, &order, cycles, total_flows),
-        Err(_) => vec![0.0; snapshot.edges.len()],
+    if let Ok(order) = graph.reverse_topo() {
+        return soft_edge_flows_with(&graph, &order, total_flows);
     }
+    let mut soft = vec![0.0f64; snapshot.edges.len()];
+    for (ei, e) in snapshot.edges.iter().enumerate() {
+        if let NodeRef::Group(gid) = &e.to {
+            if let Some(g) = snapshot.groups.iter().find(|g| &g.id == gid) {
+                if g.soft_inputs.contains(&e.item) {
+                    soft[ei] = total_flows[ei];
+                }
+            }
+        }
+    }
+    soft
 }
 
 pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, SolveError> {
@@ -461,8 +478,8 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
         let probe = |t: f64| -> Result<Vec<f64>, SolveError> {
             let mut probe_targets = base_targets.clone();
             probe_targets.insert(port.clone(), t);
-            let (flows, cyc) = demand_pass(&graph, &order, &probe_targets)?;
-            let soft = soft_edge_flows_with(&graph, &order, &cyc, &flows);
+            let (flows, _) = demand_pass(&graph, &order, &probe_targets)?;
+            let soft = soft_edge_flows_with(&graph, &order, &flows);
             Ok(flows
                 .iter()
                 .zip(&soft)
@@ -604,7 +621,7 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
     // search returned an over-ceiling.
     if cfg!(debug_assertions) && edited_port.is_some() && base_feasible {
         // Assert on HARD flow, matching the cap set the ceiling search used.
-        let soft = soft_edge_flows_with(&graph, &order, &group_cycles, &edge_flow);
+        let soft = soft_edge_flows_with(&graph, &order, &edge_flow);
         let hard: Vec<f64> = edge_flow
             .iter()
             .zip(&soft)

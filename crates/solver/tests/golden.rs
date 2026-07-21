@@ -1225,10 +1225,12 @@ fn t0_soft_water_through_a_merger_junction_never_caps_power() {
 #[test]
 fn t0_shared_water_port_binds_only_on_the_hard_consumer() {
     // One ceilinged water port (300) feeds BOTH a coal generator (water SOFT)
-    // and a refinery (water HARD, 100/min). Maximizing power, only the
-    // refinery's 100/min hard draw counts against the 300 ceiling (headroom to
-    // spare), so power stays coal-limited at 300 MW — the soft generator draw
-    // must never be summed against the shared port's ceiling.
+    // and a refinery (water HARD, 250/min). Maximizing power, only the
+    // refinery's 250/min hard draw counts against the 300 ceiling, so power
+    // stays coal-limited at 300 MW. The refinery draw is chosen large enough
+    // that if the generator's soft draw were (wrongly) summed against the port,
+    // the port would bind first (250 + 0.6·t = 300 at t≈83) — this test fails
+    // if soft water is not excluded from the shared port's hard usage.
     let mut gen = group(
         "gen",
         recipe(
@@ -1249,8 +1251,8 @@ fn t0_shared_water_port_binds_only_on_the_hard_consumer() {
                 "Recipe_Sludge",
                 "refinery",
                 60.0,
-                &[("water", 100.0)],
-                &[("sludge", 100.0)],
+                &[("water", 250.0)],
+                &[("sludge", 250.0)],
                 0.0,
             ),
         );
@@ -1318,7 +1320,7 @@ fn t0_shared_water_port_binds_only_on_the_hard_consumer() {
             OutputPortSpec {
                 id: "out-sludge".into(),
                 item: "sludge".into(),
-                rate: 100.0,
+                rate: 250.0,
             },
         ],
     };
@@ -1346,8 +1348,11 @@ fn t0_shared_water_port_binds_only_on_the_hard_consumer() {
 fn t1_junction_water_not_named_as_shortfall_binding() {
     // T1 keeps power correct (elastic), but the ceiling/shortfall binding must
     // not be the junction-routed water pipe. A coal belt (30/min) starves the
-    // power target; water flows Input->Junction->Gen through a tiny pipe.
-    // Attribution must name the coal belt, never the water pipe.
+    // power target; water flows Input->Junction->Gen through a tiny pipe. The
+    // water edges are listed BEFORE the coal edge so that a solver checking raw
+    // (not hard) flow in edge order would name the saturated water pipe first —
+    // this test fails unless soft water is excluded from binding. Attribution
+    // must name the coal belt.
     let mut gen = group(
         "gen",
         recipe(
@@ -1365,18 +1370,11 @@ fn t1_junction_water_not_named_as_shortfall_binding() {
         groups: vec![gen],
         edges: vec![
             edge(
-                "e-coal",
-                NodeRef::Input("in-coal".into()),
-                g("gen"),
-                "coal",
-                30.0, // caps power at 150 MW → the 300 target is unmet
-            ),
-            edge(
                 "e-water-in",
                 NodeRef::Input("in-water".into()),
                 NodeRef::Junction("j".into()),
                 "water",
-                5.0, // tiny water pipe — must NOT be named
+                5.0, // tiny water pipe, saturated — must NOT be named
             ),
             edge(
                 "e-water-out",
@@ -1384,6 +1382,13 @@ fn t1_junction_water_not_named_as_shortfall_binding() {
                 g("gen"),
                 "water",
                 5.0,
+            ),
+            edge(
+                "e-coal",
+                NodeRef::Input("in-coal".into()),
+                g("gen"),
+                "coal",
+                30.0, // caps power at 150 MW → the 300 target is unmet
             ),
             edge(
                 "e-power",
@@ -1420,6 +1425,113 @@ fn t1_junction_water_not_named_as_shortfall_binding() {
     match &sf.binding {
         Some(Constraint::BeltCapacity { edge, .. }) => assert_eq!(edge, "e-coal"),
         other => panic!("expected coal belt binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn t1_starved_hard_consumer_through_junction_still_names_its_water_ceiling() {
+    // The subtle case: a water port (ceiling 60) feeds — through ONE merger
+    // junction — both a running coal generator (water SOFT, demands 450) and a
+    // refinery (water HARD, demands 100). The port can't satisfy both, and the
+    // LP feeds the hard refinery first (soft water yields), so the refinery's
+    // sludge target is STARVED. Its shortfall must be attributed to the water
+    // InputCeiling — NOT masked by the generator's (undelivered) soft demand.
+    // Tracing soft by nameplate DEMAND instead of DELIVERED flow reports None.
+    let mut gen = group(
+        "gen",
+        recipe(
+            "Recipe_Power_Coal",
+            "coalgen",
+            60.0,
+            &[("coal", 15.0), ("water", 45.0)],
+            &[("power", 75.0)],
+            0.0,
+        ),
+    );
+    gen.count = 10;
+    gen.driven_cycles = Some(10.0); // runs at nameplate → demands 450 water (soft)
+    gen.soft_inputs = ["water".to_string()].into_iter().collect();
+    let refinery = {
+        let mut gs = group(
+            "ref",
+            recipe(
+                "Recipe_Sludge",
+                "refinery",
+                60.0,
+                &[("water", 100.0)],
+                &[("sludge", 100.0)],
+                0.0,
+            ),
+        );
+        gs.count = 1;
+        gs
+    };
+    let snap = FactorySnapshot {
+        groups: vec![gen, refinery],
+        edges: vec![
+            edge(
+                "e-coal",
+                NodeRef::Input("in-coal".into()),
+                g("gen"),
+                "coal",
+                780.0,
+            ),
+            edge(
+                "e-water-in",
+                NodeRef::Input("in-water".into()),
+                NodeRef::Junction("j".into()),
+                "water",
+                600.0,
+            ),
+            edge(
+                "e-water-gen",
+                NodeRef::Junction("j".into()),
+                g("gen"),
+                "water",
+                600.0,
+            ),
+            edge(
+                "e-water-ref",
+                NodeRef::Junction("j".into()),
+                g("ref"),
+                "water",
+                600.0,
+            ),
+            edge(
+                "e-sludge",
+                g("ref"),
+                NodeRef::Output("out-sludge".into()),
+                "sludge",
+                600.0,
+            ),
+        ],
+        inputs: vec![
+            InputPortSpec {
+                id: "in-coal".into(),
+                item: "coal".into(),
+                ceiling: None,
+            },
+            InputPortSpec {
+                id: "in-water".into(),
+                item: "water".into(),
+                ceiling: Some(60.0), // < refinery's 100 → sludge is starved
+            },
+        ],
+        junctions: vec!["j".into()],
+        outputs: vec![OutputPortSpec {
+            id: "out-sludge".into(),
+            item: "sludge".into(),
+            rate: 100.0,
+        }],
+    };
+    let r = solver::t1::solve(&snap, &T0Edit::Recompute).unwrap();
+    let sf = r
+        .shortfalls
+        .get("out-sludge")
+        .expect("refinery is water-starved → a shortfall");
+    match &sf.binding {
+        Some(Constraint::InputCeiling { port, .. }) => assert_eq!(port, "in-water"),
+        other => panic!("expected water InputCeiling binding, got {other:?}"),
     }
 }
 

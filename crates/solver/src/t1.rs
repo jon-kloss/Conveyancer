@@ -392,14 +392,8 @@ fn run_lp(
 /// consumer carries only that consumer's demand — so `find_binding` measured
 /// against this can never name water as the binding constraint. Traced by the
 /// shared `t0::soft_edge_flows` so T0 and T1 stay consistent.
-fn hard_flows(snapshot: &FactorySnapshot, cycles: &[f64], flows: &[f64]) -> Vec<f64> {
-    let by_id: BTreeMap<String, f64> = snapshot
-        .groups
-        .iter()
-        .zip(cycles)
-        .map(|(g, &m)| (g.id.clone(), m))
-        .collect();
-    let soft = crate::t0::soft_edge_flows(snapshot, &by_id, flows);
+fn hard_flows(snapshot: &FactorySnapshot, flows: &[f64]) -> Vec<f64> {
+    let soft = crate::t0::soft_edge_flows(snapshot, flows);
     flows
         .iter()
         .zip(&soft)
@@ -501,7 +495,7 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
     if let Some(port) = &edited_port {
         if let Ok(ceiling_pass) = run_lp(snapshot, &targets, Some(port)) {
             let max_rate = ceiling_pass.max_rate;
-            let hard = hard_flows(snapshot, &ceiling_pass.cycles, &ceiling_pass.flows);
+            let hard = hard_flows(snapshot, &ceiling_pass.flows);
             if let Some(binding) = find_binding(snapshot, &hard) {
                 if targets[port] > max_rate + EPS * (1.0 + max_rate) {
                     targets.insert(port.clone(), max_rate);
@@ -521,7 +515,7 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
 
     // Hard (non-soft) flow for shortfall attribution: elastic water never names
     // a binding constraint (see `hard_flows`).
-    let hard = hard_flows(snapshot, &cycles, &flows);
+    let hard = hard_flows(snapshot, &flows);
 
     let mut groups = BTreeMap::new();
     let mut total_power = 0.0;
