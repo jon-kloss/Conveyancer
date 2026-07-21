@@ -41,9 +41,13 @@ src_hash() {
       find "crates/$c/src" -type f -name '*.rs'
       echo "crates/$c/Cargo.toml"
     done
-    find crates/gamedata/assets -type f
-  } | sort | xargs sha256sum | sha256sum | cut -d' ' -f1
+    find crates/gamedata/assets -type f -name '*.json'
+  } | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1
 }
+# LC_ALL=C: the sort order (hence the final hash) must be locale-independent, or
+# a macOS dev (default locale) and a Linux CI runner (C locale) stamp/compute
+# different hashes for byte-identical sources. Assets restricted to *.json (the
+# only shapes embedded via include_str!) so a stray untracked file can't leak in.
 
 case "${1:-build}" in
   check)
