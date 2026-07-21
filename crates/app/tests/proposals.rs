@@ -542,6 +542,81 @@ fn wizard_site_lands_within_map_bounds() {
     );
 }
 
+/// A POWER goal with a pinned generator (coal) plans the FULL chain — coal
+/// generators sized to the target MW, the coal source, and supplemental water —
+/// NOT an empty factory with a "power → world" OUT port.
+#[test]
+fn wizard_power_goal_plans_generators_and_fuel_chain() {
+    use gamedata::docs::POWER_ITEM;
+    let mut s = Session::in_memory(None).unwrap();
+    let coal_burn = "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C";
+    assert!(
+        s.gamedata.recipes.contains_key(coal_burn),
+        "fixture has the coal burn recipe"
+    );
+
+    let mut pinned = std::collections::BTreeMap::new();
+    pinned.insert(POWER_ITEM.to_string(), coal_burn.to_string());
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![(POWER_ITEM.to_string(), 750.0)], // 10 × 75 MW coal generators
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: pinned,
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    let cmds: Vec<&Command> = proposal
+        .items
+        .iter()
+        .flat_map(|i| i.commands.iter())
+        .collect();
+
+    // coal generators are stamped, sized to the target (10 × 75 MW)
+    let gen_count: u32 = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::AddGroup { machine, count, .. } if machine == "Build_GeneratorCoal_C" => {
+                Some(*count)
+            }
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        gen_count, 10,
+        "750 MW ÷ 75 = 10 coal generators, got {gen_count}"
+    );
+
+    // the coal fuel is SOURCED (a claim or a coal IN port) — the chain recursed
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::ClaimNode { .. }))
+            || cmds
+                .iter()
+                .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+                if item == "Desc_Coal_C" && *direction == PortDirection::In)),
+        "coal is sourced (claim or IN port)"
+    );
+    // supplemental water rides the burn recipe → an uncapped water IN port
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Command::AddPort { item, direction, rate_ceiling, .. }
+            if item == "Desc_Water_C" && *direction == PortDirection::In && rate_ceiling.is_none())
+        ),
+        "supplemental water gets an uncapped routable IN port"
+    );
+    // NO "power → world" OUT port — generators feed the grid, not a material port.
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+            if item == POWER_ITEM && *direction == PortDirection::Out)),
+        "a power goal ships no material OUT port"
+    );
+}
+
 #[test]
 fn wizard_produces_reviewable_partially_acceptable_proposal() {
     let mut s = Session::in_memory(None).unwrap();

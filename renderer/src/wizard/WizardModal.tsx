@@ -8,6 +8,8 @@ import { useStore } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtDuration, fmtRate, itemLabel } from "../lib/format";
 import ItemCombobox from "../lib/ItemCombobox";
+import { powerOptions } from "../graph/makeChain";
+import { POWER_ITEM } from "../state/types";
 import type { WizardConstraints, WizardGoal, WizardInfeasible, WizardLogLine } from "../state/types";
 import "./wizard.css";
 
@@ -44,6 +46,21 @@ export default function WizardModal() {
   const [infeasible, setInfeasible] = useState<WizardInfeasible | null>(null);
   const jobRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Power is a real goal now: the wizard plans generators + the fuel chain. The
+  // user picks WHICH generator/fuel (coal / fuel / nuclear) — every fuel is
+  // "available" here because the wizard sources it itself.
+  const isPower = item === POWER_ITEM;
+  const powerOpts = useMemo(
+    () => powerOptions(gamedata, new Set(Object.keys(gamedata.items))),
+    [gamedata],
+  );
+  const [powerRecipe, setPowerRecipe] = useState("");
+  useEffect(() => {
+    if (isPower && powerOpts.length && !powerOpts.some((o) => o.recipe === powerRecipe)) {
+      setPowerRecipe(powerOpts[0].recipe);
+    }
+  }, [isPower, powerOpts, powerRecipe]);
 
   // craftable items only (recipes exist, not power, not raw-ore-only). W2b:
   // unlocked alternates are first-class, so an item reachable only through an
@@ -92,6 +109,9 @@ export default function WizardModal() {
         // total-quantity mode: carry the target through the solver; the plan
         // itself is still driven by `rate` (the solver never reads milestone).
         ...(totalOn && total > 0 ? { milestone: { item, total, rate } } : {}),
+        // a Power goal pins the chosen generator's burn recipe so the solver
+        // plans generators + fuel chain (not an empty power-to-world port).
+        ...(isPower && powerRecipe ? { pinnedRecipes: { [POWER_ITEM]: powerRecipe } } : {}),
       };
       setStep(2);
       setLog([]);
@@ -204,12 +224,31 @@ export default function WizardModal() {
                 type="number"
                 className="mono wizard-rate"
                 min={0.1}
-                step={0.5}
+                step={isPower ? 50 : 0.5}
                 value={rate}
                 onChange={(e) => setRate(Number(e.target.value))}
                 data-testid="wizard-rate"
               />
-              <span className="t-label">/MIN EMPIRE-WIDE</span>
+              {isPower ? (
+                <>
+                  <span className="t-label">MW USING</span>
+                  <select
+                    className="mono wizard-power-fuel"
+                    value={powerRecipe}
+                    onChange={(e) => setPowerRecipe(e.target.value)}
+                    data-testid="wizard-power-fuel"
+                  >
+                    {powerOpts.map((o) => (
+                      <option key={o.recipe} value={o.recipe}>
+                        {gamedata.machines[o.machine]?.displayName ?? o.machine} ·{" "}
+                        {itemLabel(gamedata.items, o.fuel)}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              ) : (
+                <span className="t-label">/MIN EMPIRE-WIDE</span>
+              )}
             </div>
 
             {/* total-quantity goal (milestone): the game hands out huge total

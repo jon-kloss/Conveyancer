@@ -190,11 +190,16 @@ pub fn global_solve(
                 relaxations: vec![format!("pin a recipe for {}", item_name(&item))],
             });
         }
-        if item == POWER_ITEM {
-            continue; // power is sourced in phase 4 (A2.4), not belted
+        let is_goal = goal.items.iter().any(|(i, _)| i == &item);
+        // Power as a machine DRAW, or an unpinned Power goal, is sourced by the
+        // grid in phase 4 — not belted. But a Power GOAL with a chosen generator
+        // (a pinned burn recipe) IS planned here: it resolves into generators
+        // whose fuel + supplemental water recurse into the chain like any recipe's
+        // ingredients, sizing the whole power supply chain.
+        if item == POWER_ITEM && !(is_goal && pinned.contains_key(POWER_ITEM)) {
+            continue;
         }
         // surplus first — goal items keep their full rate (the goal is NEW production)
-        let is_goal = goal.items.iter().any(|(i, _)| i == &item);
         if !is_goal {
             if let Some(offers) = surplus.get_mut(&item) {
                 while rate > 1e-9 {
@@ -243,7 +248,10 @@ pub fn global_solve(
                     .map(|(i, _)| i != POWER_ITEM)
                     .unwrap_or(true)
         });
-        if extractable || is_resource || !craftable {
+        // A pinned Power goal is never "raw" — it expands via its burn recipe
+        // (below). `craftable` deliberately excludes POWER products, so without
+        // this guard a Power goal would fall to the raw branch and plan nothing.
+        if item != POWER_ITEM && (extractable || is_resource || !craftable) {
             *raw.entry(item.clone()).or_default() += rate;
             log(phase, &format!("raw: {} {:.1}/min", item_name(&item), rate));
             continue;
@@ -699,6 +707,11 @@ pub fn global_solve(
     // item's consumers after the dismantle).
     let goal_rate = goal.items.first().map(|(_, r)| *r).unwrap_or(0.0);
     for (i, (item, _)) in goal.items.iter().enumerate() {
+        // A Power goal ships NO material OUT port — the generators' output feeds
+        // the grid (generation), not a "power → world" belt/pipe.
+        if item == POWER_ITEM {
+            continue;
+        }
         push(
             &mut cmds,
             &mut aliases,
@@ -790,6 +803,11 @@ pub fn global_solve(
     // honest T1 shortfall, not a dangling `$g.` alias that would roll back
     // the whole accept.
     for (item, rate) in &goal.items {
+        // Power has no OUT port (skipped above) — its generators are driven to
+        // nameplate and feed the grid, so there's nothing to wire or rate here.
+        if item == POWER_ITEM {
+            continue;
+        }
         let from = if stages.iter().any(|s| &s.item == item) {
             Some(EdgeEnd::Group(format!("$g.{item}")))
         } else if raw.contains_key(item) && !supply_assumed(item) {

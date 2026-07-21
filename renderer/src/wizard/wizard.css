@@ -85,6 +85,13 @@
   text-align: right;
 }
 
+/* Power goal: the generator/fuel picker sits inline in the goal sentence. */
+.wizard-power-fuel {
+  height: 32px;
+  font-size: 14px;
+  padding: 0 8px;
+}
+
 /* total-quantity goal (milestone) */
 .wizard-total-row {
   display: flex;
