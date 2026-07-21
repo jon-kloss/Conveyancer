@@ -931,7 +931,9 @@ fn untapped_node(
     // item → (distance m, node id, nearest factory name)
     let mut best: BTreeMap<&str, (f64, &str, String)> = BTreeMap::new();
     for n in &world.nodes {
-        if n.purity != "pure" || claimed.contains(n.id.as_str()) {
+        // Only plain nodes are claimable today; don't offer a geyser or fracking
+        // satellite until its placement feature lands (game-parity arc).
+        if !n.is_plain_node() || n.purity != "pure" || claimed.contains(n.id.as_str()) {
             continue;
         }
         let (nx, ny) = match &n.entrance {

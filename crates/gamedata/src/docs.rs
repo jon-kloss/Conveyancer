@@ -529,7 +529,18 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     }
                 }
             }
-            "FGBuildableResourceExtractor" | "FGBuildableWaterPump" => {
+            // Resource extractors (miners, oil pump), the Water Extractor, and the
+            // Resource Well Extractor (fracking satellite) all read as the same
+            // Extractor shape: items_per_cycle / cycle_time drive a purity-scaled
+            // rate. Miners and the fracking extractor are NODE-BOUND (output = the
+            // node they sit on), so they get no synthesized recipe; only the water
+            // pump does (its output is always Water — handled in the synth pass via
+            // `water_pumps`). The fracking extractor is multi-resource
+            // (oil/nitrogen/water per its satellite) and 0-power — its Pressurizer
+            // pays the 150 MW — so it is deliberately NOT in `water_pumps`.
+            "FGBuildableResourceExtractor"
+            | "FGBuildableWaterPump"
+            | "FGBuildableFrackingExtractor" => {
                 for c in &classes {
                     let m = Machine {
                         class_name: s(c, "ClassName"),
@@ -1045,6 +1056,30 @@ mod tests {
                 .values()
                 .any(|x| x.produced_in.contains(&"Build_MinerMk1_C".to_string())),
             "solid/oil extractors are claimed on the map, not placed via a recipe"
+        );
+    }
+
+    #[test]
+    fn resource_well_extractor_is_a_node_bound_extractor() {
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        // The Resource Well Extractor parses as an ordinary Extractor machine so
+        // it can be claimed on a fracking-satellite node (purity-scaled rate),
+        // exactly like a miner.
+        let fe = &gd.machines["Build_FrackingExtractor_C"];
+        assert!(matches!(fe.kind, MachineKind::Extractor { .. }));
+        assert_eq!(fe.display_name, "Resource Well Extractor");
+        assert_eq!(
+            fe.power_mw, 0.0,
+            "the Pressurizer pays the power, not the extractor"
+        );
+        // It is NODE-BOUND (its output is whatever resource the satellite holds —
+        // oil / nitrogen / water), so no fixed extraction recipe is synthesized:
+        // contrast the Water Extractor, whose output is always Water.
+        assert!(
+            !gd.recipes.values().any(|x| x
+                .produced_in
+                .contains(&"Build_FrackingExtractor_C".to_string())),
+            "fracking extraction is claimed on a satellite node, not placed via a recipe"
         );
     }
 

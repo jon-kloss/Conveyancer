@@ -226,7 +226,10 @@ pub fn global_solve(
         if rate <= 1e-9 {
             continue;
         }
-        let extractable = world.nodes.iter().any(|n| n.item == item);
+        let extractable = world
+            .nodes
+            .iter()
+            .any(|n| n.is_plain_node() && n.item == item);
         // World-sourced raws (FGResourceDescriptor) are raw even without a map
         // node — water/nitrogen come from extractors the world snapshot doesn't
         // model. Without this, the real catalog offers Unpackage Water as
@@ -434,9 +437,16 @@ pub fn global_solve(
     //     free water.
     //   - Nitrogen / other well gases have no placeable source until Resource
     //     Wells land, so they stay fully assumed: no port, no edge, no wiring.
+    // "no claimable node" gates on PLAIN nodes only: nitrogen/oil/water fracking
+    // satellites exist in the catalog but aren't claimable via the wizard yet
+    // (no miner/oil-pump fits them — the well needs a Pressurizer). So nitrogen
+    // stays a supply-assumed gas here until the fracking feature lands.
     let no_node_resource = |item: &str| -> bool {
         gd.items.get(item).map(|i| i.is_resource).unwrap_or(false)
-            && !world.nodes.iter().any(|n| n.item == item)
+            && !world
+                .nodes
+                .iter()
+                .any(|n| n.is_plain_node() && n.item == item)
     };
     let placeable_source = |item: &str| -> bool {
         gd.recipes
@@ -497,7 +507,8 @@ pub fn global_solve(
             .nodes
             .iter()
             .filter(|n| {
-                &n.item == item
+                n.is_plain_node()
+                    && &n.item == item
                     && !claimed.contains(n.id.as_str())
                     && purity_rank(&n.purity) >= floor
             })

@@ -212,6 +212,13 @@ fn bind_extractors(
     let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
     for (ei, e) in exts.iter().enumerate() {
         for (ni, n) in world.nodes.iter().enumerate() {
+            // Only plain nodes are bind targets today — binding is proximity-only
+            // (not item-matched), so without this gate an imported miner could
+            // snap to a nearby geyser or fracking satellite. Fracking extractors
+            // binding to satellite nodes lands with the fracking feature.
+            if !n.is_plain_node() {
+                continue;
+            }
             let d = (n.x - e.position.x).hypot(n.y - e.position.y);
             if d <= NODE_MATCH_M {
                 pairs.push((d, ei, ni));

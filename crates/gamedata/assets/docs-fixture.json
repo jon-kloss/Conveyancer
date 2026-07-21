@@ -345,6 +345,28 @@
   ]
  },
  {
+  "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableFrackingExtractor'",
+  "Classes": [
+   {
+    "ClassName": "Build_FrackingExtractor_C",
+    "mDisplayName": "Resource Well Extractor",
+    "mPowerConsumption": "0.000000",
+    "mItemsPerCycle": "1000.000000",
+    "mExtractCycleTime": "1.000000"
+   }
+  ]
+ },
+ {
+  "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableFrackingActivator'",
+  "Classes": [
+   {
+    "ClassName": "Build_FrackingSmasher_C",
+    "mDisplayName": "Resource Well Pressurizer",
+    "mPowerConsumption": "150.000000"
+   }
+  ]
+ },
+ {
   "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorFuel'",
   "Classes": [
    {

@@ -1366,6 +1366,8 @@ fn untapped_node_entrance_wins_over_override() {
             y: 50000.0,
             z: 0.0,
         }),
+        node_type: "node".into(),
+        well: None,
         region: "grass-fields".into(),
     });
     s.edit(vec![Command::SetNodeOverride {
@@ -1458,6 +1460,8 @@ fn untapped_node_radius_boundary_is_inclusive() {
         z: 0.0,
         zone: "surface".into(),
         entrance: None,
+        node_type: "node".into(),
+        well: None,
         region: "grass-fields".into(),
     };
     s.world.nodes = vec![
@@ -1496,6 +1500,8 @@ fn untapped_node_surfaces_only_catalog_pure_nodes() {
         z: 0.0,
         zone: "surface".into(),
         entrance: None,
+        node_type: "node".into(),
+        well: None,
         region: "grass-fields".into(),
     });
 

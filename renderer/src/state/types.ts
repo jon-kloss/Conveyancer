@@ -281,6 +281,16 @@ export interface WorldNode {
   id: string;
   item: string;
   purity: "pure" | "normal" | "impure";
+  /**
+   * node = plain miner/oil-pump resource node; geyser = a geothermal siting
+   * point; fracking-satellite = one activated satellite of a resource well.
+   * Defaults to "node" for pre-v3 snapshots. Rendering/claim for geysers and
+   * fracking satellites lands with their placement features; today only "node"
+   * is drawn and claimable.
+   */
+  nodeType: "node" | "geyser" | "fracking-satellite";
+  /** present only for fracking-satellite nodes: the reconstructed well */
+  well?: string;
   x: number;
   y: number;
   /** elevation in meters */
