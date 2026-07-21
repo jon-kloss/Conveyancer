@@ -6,7 +6,7 @@
 
 import { fmtClock, fmtKm, fmtPower, fmtRate } from "../lib/format";
 import { itemLabel } from "../lib/format";
-import { effClock, effCount } from "../state/types";
+import { effClock, effCount, isFluidItem } from "../state/types";
 import type { Derived, GameData, Id, Plan, RouteKind, World } from "../state/types";
 
 const STATUS_GLYPH = { planned: "◇", under_construction: "◈", built: "◆" } as const;
@@ -110,7 +110,11 @@ export function composeBuildSheet(
             c.factory === factoryId &&
             world.nodes.find((n) => n.id === c.node)?.item === p.item,
         );
-        source = claimed ? "FROM NODE CLAIM" : "UNROUTED — SUPPLY ASSUMED";
+        // An unrouted PLANNED fluid input supplies 0 (fluids arrive only by
+        // pipe); solids and ◆ Built fluid ports keep the assumed-boundary read.
+        if (claimed) source = "FROM NODE CLAIM";
+        else if (isFluidItem(gamedata, p.item) && p.status !== "built") source = "UNROUTED — PIPE IN NEEDED";
+        else source = "UNROUTED — SUPPLY ASSUMED";
       }
       return { item: itemName(gamedata, p.item), rate: df?.ports[p.id] ?? p.rate, source };
     });

@@ -1594,7 +1594,13 @@ fn water_routed_over_pipe_gates_downstream_generator() {
     // Downstream: a coal plant with coal on tap and a water IN port, power left
     // unwired so the generator runs at its (fuel+water-limited) nameplate.
     let plant = mk_factory(&mut s, "POWER PLANT", 800.0);
-    let coal_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Coal_C", Some(480.0));
+    let coal_in = mk_port(
+        &mut s,
+        &plant,
+        PortDirection::In,
+        "Desc_Coal_C",
+        Some(480.0),
+    );
     let water_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Water_C", None);
     let gens = add_group(
         &mut s,
@@ -1696,7 +1702,13 @@ fn unrouted_planned_water_port_supplies_nothing() {
     // ceilings it to assume an off-plan source.
     let mut s = Session::in_memory(None).unwrap();
     let plant = mk_factory(&mut s, "DRY PLANT", 0.0);
-    let coal_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Coal_C", Some(480.0));
+    let coal_in = mk_port(
+        &mut s,
+        &plant,
+        PortDirection::In,
+        "Desc_Coal_C",
+        Some(480.0),
+    );
     let water_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Water_C", None);
     let gens = add_group(
         &mut s,
@@ -1743,6 +1755,123 @@ fn unrouted_planned_water_port_supplies_nothing() {
         (d.total_generation_mw - 75.0).abs() < 0.5,
         "an explicit water ceiling assumes supply → full 75 MW: {}",
         d.total_generation_mw
+    );
+}
+
+#[test]
+fn built_generator_assumes_untraced_water() {
+    // The ◆ BUILT carve-out (#58 honesty): an imported coal plant is running
+    // in-game, so its untraced (unrouted, uncapped) water IN port is assumed
+    // present — the plant generates full nameplate, never 0, even with no water
+    // routed. This is the load-bearing `port.status != Built` branch; contrast
+    // `unrouted_planned_water_port_supplies_nothing`, where the SAME uncapped,
+    // unrouted water port on a PLANNED factory reads 0.
+    let mut s = Session::in_memory(None).unwrap();
+    let burn_recipe = s
+        .gamedata
+        .recipes
+        .values()
+        .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
+        .unwrap()
+        .class_name
+        .clone();
+    // Import a single coal generator carrying its (resolvable) burn recipe, so it
+    // solves through the real path — not the recipe-less nameplate fallback.
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "BUILT-COAL".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorCoal_C".into(),
+            recipe: Some(burn_recipe),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+
+    // The import wired a ◆ Built, uncapped, unrouted water IN port for the burn
+    // recipe's supplemental water — exactly the shape the carve-out targets.
+    let water_port = s
+        .state
+        .ports
+        .values()
+        .find(|p| p.item == "Desc_Water_C" && p.direction == PortDirection::In)
+        .expect("import wires a water IN port for the burn recipe");
+    assert_eq!(
+        water_port.status,
+        Status::Built,
+        "an imported port is ◆ built"
+    );
+    assert!(water_port.rate_ceiling.is_none(), "untraced → uncapped");
+    assert!(water_port.bound_route.is_none(), "no water routed");
+
+    // Yet the plant generates full nameplate — the Built carve-out assumes its
+    // untraced water rather than starving an observed-running plant to 0.
+    let d = s.solve_all_readonly();
+    assert!(
+        (d.total_generation_mw - 75.0).abs() < 1.0,
+        "a ◆ built plant assumes untraced water and runs at nameplate: {}",
+        d.total_generation_mw
+    );
+}
+
+#[test]
+fn pipe_route_validates_tier_range() {
+    // Pipes are Mk.1–2 only (valid_pipe_tier); AddRoute and SetRouteTier both
+    // reject anything outside that range, unlike belts (Mk.1–6).
+    let mut s = Session::in_memory(None).unwrap();
+    let a = mk_factory(&mut s, "PUMP", 0.0);
+    let ao = mk_port(&mut s, &a, PortDirection::Out, "Desc_Water_C", None);
+    let b = mk_factory(&mut s, "PLANT", 800.0);
+    let bi = mk_port(&mut s, &b, PortDirection::In, "Desc_Water_C", None);
+    let path = vec![
+        MapPos {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        MapPos {
+            x: 800.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ];
+    // Mk.3 is beyond a pipe's Mk.2 ceiling → rejected at creation.
+    assert!(
+        s.edit(vec![Command::AddRoute {
+            kind: RouteKind::Pipe { tier: 3 },
+            from: ao.clone(),
+            to: bi.clone(),
+            path: path.clone(),
+        }])
+        .is_err(),
+        "pipe tier 3 is rejected"
+    );
+    // Mk.2 is valid → creates and binds the fluid ports.
+    let pipe = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Pipe { tier: 2 },
+            from: ao,
+            to: bi,
+            path,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    // SetRouteTier honours the same range: Mk.1 ok, Mk.3 rejected.
+    assert!(s
+        .edit(vec![Command::SetRouteTier {
+            id: pipe.clone(),
+            tier: 1,
+        }])
+        .is_ok());
+    assert!(
+        s.edit(vec![Command::SetRouteTier { id: pipe, tier: 3 }])
+            .is_err(),
+        "pipe SetRouteTier to Mk.3 is rejected"
     );
 }
 

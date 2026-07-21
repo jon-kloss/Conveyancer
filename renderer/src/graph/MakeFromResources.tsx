@@ -28,7 +28,7 @@ import {
   type RawWiring,
   type WiringRef,
 } from "./makeChain";
-import { minBeltTier } from "./logistics";
+import { minBeltTier, minPipeTier } from "./logistics";
 
 export default function MakeFromResources({
   factoryId,
@@ -423,7 +423,9 @@ export default function MakeFromResources({
             tier: minBeltTier(e.rate),
           }),
         ),
-        // wire each supplemental fluid from its IN port to the bank on a pipe
+        // wire each supplemental fluid from its IN port to the bank on a pipe —
+        // lowest pipe tier that carries the demand (a bank needing >600 m³/min
+        // saturates a single Mk.2 pipe; multi-line splitting is a follow-up).
         ...fluids.map(
           (f, i): Command => ({
             type: "add_edge",
@@ -431,7 +433,7 @@ export default function MakeFromResources({
             from: { kind: "port", id: fluidPortIds[i] },
             to: { kind: "group", id: bankId },
             item: f.item,
-            tier: f.rate > 300 ? 2 : 1,
+            tier: minPipeTier(f.rate),
           }),
         ),
       ]);

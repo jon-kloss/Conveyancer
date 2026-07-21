@@ -893,8 +893,17 @@ pub fn global_solve(
         });
         // A3.3: pick the transport by distance/rate thresholds
         let dist = ((dst_pos.x - site_pos.x).powi(2) + (dst_pos.y - site_pos.y).powi(2)).sqrt();
-        let picked = planner_core::transport::pick_transport(dist, *rate);
+        // A fluid rides a pipe (Mk.1 ≤300, Mk.2 ≤600 m³/min), never a belt or
+        // vehicle — the medium follows the item's form, as on the map.
+        let is_fluid = gd.items.get(item).map(|i| i.is_fluid()).unwrap_or(false);
+        let pipe_t: u8 = if *rate > 300.0 { 2 } else { 1 };
+        let picked = if is_fluid {
+            "pipe"
+        } else {
+            planner_core::transport::pick_transport(dist, *rate)
+        };
         let route_kind = match picked {
+            "pipe" => RouteKind::Pipe { tier: pipe_t },
             "rail" => RouteKind::Rail {
                 spec: RailSpec::default(),
             },
@@ -922,8 +931,20 @@ pub fn global_solve(
             kind: ProposalItemKind::RouteAdd,
             included: true,
             label: format!("⟶ {} ⟶ {}", site_name, dst_name.to_uppercase()),
-            detail: format!("{} {:.1}/min · MK.{}", item_label, rate, tier_for(*rate)),
-            impact: format!("proj {:.0}%", 100.0 * rate / belt_capacity(tier_for(*rate))),
+            detail: if is_fluid {
+                format!("{} {:.1}/min · PIPE MK.{}", item_label, rate, pipe_t)
+            } else {
+                format!("{} {:.1}/min · MK.{}", item_label, rate, tier_for(*rate))
+            },
+            impact: format!(
+                "proj {:.0}%",
+                100.0 * rate
+                    / if is_fluid {
+                        pipe_capacity(pipe_t)
+                    } else {
+                        belt_capacity(tier_for(*rate))
+                    }
+            ),
             commands: vec![Command::AddRoute {
                 kind: route_kind,
                 from: format!("$out.{item}"),
@@ -961,8 +982,15 @@ pub fn global_solve(
                 graph_pos: GraphPos { x: 0.0, y: 600.0 },
             },
             Command::AddRoute {
-                kind: RouteKind::Belt {
-                    tier: tier_for(*take),
+                // A fluid surplus rides a pipe, not a belt (medium follows form).
+                kind: if gd.items.get(item).map(|i| i.is_fluid()).unwrap_or(false) {
+                    RouteKind::Pipe {
+                        tier: if *take > 300.0 { 2 } else { 1 },
+                    }
+                } else {
+                    RouteKind::Belt {
+                        tier: tier_for(*take),
+                    }
                 },
                 from: port.clone(),
                 to: format!("${alias}"),

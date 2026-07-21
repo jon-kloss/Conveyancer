@@ -2060,35 +2060,40 @@ impl Session {
             // effective ceilings: a bound In port can't intake more than its route supplies
             for input in &mut snapshot.inputs {
                 if let Some(port) = self.state.ports.get(&input.id) {
-                    if port.bound_route.is_some() {
-                        if let Some(supply) = supplies.get(&input.id) {
-                            input.ceiling = Some(match input.ceiling {
-                                Some(c) => c.min(*supply),
-                                None => *supply,
-                            });
-                        }
-                    } else if input.ceiling.is_none()
+                    // A fluid arrives ONLY by pipe (or in-factory extraction,
+                    // which is a group output, not an IN port). So a PLANNED
+                    // fluid IN port with no explicit supply ceiling delivers
+                    // nothing unless a route actually feeds it — route a pipe to
+                    // it, or set an explicit ceiling to assume an off-plan
+                    // source. This is what makes supplemental water genuinely
+                    // require routing. Two carve-outs keep it honest, not
+                    // punitive: solids keep the lenient open-boundary assumption,
+                    // and a ◆ BUILT port is observed reality (an imported plant
+                    // is running in-game, so its untraced water is assumed
+                    // present — mirrors #58, never show a running plant at 0 MW
+                    // just because the save didn't expose its pipes).
+                    let planned_uncapped_fluid = input.ceiling.is_none()
                         && port.status != Status::Built
                         && self
                             .gamedata
                             .items
                             .get(&port.item)
                             .map(|i| i.is_fluid())
-                            .unwrap_or(false)
-                    {
-                        // A fluid arrives ONLY by pipe (or in-factory extraction,
-                        // which is a group output, not an IN port). So an
-                        // unrouted PLANNED fluid IN port with no explicit supply
-                        // ceiling delivers nothing — route a pipe to it, or set an
-                        // explicit ceiling to assume an off-plan source. This is
-                        // what makes supplemental water genuinely require routing.
-                        //
-                        // Two carve-outs keep it honest, not punitive:
-                        //  - Solids keep the lenient open-boundary assumption.
-                        //  - A ◆ BUILT port is observed reality: an imported plant
-                        //    is running in-game, so its untraced water is assumed
-                        //    present (mirrors #58 — never show a running plant at
-                        //    0 MW just because the save didn't expose its pipes).
+                            .unwrap_or(false);
+                    if port.bound_route.is_some() {
+                        if let Some(supply) = supplies.get(&input.id) {
+                            input.ceiling = Some(match input.ceiling {
+                                Some(c) => c.min(*supply),
+                                None => *supply,
+                            });
+                        } else if planned_uncapped_fluid {
+                            // Bound, but the upstream factory isn't solved yet
+                            // (a route cycle → stable-order fallback): a fluid
+                            // can't be assumed free, so read it as unsupplied
+                            // this pass rather than leaving it unconstrained.
+                            input.ceiling = Some(0.0);
+                        }
+                    } else if planned_uncapped_fluid {
                         input.ceiling = Some(0.0);
                     }
                 }

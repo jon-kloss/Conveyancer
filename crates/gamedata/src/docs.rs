@@ -400,11 +400,12 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         build_version: build_version.to_string(),
         ..Default::default()
     };
-    // (generator class, MW, supplemental water m³/min, fuels) where each fuel
-    // carries its optional byproduct (item class, amount per fuel item burned) —
-    // nuclear waste. Water is per-generator (coal 45, nuclear 240), same for
-    // every fuel that generator burns.
-    let mut generator_fuels: Vec<(String, f64, f64, Vec<FuelEntry>)> = Vec::new();
+    // (generator class, MW, supplemental fluid m³/min, supplemental item class,
+    // fuels) where each fuel carries its optional byproduct (item class, amount
+    // per fuel item burned) — nuclear waste. The supplemental fluid is
+    // per-generator (coal 45, nuclear 240 m³/min of water), same for every fuel
+    // that generator burns; the item class is read from the Docs, not hardcoded.
+    let mut generator_fuels: Vec<(String, f64, f64, String, Vec<FuelEntry>)> = Vec::new();
     // Water pumps (FGBuildableWaterPump) extract water from any water surface —
     // there is NO world node to claim (unlike ores/oil), so water can't arrive
     // through a map claim. We give each pump a synthesized extraction recipe
@@ -568,19 +569,28 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         p if p > 0.0 => p,
                         _ => f(c, "mVariablePowerProductionFactor"),
                     };
-                    // Supplemental water: mSupplementalToPowerRatio is top-level
+                    // Supplemental fluid: mSupplementalToPowerRatio is top-level
                     // on the generator (m³ per MW·… scaled by 60/1000 to m³/min).
-                    // Coal 75·10 = 45, Nuclear 2500·1.6 = 240; others 0. The
-                    // resource is always Desc_Water_C in the real data.
-                    let water_per_min = f(c, "mSupplementalToPowerRatio") * mw * 60.0 / 1000.0;
+                    // Coal 75·10 = 45, Nuclear 2500·1.6 = 240; others 0.
+                    let supplemental_per_min =
+                        f(c, "mSupplementalToPowerRatio") * mw * 60.0 / 1000.0;
                     // fuel classes: modern Docs nests them in mFuel[].mFuelClass,
-                    // with the burn byproduct (nuclear waste) alongside.
+                    // with the burn byproduct (nuclear waste) alongside. The
+                    // supplemental resource is read from mFuel[].mSupplementalResourceClass
+                    // (always Desc_Water_C in vanilla) rather than hardcoded, so a
+                    // modded generator that draws a different fluid is labelled
+                    // honestly; falls back to water if the ratio is set but the
+                    // class is absent (defensive — vanilla always pairs them).
                     let mut fuels: Vec<FuelEntry> = Vec::new();
+                    let mut supplemental_item = String::new();
                     if let Some(list) = c.get("mFuel").and_then(Value::as_array) {
                         for entry in list {
                             let fc = s(entry, "mFuelClass");
                             if fc.is_empty() {
                                 continue;
+                            }
+                            if supplemental_item.is_empty() {
+                                supplemental_item = s(entry, "mSupplementalResourceClass");
                             }
                             let bp_class = s(entry, "mByproduct");
                             let bp_amount = f(entry, "mByproductAmount");
@@ -588,6 +598,9 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                                 .then_some((bp_class, bp_amount));
                             fuels.push((fc, byproduct));
                         }
+                    }
+                    if supplemental_per_min > 0.0 && supplemental_item.is_empty() {
+                        supplemental_item = WATER_ITEM.to_string();
                     }
                     gd.machines.insert(
                         class_name.clone(),
@@ -601,7 +614,13 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                             },
                         },
                     );
-                    generator_fuels.push((class_name, mw, water_per_min, fuels));
+                    generator_fuels.push((
+                        class_name,
+                        mw,
+                        supplemental_per_min,
+                        supplemental_item,
+                        fuels,
+                    ));
                 }
             }
             "FGSchematic" => {
@@ -752,7 +771,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
     // Runs after fluid normalization (see above) so these recipes keep their
     // already-correct m³/min amounts — supplemental water below is likewise
     // supplied pre-normalized, so it skips the ÷1000 pass.
-    for (gen_class, mw, water_per_min, fuels) in generator_fuels {
+    for (gen_class, mw, supplemental_per_min, supplemental_item, fuels) in generator_fuels {
         for (fuel, byproduct) in fuels {
             let Some(fuel_item) = gd.items.get(&fuel) else {
                 continue;
@@ -769,13 +788,13 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             if let Some((bp_class, bp_amount)) = byproduct {
                 products.push((bp_class, bp_amount * per_min));
             }
-            // Supplemental water rides as an ordinary fluid ingredient (coal 45,
-            // nuclear 240 m³/min) so the solver pulls it from Water Extractor /
-            // pump recipes exactly like it back-solves fuel. Gated on the water
-            // item existing (a trimmed fixture may omit it).
+            // Supplemental fluid rides as an ordinary ingredient (coal 45,
+            // nuclear 240 m³/min of water) so the solver pulls it from Water
+            // Extractor / pump recipes exactly like it back-solves fuel. Gated
+            // on the resource item existing (a trimmed fixture may omit it).
             let mut ingredients = vec![(fuel, per_min)];
-            if water_per_min > 0.0 && gd.items.contains_key(WATER_ITEM) {
-                ingredients.push((WATER_ITEM.to_string(), water_per_min));
+            if supplemental_per_min > 0.0 && gd.items.contains_key(&supplemental_item) {
+                ingredients.push((supplemental_item.clone(), supplemental_per_min));
             }
             gd.recipes.insert(
                 class_name.clone(),

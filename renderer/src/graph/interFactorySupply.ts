@@ -20,7 +20,10 @@ export async function wireSupply(
   source: Factory,
   target: Factory,
   outPortIds: Id[],
-  kind: RouteKind,
+  /** Route kind per routed item — the caller returns a pipe for fluids and the
+   *  chosen cargo kind for solids, so a mixed batch wires each item on its right
+   *  medium (fluids never ride a belt). */
+  kindFor: (item: string) => RouteKind,
   /** The IN port the flow was launched from (RECEIVE) — bound first for its
    *  item so we wire the port the user actually clicked, not a same-item sibling. */
   preferInPort?: Id,
@@ -67,7 +70,7 @@ export async function wireSupply(
   const path = [source.position, target.position];
   const routeCmds: Command[] = specs.map((s) => ({
     type: "add_route",
-    kind,
+    kind: kindFor(s.item),
     from: s.from,
     to: s.inPort ?? createdIds[ci++],
     path,
