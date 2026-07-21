@@ -1309,6 +1309,24 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                             ),
                         });
                     }
+                    // The Pipeline Junction Cross has 4 physical ports usable in
+                    // ANY in/out mix (it both merges and splits), so the binding
+                    // limit is the TOTAL, not per-direction — count both sides.
+                    if j.kind == JunctionKind::PipeJunction {
+                        let total = state
+                            .edges
+                            .values()
+                            .filter(|e| {
+                                e.from == EdgeEnd::Junction(jid.clone())
+                                    || e.to == EdgeEnd::Junction(jid.clone())
+                            })
+                            .count();
+                        if total >= 4 {
+                            return Err(DomainError::Invalid {
+                                message: "Pipeline Junction Cross has all 4 ports connected".into(),
+                            });
+                        }
+                    }
                     // A standard splitter/merger/storage carries one item type;
                     // smart/programmable splitters may filter per output.
                     if !matches!(

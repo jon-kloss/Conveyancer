@@ -595,11 +595,13 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
       labelSizes[e.id] = { w: text.length * 6.4 + 16, h: 20 };
     }
     // Splitters/mergers route belts to distinct faces like the real building.
+    // The Pipeline Junction Cross both merges and splits (2-in/2-out faces), so
+    // it takes the default anchor routing like storage — not the splitter fan.
     const shapes: Record<string, JunctionShape> = {};
     for (const j of Object.values(plan.junctions)) {
       if (j.factory !== factoryId) continue;
       if (j.kind === "merger") shapes[j.id] = "merger";
-      else if (j.kind !== "storage") shapes[j.id] = "splitter";
+      else if (j.kind !== "storage" && j.kind !== "pipe_junction") shapes[j.id] = "splitter";
     }
     const layout = computeEdgeLayout(
       geoms,
@@ -1180,6 +1182,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
                   ["programmable_splitter", "Programmable Splitter"],
                   ["merger", "Conveyor Merger"],
                   ["storage", "Storage Container"],
+                  ["pipe_junction", "Pipeline Junction"],
                 ] as const
               ).map(([kind, fallback]) => {
                 const cls = {
@@ -1188,6 +1191,7 @@ function GraphViewInner({ factoryId }: { factoryId: Id }) {
                   programmable_splitter: "Build_ConveyorAttachmentSplitterProgrammable_C",
                   merger: "Build_ConveyorAttachmentMerger_C",
                   storage: "Build_StorageContainerMk1_C",
+                  pipe_junction: "Build_PipelineJunction_Cross_C",
                 }[kind];
                 const name = useStore.getState().gamedata.buildables?.[cls]?.displayName ?? fallback;
                 return (

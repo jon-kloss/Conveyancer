@@ -526,6 +526,17 @@ impl Session {
                         message: "a geothermal generator is fixed by its geyser's purity".into(),
                     })
                 }
+                // Fluids ride pipes, solids ride belts — the medium follows the
+                // item. A Pipeline Junction Cross carries fluids ONLY; a belt
+                // splitter/merger carries solids ONLY. planner-core's pure apply
+                // has no item catalog to tell them apart, so gate it here.
+                Command::AddEdge { from, to, item, .. }
+                    if self.junction_fluid_conflict(from, to, item).is_some() =>
+                {
+                    Err(DomainError::Invalid {
+                        message: self.junction_fluid_conflict(from, to, item).unwrap(),
+                    })
+                }
                 other => commands::apply(&mut self.state, other),
             };
             match applied {
@@ -571,6 +582,47 @@ impl Session {
         let trigger = Self::solve_trigger(&cmds);
         let derived = self.empire_solve(&trigger, Some(&mut tx));
         self.commit_mutation(tx, derived)
+    }
+
+    /// The connect-medium rule for an intra-factory edge touching a junction:
+    /// fluids ride pipes, solids ride belts. A Pipeline Junction Cross carries
+    /// FLUIDS only; every belt junction (splitter/merger/storage) carries SOLIDS
+    /// only. Returns the rejection message when `item`'s medium disagrees with a
+    /// junction end's kind, else `None`. An unknown item is treated as solid
+    /// (the belt default), matching `transport_capacity`.
+    fn junction_fluid_conflict(&self, from: &EdgeEnd, to: &EdgeEnd, item: &str) -> Option<String> {
+        let is_fluid = self
+            .gamedata
+            .items
+            .get(item)
+            .map(|i| i.is_fluid())
+            .unwrap_or(false);
+        let name = self
+            .gamedata
+            .items
+            .get(item)
+            .map(|i| i.display_name.clone())
+            .unwrap_or_else(|| item.to_string());
+        for end in [from, to] {
+            let EdgeEnd::Junction(jid) = end else {
+                continue;
+            };
+            let Some(j) = self.state.junctions.get(jid) else {
+                continue;
+            };
+            match (j.kind.is_pipe(), is_fluid) {
+                (true, false) => {
+                    return Some(format!(
+                        "a Pipeline Junction carries fluids only — {name} is a solid"
+                    ))
+                }
+                (false, true) => return Some(format!(
+                    "{name} is a fluid — route it through a Pipeline Junction, not a belt junction"
+                )),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// The ONLY path from an applied `Transaction` to a durable undo entry.

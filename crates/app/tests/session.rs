@@ -567,6 +567,135 @@ fn junctions_split_and_enforce_port_caps() {
     );
 }
 
+/// The Pipeline Junction Cross carries FLUIDS only; a belt junction carries
+/// SOLIDS only. The medium follows the item (fluids ride pipes, solids ride
+/// belts), enforced on connect at the session layer.
+#[test]
+fn pipe_junction_carries_fluids_belt_junction_carries_solids() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "PIPE HALL", 0.0);
+
+    // a Pipeline Junction Cross — defaults to the real 4-way buildable.
+    let cross_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::PipeJunction,
+            graph_pos: gp(400.0, 200.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    assert_eq!(
+        s.state.junctions[&cross_id].buildable,
+        "Build_PipelineJunction_Cross_C"
+    );
+    let cross = EdgeEnd::Junction(cross_id);
+
+    // WATER (fluid) rides the cross — allowed.
+    let w_in = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", Some(600.0));
+    s.edit(vec![Command::AddEdge {
+        factory: f.clone(),
+        from: EdgeEnd::Port(w_in),
+        to: cross.clone(),
+        item: "Desc_Water_C".into(),
+        tier: 1,
+    }])
+    .expect("a fluid rides the pipe junction");
+
+    // COAL (solid) onto the cross — rejected (pipes carry fluids only).
+    let c_in = mk_port(&mut s, &f, PortDirection::In, "Desc_Coal_C", Some(240.0));
+    assert!(
+        s.edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(c_in),
+            to: cross.clone(),
+            item: "Desc_Coal_C".into(),
+            tier: 1,
+        }])
+        .is_err(),
+        "a solid must not ride a pipe junction"
+    );
+
+    // conversely, WATER onto a belt SPLITTER — rejected (fluids need a pipe).
+    let belt_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::Splitter,
+            graph_pos: gp(400.0, 400.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let w_in2 = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", Some(600.0));
+    assert!(
+        s.edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(w_in2),
+            to: EdgeEnd::Junction(belt_id),
+            item: "Desc_Water_C".into(),
+            tier: 1,
+        }])
+        .is_err(),
+        "a fluid must not ride a belt junction"
+    );
+}
+
+/// The Pipeline Junction Cross has 4 physical ports usable in ANY in/out mix —
+/// so the binding limit is the TOTAL (2 in + 2 out = 4), not per-direction, and
+/// a 5th connection of either direction is refused.
+#[test]
+fn pipe_junction_caps_at_four_total_ports() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "PIPE HALL", 0.0);
+    let cross_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::PipeJunction,
+            graph_pos: gp(400.0, 200.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let cross = EdgeEnd::Junction(cross_id);
+
+    let water_edge = |s: &mut Session, end: EdgeEnd, into: bool| {
+        let dir = if into {
+            PortDirection::In
+        } else {
+            PortDirection::Out
+        };
+        let p = mk_port(s, &f, dir, "Desc_Water_C", Some(600.0));
+        let (from, to) = if into {
+            (EdgeEnd::Port(p), end)
+        } else {
+            (end, EdgeEnd::Port(p))
+        };
+        s.edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from,
+            to,
+            item: "Desc_Water_C".into(),
+            tier: 1,
+        }])
+    };
+
+    // 2 in + 2 out = the 4-way cross, all accepted.
+    water_edge(&mut s, cross.clone(), true).expect("in 1");
+    water_edge(&mut s, cross.clone(), true).expect("in 2");
+    water_edge(&mut s, cross.clone(), false).expect("out 1");
+    water_edge(&mut s, cross.clone(), false).expect("out 2");
+
+    // a 5th connection (well within the (4,4) per-direction caps) is refused by
+    // the total-of-4 rule.
+    assert!(
+        water_edge(&mut s, cross.clone(), true).is_err(),
+        "the cross has only 4 ports total"
+    );
+}
+
 fn connect_ends(s: &mut Session, fid: &str, from: EdgeEnd, to: EdgeEnd, item: &str, tier: u8) {
     s.edit(vec![Command::AddEdge {
         factory: fid.into(),

@@ -9,7 +9,7 @@ import { Handle, Position } from "@xyflow/react";
 import { useStore } from "../state/store";
 import { itemLabel } from "../lib/format";
 import { ICONS } from "../lib/ItemIcon";
-import { JUNCTION_CAPS, type Junction } from "../state/types";
+import { JUNCTION_CAPS, isPipeJunction, type Junction } from "../state/types";
 
 export interface JunctionNodeData {
   junction: Junction;
@@ -26,6 +26,7 @@ const KIND_GLYPH: Record<Junction["kind"], string> = {
   programmable_splitter: "⑂",
   merger: "⑃",
   storage: "▤",
+  pipe_junction: "╬",
 };
 
 export default function JunctionNode({ data, selected }: { data: JunctionNodeData; selected?: boolean }) {
@@ -49,6 +50,7 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
   const hasSprite = ICONS.has(junction.buildable) && failedIcon !== junction.buildable;
   const isMerger = junction.kind === "merger";
   const isStorage = junction.kind === "storage";
+  const isPipe = isPipeJunction(junction.kind);
 
   return (
     // A junction just routes belts — it produces nothing, so it reads as a
@@ -59,7 +61,7 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
     // are drawn from edgeLayout anchors, so these handles are the connection
     // affordance + side nubs that agree with where the belts run.
     <div
-      className={`junction-card frame-${junction.status} ${selected ? "selected" : ""} ${data.motionCls ?? ""}`}
+      className={`junction-card frame-${junction.status} ${isPipe ? "pipe" : ""} ${selected ? "selected" : ""} ${data.motionCls ?? ""}`}
       data-testid={`junction-${junction.kind}-${junction.id}`}
       title={`${name} — in ${inUsed}/${inCap} · out ${outUsed}/${outCap}${item ? ` · ${item.toUpperCase()}` : ""}`}
     >
@@ -67,6 +69,15 @@ export default function JunctionNode({ data, selected }: { data: JunctionNodeDat
         <>
           <Handle type="target" position={Position.Left} className="belt-handle" />
           <Handle type="source" position={Position.Right} className="belt-handle" />
+        </>
+      ) : isPipe ? (
+        // The cross both merges and splits: two input faces (left, top) and two
+        // output faces (right, bottom). Server enforces the 4-port total.
+        <>
+          <Handle id="in-l" type="target" position={Position.Left} className="belt-handle" />
+          <Handle id="in-t" type="target" position={Position.Top} className="belt-handle" />
+          <Handle id="out-r" type="source" position={Position.Right} className="belt-handle" />
+          <Handle id="out-b" type="source" position={Position.Bottom} className="belt-handle" />
         </>
       ) : isMerger ? (
         <>
