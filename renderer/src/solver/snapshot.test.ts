@@ -149,3 +149,56 @@ describe("buildSnapshot — driven generators (audit #123)", () => {
     expect(g.drivenCycles).toBeNull();
   });
 });
+
+// The supplemental-fluid gate: a fluid arrives only by pipe, so a planned,
+// unrouted, uncapped fluid IN port supplies 0 in the SINGLE-FACTORY (T0) view
+// too — a coal generator reads 0 MW until water is piped in, not full power.
+describe("buildSnapshot — supplemental fluid gate (routed water)", () => {
+  const gd = {
+    recipes: {},
+    machines: {},
+    items: {
+      Desc_Coal_C: { className: "Desc_Coal_C", displayName: "Coal", form: "RF_SOLID" },
+      Desc_Water_C: { className: "Desc_Water_C", displayName: "Water", form: "RF_LIQUID" },
+    },
+  } as unknown as GameData;
+
+  type SnapInput = { id: string; item: string; ceiling: number | null };
+  const port = (over: Record<string, unknown>) => ({
+    id: "w",
+    factory: F,
+    direction: "in",
+    item: "Desc_Water_C",
+    rate: 0,
+    rateCeiling: null,
+    boundRoute: null,
+    status: "planned",
+    ...over,
+  });
+  const ceilingOf = (p: Record<string, unknown>): number | null =>
+    (buildSnapshot(makePlan({ ports: { w: p } }), gd, F)!.inputs as SnapInput[])[0].ceiling;
+
+  it("zeroes a planned, unrouted, uncapped FLUID in port", () => {
+    expect(ceilingOf(port({}))).toBe(0);
+  });
+  it("leaves a SOLID uncapped in port open (lenient boundary)", () => {
+    expect(ceilingOf(port({ item: "Desc_Coal_C" }))).toBeNull();
+  });
+  it("keeps an explicit fluid ceiling (assumed off-plan source)", () => {
+    // 137 is deliberately not a pipe/belt capacity, so it can only be the port's
+    // own ceiling passing through.
+    expect(ceilingOf(port({ rateCeiling: 137 }))).toBe(137);
+  });
+  it("keeps an explicit ceiling on a SOLID too (ceiling short-circuits the gate)", () => {
+    // Companion to the above: an explicit ceiling passes through regardless of
+    // form — proving the fluid framing of the fluid-ceiling case is incidental
+    // (the `rateCeiling == null` guard short-circuits before isFluidItem).
+    expect(ceilingOf(port({ item: "Desc_Coal_C", rateCeiling: 137 }))).toBe(137);
+  });
+  it("exempts a ◆ BUILT fluid port (observed running plant assumes water)", () => {
+    expect(ceilingOf(port({ status: "built" }))).toBeNull();
+  });
+  it("leaves a routed (bound) fluid port for the empire pass", () => {
+    expect(ceilingOf(port({ boundRoute: "r1" }))).toBeNull();
+  });
+});

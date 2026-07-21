@@ -1759,6 +1759,42 @@ fn unrouted_planned_water_port_supplies_nothing() {
 }
 
 #[test]
+fn snapshot_applies_the_fluid_gate_directly() {
+    // The gate lives in Session::snapshot() (the single source every solve reads
+    // through). Pin it at the snapshot layer — the Rust mirror of the TS
+    // buildSnapshot gate tests — so the two can't silently diverge. (The ◆ Built
+    // carve-out is covered end-to-end by built_generator_assumes_untraced_water;
+    // bound ports are handled by the empire route-supply pass.)
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "PORTS", 0.0);
+    let water_uncapped = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", None);
+    let water_capped = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", Some(137.0));
+    let coal_uncapped = mk_port(&mut s, &f, PortDirection::In, "Desc_Coal_C", None);
+
+    let snap = s.snapshot(&f).unwrap();
+    let ceiling = |pid: &str| snap.inputs.iter().find(|i| i.id == pid).unwrap().ceiling;
+
+    // Unrouted, uncapped, PLANNED fluid → 0 (a fluid arrives only by pipe).
+    assert_eq!(
+        ceiling(&water_uncapped),
+        Some(0.0),
+        "planned uncapped water → 0"
+    );
+    // An explicit ceiling is a deliberate off-plan assumption → kept as-is.
+    assert_eq!(
+        ceiling(&water_capped),
+        Some(137.0),
+        "explicit water ceiling kept"
+    );
+    // A SOLID keeps the lenient open boundary (None = unconstrained).
+    assert_eq!(
+        ceiling(&coal_uncapped),
+        None,
+        "planned uncapped solid stays open"
+    );
+}
+
+#[test]
 fn built_generator_assumes_untraced_water() {
     // The ◆ BUILT carve-out (#58 honesty): an imported coal plant is running
     // in-game, so its untraced (unrouted, uncapped) water IN port is assumed
