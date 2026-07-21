@@ -38,7 +38,7 @@ pub enum DbError {
 /// Accelerator 52×22 garbage vs 37×27) and must re-parse.
 /// v5: `GameData.pipes` (fluid transport tiers) joined the persisted shape —
 /// pre-v5 blobs carry no pipeline catalog and must re-parse to gain it.
-const SCHEMA_VERSION: &str = "5";
+const SCHEMA_VERSION: &str = "6";
 
 #[cfg(feature = "sqlite")]
 const SCHEMA: &str = "

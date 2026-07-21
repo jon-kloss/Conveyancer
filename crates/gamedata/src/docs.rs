@@ -79,6 +79,12 @@ pub enum MachineKind {
     Generator {
         power_production_mw: f64,
     },
+    /// Resource Well Pressurizer (`FGBuildableFrackingActivator`): produces
+    /// nothing itself — it activates the well's satellites (each carries a
+    /// `Build_FrackingExtractor_C` Extractor) — but DRAWS `Machine::power_mw`
+    /// (150 MW for the vanilla Pressurizer). Recipe-less like a generator, so its
+    /// draw is credited by a nameplate injection, not the material solve.
+    Activator,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -556,6 +562,27 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         if fg == "FGBuildableWaterPump" {
                             water_pumps.push(m.class_name.clone());
                         }
+                        gd.machines.insert(m.class_name.clone(), m);
+                    }
+                }
+            }
+            // Resource Well Pressurizer: the well "activator" — placed on the
+            // core, it pressurizes the satellites (where the extractors sit) and
+            // draws mPowerConsumption (150 MW vanilla). It produces nothing, so it
+            // is an Activator, not an Extractor; its power is credited by nameplate
+            // injection (it imports recipe-less, like a generator).
+            "FGBuildableFrackingActivator" => {
+                for c in &classes {
+                    let m = Machine {
+                        class_name: s(c, "ClassName"),
+                        display_name: s(c, "mDisplayName"),
+                        // the 150 MW draw — credited via injection since the
+                        // Activator group is recipe-less (skipped by the solve).
+                        power_mw: f(c, "mPowerConsumption"),
+                        footprint_m: parse_clearance_footprint(&s(c, "mClearanceData")),
+                        kind: MachineKind::Activator,
+                    };
+                    if !m.class_name.is_empty() {
                         gd.machines.insert(m.class_name.clone(), m);
                     }
                 }
@@ -1086,16 +1113,17 @@ mod tests {
                 .contains(&"Build_FrackingExtractor_C".to_string())),
             "fracking extraction is claimed on a satellite node, not placed via a recipe"
         );
-        // The Pressurizer (Resource Well Activator) is recognized as a buildable
-        // but NOT yet parsed as a machine — its 150 MW power draw is wired into
-        // the solver by the fracking placement PR, not here.
+        // The Pressurizer (Resource Well Activator) parses as an Activator machine
+        // carrying the well's 150 MW draw — it produces nothing (the satellites'
+        // extractors do), so its power is credited by nameplate injection.
+        let pz = &gd.machines["Build_FrackingSmasher_C"];
         assert!(
-            gd.buildables.contains_key("Build_FrackingSmasher_C"),
-            "Pressurizer is catalogued as a buildable"
+            matches!(pz.kind, MachineKind::Activator) && pz.power_mw == 150.0,
+            "Pressurizer is a 150 MW Activator"
         );
         assert!(
-            !gd.machines.contains_key("Build_FrackingSmasher_C"),
-            "Pressurizer is not a machine yet (no power/placement modeling in this PR)"
+            gd.buildables.contains_key("Build_FrackingSmasher_C"),
+            "Pressurizer is also in the display catalog"
         );
     }
 
