@@ -15,7 +15,7 @@ import {
   DEFAULT_RAIL_SPEC,
   DEFAULT_TRUCK_SPEC,
   isFluidItem,
-  pipeCapacity,
+  PIPE_CAPACITY,
   POWER_ITEM,
   type Id,
   type RouteKind,
@@ -192,9 +192,9 @@ export default function SendToFactory({
                   onChange={(e) => setPipeTier(Number(e.target.value))}
                   data-testid="send-pipe-tier"
                 >
-                  {[1, 2].map((t) => (
-                    <option key={t} value={t}>
-                      MK.{t} — {fmtRate(pipeCapacity(t))}/min
+                  {PIPE_CAPACITY.map((cap, i) => (
+                    <option key={i + 1} value={i + 1}>
+                      MK.{i + 1} — {fmtRate(cap)}/min
                     </option>
                   ))}
                 </select>

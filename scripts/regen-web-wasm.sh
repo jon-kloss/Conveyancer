@@ -17,18 +17,31 @@ cd "$(dirname "$0")/.."
 STAMP="renderer/src/wasm/web-pkg/.web-src.sha256"
 
 # Hash every source that feeds the web wasm build. crates/web transitively
-# compiles the FULL Session (crates/app), gamedata, solver, planner-core, etc.,
-# so a change to any of them can change the emitted wasm even when crates/web/src
-# is untouched — the exact drift that shipped a stale, gate-less solver to the
-# deployed web app (the empire water gate lived in crates/app/session.rs). So
-# hash the whole crates/ Rust tree + every Cargo.toml + Cargo.lock (the dep
-# pins). Over-broad by design: any Rust change flags the committed wasm as
-# needing a rebuild, which is correct for a committed binary artifact.
+# compiles the FULL Session (crates/app) + its lib deps — planner-core, solver,
+# gamedata, persist — so a change to ANY of them can change the emitted wasm even
+# when crates/web/src is untouched. That drift shipped a stale, gate-less solver
+# to the deployed web app (the empire water gate lived in crates/app/session.rs),
+# so the hash must cover the whole closure, not just crates/web.
+#
+# Scope, deliberately:
+#  - LIB sources only (crates/<c>/src): tests/ are separate binaries never linked
+#    into the wasm, so a test-only change must NOT flag the committed wasm stale.
+#  - The closure crates ONLY (web, app, planner-core, solver, gamedata, persist):
+#    crates/solver-wasm has its own gate (regen-wasm.sh) and is not a web dep.
+#  - The gamedata ASSETS embedded via include_str! (world-nodes.json,
+#    docs-fixture.json) — they compile into the binary, so a catalog change is
+#    exactly the same stale-ship risk as a code change (found in review).
+#  - NOT Cargo.lock: `cargo build --target wasm32` (which CI runs before this
+#    check) rewrites it, so hashing it mismatches the stamp on a fresh runner even
+#    with identical sources. Cargo.toml captures the dep edges we care about.
+# If crates/web's dependency closure changes, update the crate list here.
 src_hash() {
   {
-    find crates -type f -name '*.rs'
-    find crates -type f -name 'Cargo.toml'
-    echo Cargo.lock
+    for c in web app planner-core solver gamedata persist; do
+      find "crates/$c/src" -type f -name '*.rs'
+      echo "crates/$c/Cargo.toml"
+    done
+    find crates/gamedata/assets -type f
   } | sort | xargs sha256sum | sha256sum | cut -d' ' -f1
 }
 

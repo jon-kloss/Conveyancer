@@ -185,7 +185,15 @@ describe("buildSnapshot — supplemental fluid gate (routed water)", () => {
     expect(ceilingOf(port({ item: "Desc_Coal_C" }))).toBeNull();
   });
   it("keeps an explicit fluid ceiling (assumed off-plan source)", () => {
-    expect(ceilingOf(port({ rateCeiling: 300 }))).toBe(300);
+    // 137 is deliberately not a pipe/belt capacity, so it can only be the port's
+    // own ceiling passing through.
+    expect(ceilingOf(port({ rateCeiling: 137 }))).toBe(137);
+  });
+  it("keeps an explicit ceiling on a SOLID too (ceiling short-circuits the gate)", () => {
+    // Companion to the above: an explicit ceiling passes through regardless of
+    // form — proving the fluid framing of the fluid-ceiling case is incidental
+    // (the `rateCeiling == null` guard short-circuits before isFluidItem).
+    expect(ceilingOf(port({ item: "Desc_Coal_C", rateCeiling: 137 }))).toBe(137);
   });
   it("exempts a ◆ BUILT fluid port (observed running plant assumes water)", () => {
     expect(ceilingOf(port({ status: "built" }))).toBeNull();
