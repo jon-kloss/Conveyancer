@@ -16,12 +16,19 @@ cd "$(dirname "$0")/.."
 
 STAMP="renderer/src/wasm/web-pkg/.web-src.sha256"
 
-# Hash every source that feeds the web wasm build's dispatch surface: the
-# crate's own sources + its Cargo.toml (the dep edges that pick its features).
+# Hash every source that feeds the web wasm build. crates/web transitively
+# compiles the FULL Session (crates/app), gamedata, solver, planner-core, etc.,
+# so a change to any of them can change the emitted wasm even when crates/web/src
+# is untouched — the exact drift that shipped a stale, gate-less solver to the
+# deployed web app (the empire water gate lived in crates/app/session.rs). So
+# hash the whole crates/ Rust tree + every Cargo.toml + Cargo.lock (the dep
+# pins). Over-broad by design: any Rust change flags the committed wasm as
+# needing a rebuild, which is correct for a committed binary artifact.
 src_hash() {
   {
-    find crates/web/src -type f -name '*.rs'
-    echo crates/web/Cargo.toml
+    find crates -type f -name '*.rs'
+    find crates -type f -name 'Cargo.toml'
+    echo Cargo.lock
   } | sort | xargs sha256sum | sha256sum | cut -d' ' -f1
 }
 

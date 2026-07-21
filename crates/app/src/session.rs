@@ -1818,11 +1818,34 @@ impl Session {
         for pid in &factory.ports {
             let p = self.state.ports.get(pid)?;
             match p.direction {
-                PortDirection::In => inputs.push(InputPortSpec {
-                    id: p.id.clone(),
-                    item: p.item.clone(),
-                    ceiling: p.rate_ceiling,
-                }),
+                PortDirection::In => {
+                    // A planned, unrouted, uncapped FLUID IN port supplies 0 —
+                    // fluids arrive only by pipe. Applied HERE (not just in the
+                    // empire pass) so the single-factory / T0 view is honest too:
+                    // a coal generator reads 0 MW until water is piped in, not
+                    // full power. A bound port's real route supply is layered on
+                    // in empire_solve; solids and ◆ Built fluid ports keep the
+                    // lenient open-boundary assumption.
+                    let ceiling = if p.rate_ceiling.is_none()
+                        && p.bound_route.is_none()
+                        && p.status != Status::Built
+                        && self
+                            .gamedata
+                            .items
+                            .get(&p.item)
+                            .map(|i| i.is_fluid())
+                            .unwrap_or(false)
+                    {
+                        Some(0.0)
+                    } else {
+                        p.rate_ceiling
+                    };
+                    inputs.push(InputPortSpec {
+                        id: p.id.clone(),
+                        item: p.item.clone(),
+                        ceiling,
+                    });
+                }
                 PortDirection::Out => outputs.push(OutputPortSpec {
                     id: p.id.clone(),
                     item: p.item.clone(),

@@ -13,6 +13,7 @@ import {
   DEFAULT_RAIL_SPEC,
   DEFAULT_TRUCK_SPEC,
   isFluidItem,
+  pipeCapacity,
   POWER_ITEM,
   type Id,
   type RouteKind,
@@ -81,6 +82,7 @@ export default function ReceiveFromFactory({
   })();
   const [transport, setTransport] = useState<"belt" | "rail" | "truck" | "drone">("belt");
   const [tier, setTier] = useState(3);
+  const [pipeTier, setPipeTier] = useState(2);
   const solidKind = (): RouteKind =>
     transport === "belt"
       ? { kind: "belt", tier }
@@ -89,12 +91,16 @@ export default function ReceiveFromFactory({
         : transport === "truck"
           ? { kind: "truck", spec: { ...DEFAULT_TRUCK_SPEC } }
           : { kind: "drone", spec: { ...DEFAULT_DRONE_SPEC } };
-  // A fluid always rides a pipe (Mk.2 default), whatever the transport picker
-  // says — the medium follows the item's form. Solids use the chosen kind.
+  // A fluid always rides a pipe (the medium follows the item's form); solids use
+  // the chosen cargo kind. A mixed pull wires each item on its own medium.
   const kindForItem = (item: string): RouteKind =>
-    isFluidItem(gamedata, item) ? { kind: "pipe", tier: 2 } : solidKind();
+    isFluidItem(gamedata, item) ? { kind: "pipe", tier: pipeTier } : solidKind();
 
   const chosen = sourceOuts.filter((p) => effectiveChecked[p.id]);
+  // Which media the current selection needs — a pipe control shows for fluids,
+  // the belt/rail/truck/drone picker for solids (both, on a mixed pull).
+  const hasFluid = chosen.some((p) => isFluidItem(gamedata, p.item));
+  const hasSolid = chosen.some((p) => !isFluidItem(gamedata, p.item));
   const busyRef = useRef(false);
 
   const confirm = async () => {
@@ -172,27 +178,48 @@ export default function ReceiveFromFactory({
               )}
             </div>
 
-            <label className="send-row">
-              <span className="drawer-row-name">Transport</span>
-              <select
-                className="mono"
-                value={transport}
-                onChange={(e) => setTransport(e.target.value as typeof transport)}
-                data-testid="receive-transport"
-              >
-                <option value="belt">BELT{dist < 800 ? " — suggested" : ""}</option>
-                <option value="rail">RAIL{dist >= 800 ? " — suggested" : ""}</option>
-                <option value="truck">TRUCK</option>
-                <option value="drone">DRONE</option>
-              </select>
-            </label>
-            {transport === "belt" && (
+            {hasSolid && (
+              <label className="send-row">
+                <span className="drawer-row-name">Transport</span>
+                <select
+                  className="mono"
+                  value={transport}
+                  onChange={(e) => setTransport(e.target.value as typeof transport)}
+                  data-testid="receive-transport"
+                >
+                  <option value="belt">BELT{dist < 800 ? " — suggested" : ""}</option>
+                  <option value="rail">RAIL{dist >= 800 ? " — suggested" : ""}</option>
+                  <option value="truck">TRUCK</option>
+                  <option value="drone">DRONE</option>
+                </select>
+              </label>
+            )}
+            {hasSolid && transport === "belt" && (
               <label className="send-row">
                 <span className="drawer-row-name">Belt tier</span>
                 <select className="mono" value={tier} onChange={(e) => setTier(Number(e.target.value))}>
                   {[1, 2, 3, 4, 5, 6].map((t) => (
                     <option key={t} value={t}>
                       MK.{t} — {fmtRate(beltCapacity(t))}/min
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {/* Fluids ride a pipe — show its tier + capacity, like the map's route
+                popover. On a mixed pull the belt controls above cover the solids. */}
+            {hasFluid && (
+              <label className="send-row">
+                <span className="drawer-row-name">Pipe tier{hasSolid ? " (fluids)" : ""}</span>
+                <select
+                  className="mono"
+                  value={pipeTier}
+                  onChange={(e) => setPipeTier(Number(e.target.value))}
+                  data-testid="receive-pipe-tier"
+                >
+                  {[1, 2].map((t) => (
+                    <option key={t} value={t}>
+                      MK.{t} — {fmtRate(pipeCapacity(t))}/min
                     </option>
                   ))}
                 </select>

@@ -3,7 +3,7 @@
 // unit-testable under vitest/node.
 
 import type { GameData, Id, Plan } from "../state/types";
-import { effClock, effCount, POWER_ITEM, transportCapacity } from "../state/types";
+import { effClock, effCount, isFluidItem, POWER_ITEM, transportCapacity } from "../state/types";
 
 export interface FactorySnapshot {
   groups: unknown[];
@@ -65,8 +65,15 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
   for (const pid of factory.ports) {
     const p = plan.ports[pid];
     if (!p) return null;
-    if (p.direction === "in") inputs.push({ id: p.id, item: p.item, ceiling: p.rateCeiling });
-    else outputs.push({ id: p.id, item: p.item, rate: p.rate });
+    if (p.direction === "in") {
+      // A planned, unrouted, uncapped FLUID IN port supplies 0 — fluids arrive
+      // only by pipe (mirrors the desktop snapshot gate, so the single-factory
+      // view is honest). Solids and ◆ built fluid ports keep the lenient
+      // assumption; a bound port's route supply is layered on by the empire pass.
+      const gated =
+        p.rateCeiling == null && !p.boundRoute && p.status !== "built" && isFluidItem(gamedata, p.item);
+      inputs.push({ id: p.id, item: p.item, ceiling: gated ? 0 : p.rateCeiling });
+    } else outputs.push({ id: p.id, item: p.item, rate: p.rate });
   }
   const toRef = (end: { kind: string; id: string }) => {
     if (end.kind === "group") return { kind: "group", id: end.id };
