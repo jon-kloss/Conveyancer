@@ -147,6 +147,25 @@ pub fn global_solve(
 
     // ---------- phase 1: demand graph ----------
     let phase = "DEMAND GRAPH";
+
+    // A Power GOAL must carry a chosen generator (a pinned burn recipe): that's
+    // what the demand walk resolves into generators to size. Without it there's
+    // nothing to expand — the walk would skip POWER_ITEM (it's grid-sourced as a
+    // machine draw) and strand an empty factory. Refuse honestly and name the fix
+    // (the UI's generator picker), rather than emit a groupless site.
+    if goal.items.iter().any(|(i, _)| i == POWER_ITEM) && !pinned.contains_key(POWER_ITEM) {
+        let binding = "a Power goal needs a chosen generator type".to_string();
+        log(phase, &format!("INFEASIBLE — {binding}"));
+        return WizardOutcome::Infeasible(Infeasible {
+            best_rate: 0.0,
+            binding,
+            relaxations: vec![format!(
+                "pick a generator type for {}",
+                item_name(POWER_ITEM)
+            )],
+        });
+    }
+
     let mut demand: BTreeMap<String, f64> = BTreeMap::new(); // produced items
     let mut raw: BTreeMap<String, f64> = BTreeMap::new(); // extracted items
     let mut surplus_taken: Vec<(Id, String, f64)> = Vec::new(); // (out port, item, rate)
@@ -190,11 +209,16 @@ pub fn global_solve(
                 relaxations: vec![format!("pin a recipe for {}", item_name(&item))],
             });
         }
-        if item == POWER_ITEM {
-            continue; // power is sourced in phase 4 (A2.4), not belted
+        let is_goal = goal.items.iter().any(|(i, _)| i == &item);
+        // Power as a machine DRAW is sourced by the grid in phase 4 — not belted.
+        // But a Power GOAL is planned here: the upfront guard guarantees it carries
+        // a chosen generator (a pinned burn recipe), so it resolves into generators
+        // whose fuel + supplemental water recurse into the chain like any recipe's
+        // ingredients, sizing the whole power supply chain.
+        if item == POWER_ITEM && !is_goal {
+            continue;
         }
         // surplus first — goal items keep their full rate (the goal is NEW production)
-        let is_goal = goal.items.iter().any(|(i, _)| i == &item);
         if !is_goal {
             if let Some(offers) = surplus.get_mut(&item) {
                 while rate > 1e-9 {
@@ -243,7 +267,10 @@ pub fn global_solve(
                     .map(|(i, _)| i != POWER_ITEM)
                     .unwrap_or(true)
         });
-        if extractable || is_resource || !craftable {
+        // A pinned Power goal is never "raw" — it expands via its burn recipe
+        // (below). `craftable` deliberately excludes POWER products, so without
+        // this guard a Power goal would fall to the raw branch and plan nothing.
+        if item != POWER_ITEM && (extractable || is_resource || !craftable) {
             *raw.entry(item.clone()).or_default() += rate;
             log(phase, &format!("raw: {} {:.1}/min", item_name(&item), rate));
             continue;
@@ -660,6 +687,7 @@ pub fn global_solve(
     );
 
     // in ports per raw item (ceiling = claimed extraction), out port per goal
+    let is_power_goal = goal.items.iter().any(|(i, _)| i == POWER_ITEM);
     let mut y = 80.0;
     for (item, need) in &raw {
         if supply_assumed(item) {
@@ -669,8 +697,20 @@ pub fn global_solve(
         // meter it: give it an UNCAPPED in port so the strict fluid rule reads
         // it as 0 until the player pipes water in — a routable, honest demand,
         // never assumed. A node-backed raw keeps its extraction ceiling.
+        //
+        // EXCEPTION — a POWER goal: the plant's supplemental fluids (generator
+        // cooling water, any refinery water in the fuel chain) are ceiling'd to
+        // their demand, i.e. the documented "explicit ceiling = assert an
+        // off-plan source" escape hatch. That way the sized generators report
+        // their DESIGNED capacity instead of a 0-MW plant, while the port still
+        // surfaces as a real routing task the player can pipe (user decision:
+        // designed capacity, not honest-fuel-gated).
         let rate_ceiling = if no_node_resource(item) {
-            None
+            if is_power_goal {
+                Some(*need)
+            } else {
+                None
+            }
         } else {
             let ceiling: f64 = picked_nodes
                 .iter()
@@ -699,6 +739,11 @@ pub fn global_solve(
     // item's consumers after the dismantle).
     let goal_rate = goal.items.first().map(|(_, r)| *r).unwrap_or(0.0);
     for (i, (item, _)) in goal.items.iter().enumerate() {
+        // A Power goal ships NO material OUT port — the generators' output feeds
+        // the grid (generation), not a "power → world" belt/pipe.
+        if item == POWER_ITEM {
+            continue;
+        }
         push(
             &mut cmds,
             &mut aliases,
@@ -747,6 +792,68 @@ pub fn global_solve(
         }
         6
     };
+    // Recipe byproducts that no stage consumes and that aren't the goal — nuclear
+    // waste is the motivating case: a nuclear burn produces (POWER, waste). Ship
+    // each out a world OUT port (group → port) so the plan is honest about the
+    // waste it must belt away and the producing stage isn't back-pressured to 0.
+    // POWER itself is never ported (it feeds the grid, not a belt).
+    let mut waste_y = 200.0;
+    let mut waste_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for st in &stages {
+        let Some(r) = gd.recipes.get(&st.recipe) else {
+            continue;
+        };
+        let primary = r
+            .products
+            .iter()
+            .find(|(i, _)| i == &st.item)
+            .map(|(_, m)| *m)
+            .unwrap_or(1.0);
+        for (prod, amt) in &r.products {
+            if prod == &st.item || prod == POWER_ITEM {
+                continue;
+            }
+            if stages.iter().any(|s| &s.item == prod) {
+                continue; // consumed by another stage — no world port
+            }
+            if goal.items.iter().any(|(i, _)| i == prod) {
+                continue; // a goal item already gets its own OUT port
+            }
+            if !waste_seen.insert(prod.clone()) {
+                continue; // one OUT port per byproduct even if two stages emit it
+            }
+            let rate = amt * (st.rate / primary);
+            push(
+                &mut cmds,
+                &mut aliases,
+                Command::AddPort {
+                    factory: "$site".into(),
+                    direction: PortDirection::Out,
+                    item: prod.clone(),
+                    rate: 0.0,
+                    rate_ceiling: None,
+                    graph_pos: GraphPos {
+                        x: 1400.0,
+                        y: waste_y,
+                    },
+                },
+                Some(&format!("wout.{prod}")),
+            );
+            push(
+                &mut cmds,
+                &mut aliases,
+                Command::AddEdge {
+                    factory: "$site".into(),
+                    from: EdgeEnd::Group(format!("$g.{}", st.item)),
+                    to: EdgeEnd::Port(format!("$wout.{prod}")),
+                    item: prod.clone(),
+                    tier: tier_for(rate),
+                },
+                None,
+            );
+            waste_y += 128.0;
+        }
+    }
     for st in &stages {
         let Some(r) = gd.recipes.get(&st.recipe) else {
             continue;
@@ -790,6 +897,11 @@ pub fn global_solve(
     // honest T1 shortfall, not a dangling `$g.` alias that would roll back
     // the whole accept.
     for (item, rate) in &goal.items {
+        // Power has no OUT port (skipped above) — its generators are driven to
+        // nameplate and feed the grid, so there's nothing to wire or rate here.
+        if item == POWER_ITEM {
+            continue;
+        }
         let from = if stages.iter().any(|s| &s.item == item) {
             Some(EdgeEnd::Group(format!("$g.{item}")))
         } else if raw.contains_key(item) && !supply_assumed(item) {
@@ -837,11 +949,30 @@ pub fn global_solve(
             if machines_total == 1 { "" } else { "s" },
             goal.items
                 .iter()
-                .map(|(i, r)| format!("{} {:.1}/min", item_name(i), r))
+                .map(|(i, r)| {
+                    // Power is a generation rate in MW, not a belt rate in /min.
+                    if i == POWER_ITEM {
+                        format!("{} {:.0} MW", item_name(i), r)
+                    } else {
+                        format!("{} {:.1}/min", item_name(i), r)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" + ")
         ),
-        impact: format!("+{total_mw:.0} MW"),
+        // A power plant's headline is the MW it GENERATES (its target), not its
+        // fuel-chain draw (`total_mw`); a material factory's is the draw it adds.
+        impact: if is_power_goal {
+            let gen: f64 = goal
+                .items
+                .iter()
+                .filter(|(i, _)| i == POWER_ITEM)
+                .map(|(_, r)| r)
+                .sum();
+            format!("+{gen:.0} MW GEN")
+        } else {
+            format!("+{total_mw:.0} MW")
+        },
         commands: cmds,
         aliases,
         depends_on: vec![],
@@ -885,6 +1016,12 @@ pub fn global_solve(
     // a port can bind only one route, so claim each candidate port once.
     let mut routed_ports: std::collections::BTreeSet<Id> = std::collections::BTreeSet::new();
     for (item, rate) in &goal.items {
+        // Power has no material OUT port (it feeds the grid), so there's nothing
+        // to route to a consumer — and `$out.__PowerMW` was never aliased, so a
+        // route from it would dangle. Skip, like the OUT-port and feed loops.
+        if item == POWER_ITEM {
+            continue;
+        }
         let Some(consumer) = state.ports.values().find(|p| {
             p.direction == PortDirection::In
                 && &p.item == item
@@ -1041,8 +1178,19 @@ pub fn global_solve(
         });
     }
 
-    // power: the site must be fed (A2.4) — expand a generator factory or add one
-    if total_mw > 0.0 {
+    // power: the site must be fed (A2.4) — expand a generator factory or add one.
+    // A POWER-goal site is the exception: it IS a power plant, generating its
+    // target MW, which dwarfs its own fuel-chain draw (a nuclear/fuel plant's
+    // enrichment/refinery stages). It self-powers — importing MW from an
+    // unrelated generator into the very site that produces thousands of MW would
+    // be nonsense — so skip the feed for a power goal.
+    if is_power_goal && total_mw > 0.0 {
+        log(
+            phase,
+            &format!("power: site self-powers its {total_mw:.0} MW fuel-chain draw from its own generation"),
+        );
+    }
+    if total_mw > 0.0 && !is_power_goal {
         let gen_factory = state
             .ports
             .values()
@@ -1124,6 +1272,14 @@ pub fn global_solve(
                 .collect::<Vec<_>>()
                 .join(" + ")
         )
+    } else if goal
+        .items
+        .first()
+        .map(|(i, _)| i == POWER_ITEM)
+        .unwrap_or(false)
+    {
+        // Power is generation capacity in MW, not a /min production rate.
+        format!("GENERATE {:.0} MW {}", goal_rate, goal_name.to_uppercase())
     } else {
         format!(
             "PRODUCE {} AT {:.1}/MIN",

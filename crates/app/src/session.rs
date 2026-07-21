@@ -906,15 +906,23 @@ impl Session {
             }
         }
         let after = self.solve_all_readonly();
-        // goal check: production delta of each goal item across all out ports
+        // goal check: production delta of each goal item across all out ports —
+        // except POWER, which has no material OUT port (its generators feed the
+        // grid). A Power goal is credited as the empire GENERATION delta, so a
+        // correctly-sized power plant reads ✓ target/target instead of a
+        // permanent 0/target ✗ off the (nonexistent) power out ports.
         let goal: Vec<GoalCheck> = p
             .goal
             .iter()
             .map(|(item, requested)| GoalCheck {
                 item: item.clone(),
                 requested: *requested,
-                achieved: Self::out_rate(&self.state, &after, item)
-                    - Self::out_rate(&saved, &before, item),
+                achieved: if item == gamedata::docs::POWER_ITEM {
+                    after.total_generation_mw - before.total_generation_mw
+                } else {
+                    Self::out_rate(&self.state, &after, item)
+                        - Self::out_rate(&saved, &before, item)
+                },
             })
             .collect();
         // new deficits feed the amber warning strip; per-circuit power now

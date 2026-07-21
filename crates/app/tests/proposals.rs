@@ -542,6 +542,284 @@ fn wizard_site_lands_within_map_bounds() {
     );
 }
 
+/// A POWER goal with a pinned generator (coal) plans the FULL chain — coal
+/// generators sized to the target MW, the coal source, and supplemental water —
+/// NOT an empty factory with a "power → world" OUT port. Target 800 MW (NOT a
+/// multiple of 75) so sizing exercises the ceil+trim-clock path: 800 ÷ 75 =
+/// 10.67 → 11 generators at clock 800 ÷ (11 × 75) ≈ 0.9697. On accept the plant
+/// GENERATES ≈ 800 MW (designed-capacity credit) and the goal-check reads ✓.
+#[test]
+fn wizard_power_goal_plans_generators_and_fuel_chain() {
+    use gamedata::docs::POWER_ITEM;
+    let mut s = Session::in_memory(None).unwrap();
+    let coal_burn = "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C";
+    assert!(
+        s.gamedata.recipes.contains_key(coal_burn),
+        "fixture has the coal burn recipe"
+    );
+
+    let target_mw = 800.0;
+    let mut pinned = std::collections::BTreeMap::new();
+    pinned.insert(POWER_ITEM.to_string(), coal_burn.to_string());
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![(POWER_ITEM.to_string(), target_mw)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: pinned,
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    let cmds: Vec<&Command> = proposal
+        .items
+        .iter()
+        .flat_map(|i| i.commands.iter())
+        .collect();
+
+    // coal generators are stamped, sized to the target: ceil(800 / 75) = 11 at a
+    // trim clock ≈ 0.9697 so count × 75 × clock == 800 (not 11 × 75 = 825).
+    let gens: Vec<(u32, f64)> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::AddGroup {
+                machine,
+                count,
+                clock,
+                ..
+            } if machine == "Build_GeneratorCoal_C" => Some((*count, *clock)),
+            _ => None,
+        })
+        .collect();
+    let gen_count: u32 = gens.iter().map(|(n, _)| n).sum();
+    assert_eq!(gen_count, 11, "ceil(800 / 75) = 11 coal generators");
+    let nameplate_mw: f64 = gens.iter().map(|(n, clk)| *n as f64 * 75.0 * clk).sum();
+    assert!(
+        (nameplate_mw - target_mw).abs() < 1e-3,
+        "generator clock trims to the target: {nameplate_mw} MW (want {target_mw})"
+    );
+
+    // the coal fuel is SOURCED (a claim or a coal IN port) — the chain recursed
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::ClaimNode { .. }))
+            || cmds
+                .iter()
+                .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+                if item == "Desc_Coal_C" && *direction == PortDirection::In)),
+        "coal is sourced (claim or IN port)"
+    );
+    // supplemental water rides the burn recipe → a routable water IN port,
+    // ceiling'd to its demand (the "assert an off-plan source" escape hatch) so
+    // the generators report designed capacity instead of a 0-MW dry plant.
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, Command::AddPort { item, direction, rate_ceiling, .. }
+            if item == "Desc_Water_C" && *direction == PortDirection::In && rate_ceiling.is_some())
+        ),
+        "supplemental water gets a routable IN port, ceiling'd to its demand"
+    );
+    // NO "power → world" OUT port — generators feed the grid, not a material port.
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+            if item == POWER_ITEM && *direction == PortDirection::Out)),
+        "a power goal ships no material OUT port"
+    );
+
+    // Accept + empire-solve: the plant is real (no dangling power-stage alias
+    // rolls it back), its GENERATION lands at the designed target, and the
+    // proposal's own goal-check reads ✓ — a count-only check would stay green if
+    // a clock regression halved the output or the goal-check read 0 off the
+    // (nonexistent) power out ports.
+    let r = s.edit(vec![Command::CreateProposal { proposal }]).unwrap();
+    let pid = r.created[0].clone();
+    let cons = s.eval_proposal(&pid).expect("power proposal evaluates");
+    let power_goal = cons
+        .goal
+        .iter()
+        .find(|g| g.item == POWER_ITEM)
+        .expect("goal-check carries the power goal");
+    assert!(
+        (power_goal.achieved - target_mw).abs() < 1e-2,
+        "goal-check credits generation: {} MW (want {target_mw})",
+        power_goal.achieved
+    );
+    assert!(
+        cons.goal_met,
+        "a correctly-sized power plant meets its goal"
+    );
+
+    let resp = s.accept_proposal(&pid).expect("power proposal accepts");
+    assert!(
+        (resp.derived.total_generation_mw - target_mw).abs() < 1e-2,
+        "accepted plant generates the target: {} MW (want {target_mw})",
+        resp.derived.total_generation_mw
+    );
+}
+
+/// A POWER goal with NO chosen generator (no pinned burn recipe) is INFEASIBLE,
+/// naming the generator picker — NOT a silent empty factory. The UI auto-pins a
+/// generator, but a raw goal (or a catalog with no solid-fuel generator) must
+/// not strand a groupless site.
+#[test]
+fn wizard_unpinned_power_goal_is_infeasible() {
+    use gamedata::docs::POWER_ITEM;
+    let mut s = Session::in_memory(None).unwrap();
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![(POWER_ITEM.to_string(), 750.0)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: Default::default(), // no generator chosen
+        },
+    );
+    let WizardOutcome::Infeasible(inf) = outcome else {
+        panic!("expected Infeasible for an unpinned power goal, got {outcome:?}");
+    };
+    assert!(
+        inf.binding.to_lowercase().contains("generator"),
+        "the binding names the missing generator choice: {:?}",
+        inf.binding
+    );
+}
+
+/// A POWER goal on a FLUID-fuel generator (Fuel Generator burns Liquid Fuel)
+/// plans the full chain: the wizard sizes the generators, recurses the fluid
+/// fuel into its PRODUCTION (a refinery stage — the fuel is made on-site, not a
+/// raw IN port), and the refinery's own power draw is self-powered by the plant.
+/// On accept the plant generates ≈ the target MW.
+#[test]
+fn wizard_power_goal_plans_fluid_fuel_chain_and_self_powers() {
+    use gamedata::docs::POWER_ITEM;
+    let mut s = Session::in_memory(None).unwrap();
+    let fuel_burn = "Recipe_Power_Build_GeneratorFuel_Desc_LiquidFuel_C";
+    assert!(
+        s.gamedata.recipes.contains_key(fuel_burn),
+        "fixture has the fuel-generator burn recipe"
+    );
+
+    let target_mw = 500.0; // 2 × 250 MW fuel generators
+    let mut pinned = std::collections::BTreeMap::new();
+    pinned.insert(POWER_ITEM.to_string(), fuel_burn.to_string());
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![(POWER_ITEM.to_string(), target_mw)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: pinned,
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    let cmds: Vec<&Command> = proposal
+        .items
+        .iter()
+        .flat_map(|i| i.commands.iter())
+        .collect();
+
+    // the fluid fuel is PRODUCED on-site (a refinery stage), not a raw IN port —
+    // so there's a group producing Liquid Fuel, and NO Liquid Fuel IN port.
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::AddGroup { recipe, .. }
+            if s.gamedata.recipes.get(recipe).is_some_and(|r|
+                r.products.iter().any(|(i, _)| i == "Desc_LiquidFuel_C")))),
+        "the fluid fuel is produced by an on-site stage"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+            if item == "Desc_LiquidFuel_C" && *direction == PortDirection::In)),
+        "produced fluid fuel gets no raw IN port"
+    );
+
+    // accept + solve: the plant self-powers its refinery draw and generates the
+    // target — a broken self-power path would idle the refinery and starve fuel.
+    let r = s.edit(vec![Command::CreateProposal { proposal }]).unwrap();
+    let pid = r.created[0].clone();
+    let resp = s
+        .accept_proposal(&pid)
+        .expect("fuel power proposal accepts");
+    assert!(
+        (resp.derived.total_generation_mw - target_mw).abs() < 1e-2,
+        "accepted fuel plant generates the target: {} MW (want {target_mw})",
+        resp.derived.total_generation_mw
+    );
+}
+
+/// A POWER goal on a NUCLEAR generator plans the full chain — fuel rods produced
+/// on-site (rod ← coal), supplemental water, and the WASTE byproduct shipped out
+/// a world OUT port so the plan is honest about what it must belt away — and
+/// accept doesn't dangle on the waste edge/port alias. A nuclear plant burns few
+/// rods (750 GJ each), so its coal demand is tiny — no node-budget stall.
+#[test]
+fn wizard_power_goal_plans_nuclear_chain_and_ships_waste() {
+    use gamedata::docs::POWER_ITEM;
+    let mut s = Session::in_memory(None).unwrap();
+    let burn = "Recipe_Power_Build_GeneratorNuclear_Desc_NuclearFuelRod_C";
+    assert!(
+        s.gamedata.recipes.contains_key(burn),
+        "fixture has the nuclear burn recipe with a waste byproduct"
+    );
+
+    let target_mw = 2500.0; // 1 × 2500 MW nuclear plant
+    let mut pinned = std::collections::BTreeMap::new();
+    pinned.insert(POWER_ITEM.to_string(), burn.to_string());
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![(POWER_ITEM.to_string(), target_mw)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: pinned,
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    let cmds: Vec<&Command> = proposal
+        .items
+        .iter()
+        .flat_map(|i| i.commands.iter())
+        .collect();
+
+    // the fuel rods are PRODUCED on-site (an assembler stage), not imported.
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::AddGroup { recipe, .. }
+            if s.gamedata.recipes.get(recipe).is_some_and(|r|
+                r.products.iter().any(|(i, _)| i == "Desc_NuclearFuelRod_C")))),
+        "fuel rods are produced by an on-site stage"
+    );
+    // the waste rides OUT a world port — the plan is honest about disposal.
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Command::AddPort { item, direction, .. }
+            if item == "Desc_NuclearWaste_C" && *direction == PortDirection::Out)),
+        "nuclear waste gets a world OUT port"
+    );
+
+    // accept + solve: the waste edge/port alias resolves (no rollback) and the
+    // plant generates its target.
+    let r = s.edit(vec![Command::CreateProposal { proposal }]).unwrap();
+    let pid = r.created[0].clone();
+    let resp = s
+        .accept_proposal(&pid)
+        .expect("nuclear power proposal accepts");
+    assert!(
+        (resp.derived.total_generation_mw - target_mw).abs() < 1e-2,
+        "accepted nuclear plant generates the target: {} MW (want {target_mw})",
+        resp.derived.total_generation_mw
+    );
+}
+
 #[test]
 fn wizard_produces_reviewable_partially_acceptable_proposal() {
     let mut s = Session::in_memory(None).unwrap();

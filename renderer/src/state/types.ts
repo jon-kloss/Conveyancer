@@ -794,6 +794,8 @@ export interface WizardGoal {
   constraints: WizardConstraints;
   /** total-quantity goal mode; passed through the solver into the proposal */
   milestone?: Milestone;
+  /** product class → pinned recipe class (e.g. Power → a chosen burn recipe). */
+  pinnedRecipes?: Record<string, string>;
 }
 
 export interface WizardLogLine { phase: string; line: string }
