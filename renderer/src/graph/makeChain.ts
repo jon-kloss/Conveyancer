@@ -186,6 +186,32 @@ export function powerOptions(g: GameData, available: ReadonlySet<string>): Power
   return out.sort((a, b) => b.mwPer - a.mwPer || a.recipe.localeCompare(b.recipe));
 }
 
+/** EVERY generator burn recipe (coal / liquid-fuel / nuclear), for the supply-
+ *  chain wizard's generator picker. Unlike powerOptions (MAKE POWER: solid,
+ *  single-fuel, on-hand raws only) this does NOT gate on fuel form, byproducts,
+ *  or available raws — the wizard plans the whole fuel chain (refining liquid
+ *  fuel, assembling fuel rods, belting the waste away), so a fluid fuel or a
+ *  nuclear waste byproduct no longer disqualifies a generator. The primary fuel
+ *  is the burn's FIRST ingredient (gamedata pushes fuel before supplemental
+ *  water); fuel-less generators (geothermal) have no ingredient and are placed
+ *  via geysers, not planned here, so they're skipped. */
+export function generatorOptions(g: GameData): PowerOption[] {
+  const out: PowerOption[] = [];
+  for (const r of Object.values(g.recipes)) {
+    if (!r.products.some(([p]) => p === POWER_ITEM)) continue;
+    const machine = r.producedIn.find((m) => g.machines[m]?.kind === "generator");
+    if (!machine) continue;
+    const fuelIng = r.ingredients[0];
+    if (!fuelIng) continue; // fuel-less (geothermal) — placed via geysers
+    const [fuel, fuelAmt] = fuelIng;
+    const mwPer = perMachineOut(r, POWER_ITEM);
+    const fuelPer = r.durationS > 0 ? (fuelAmt * 60) / r.durationS : 0;
+    if (mwPer <= 0) continue;
+    out.push({ recipe: r.className, machine, fuel, mwPer, fuelPer });
+  }
+  return out.sort((a, b) => b.mwPer - a.mwPer || a.recipe.localeCompare(b.recipe));
+}
+
 /** Size a bank for `mw`: fewest generators, evenly under-clocked to hit the
  *  target exactly (same shape planChain uses for item groups). Clock floors
  *  at the game's 1% minimum — a tiny MW ask on a big nameplate builds one

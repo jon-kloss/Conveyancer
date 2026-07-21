@@ -8,7 +8,7 @@ import { useStore } from "../state/store";
 import { backend } from "../state/backend";
 import { fmtDuration, fmtRate, itemLabel } from "../lib/format";
 import ItemCombobox from "../lib/ItemCombobox";
-import { powerOptions } from "../graph/makeChain";
+import { generatorOptions } from "../graph/makeChain";
 import { POWER_ITEM } from "../state/types";
 import type { WizardConstraints, WizardGoal, WizardInfeasible, WizardLogLine } from "../state/types";
 import "./wizard.css";
@@ -51,10 +51,7 @@ export default function WizardModal() {
   // user picks WHICH generator/fuel (coal / fuel / nuclear) — every fuel is
   // "available" here because the wizard sources it itself.
   const isPower = item === POWER_ITEM;
-  const powerOpts = useMemo(
-    () => powerOptions(gamedata, new Set(Object.keys(gamedata.items))),
-    [gamedata],
-  );
+  const powerOpts = useMemo(() => generatorOptions(gamedata), [gamedata]);
   const [powerRecipe, setPowerRecipe] = useState("");
   useEffect(() => {
     if (isPower && powerOpts.length && !powerOpts.some((o) => o.recipe === powerRecipe)) {
@@ -151,7 +148,22 @@ export default function WizardModal() {
       };
       void poll();
     },
-    [item, rate, total, totalOn, constraints, dispatch, setReviewing, setWizard],
+    // isPower + powerRecipe MUST be deps: without them, selecting Power and
+    // hitting SOLVE in the same interaction closes over a stale powerRecipe ("")
+    // and submits an UNPINNED power goal (→ infeasible). See the default-select
+    // effect above that sets powerRecipe after commit.
+    [
+      item,
+      rate,
+      total,
+      totalOn,
+      isPower,
+      powerRecipe,
+      constraints,
+      dispatch,
+      setReviewing,
+      setWizard,
+    ],
   );
 
   // ⏎ solves from step 1; ESC closes. Capture phase on purpose — MapView's
@@ -170,12 +182,13 @@ export default function WizardModal() {
         close();
       } else if (e.key === "Enter" && step === 1 && item) {
         if (inOpenCombo(e.target)) return;
+        if (isPower && !powerRecipe) return; // no generator chosen yet
         void solve();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [wizard.open, step, item, solve, close]);
+  }, [wizard.open, step, item, isPower, powerRecipe, solve, close]);
 
   // Built once per log change, not per phaseState call — the phase list asks
   // 4× per render at the 120ms poll cadence, and rebuilding the Set walks the
@@ -231,20 +244,27 @@ export default function WizardModal() {
               />
               {isPower ? (
                 <>
-                  <span className="t-label">MW USING</span>
-                  <select
-                    className="mono wizard-power-fuel"
-                    value={powerRecipe}
-                    onChange={(e) => setPowerRecipe(e.target.value)}
-                    data-testid="wizard-power-fuel"
-                  >
-                    {powerOpts.map((o) => (
-                      <option key={o.recipe} value={o.recipe}>
-                        {gamedata.machines[o.machine]?.displayName ?? o.machine} ·{" "}
-                        {itemLabel(gamedata.items, o.fuel)}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="t-label" id="wizard-power-fuel-label">
+                    MW USING
+                  </span>
+                  {powerOpts.length ? (
+                    <select
+                      className="mono wizard-power-fuel"
+                      value={powerRecipe}
+                      onChange={(e) => setPowerRecipe(e.target.value)}
+                      aria-labelledby="wizard-power-fuel-label"
+                      data-testid="wizard-power-fuel"
+                    >
+                      {powerOpts.map((o) => (
+                        <option key={o.recipe} value={o.recipe}>
+                          {gamedata.machines[o.machine]?.displayName ?? o.machine} ·{" "}
+                          {itemLabel(gamedata.items, o.fuel)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="t-label chip crit">NO GENERATORS IN CATALOG</span>
+                  )}
                 </>
               ) : (
                 <span className="t-label">/MIN EMPIRE-WIDE</span>
@@ -253,43 +273,49 @@ export default function WizardModal() {
 
             {/* total-quantity goal (milestone): the game hands out huge total
                 goals ("2,500 Versatile Frameworks") with no plan. Toggle it on
-                to see how long the chosen rate takes — and faster alternatives. */}
-            <div className="wizard-total-row">
-              <label className="wizard-total-toggle">
-                <input
-                  type="checkbox"
-                  checked={totalOn}
-                  onChange={(e) => setTotalOn(e.target.checked)}
-                  data-testid="wizard-total-toggle"
-                />
-                <span className="t-label">TOTAL-QUANTITY GOAL (MILESTONE)</span>
-              </label>
-              {totalOn && (
-                <div className="wizard-total-inputs">
-                  <span className="t-label">NEED</span>
-                  <input
-                    type="number"
-                    className="mono wizard-total"
-                    min={1}
-                    step={100}
-                    value={total}
-                    onChange={(e) => setTotal(Number(e.target.value))}
-                    data-testid="wizard-total"
-                  />
-                  <span className="t-label">TOTAL</span>
+                to see how long the chosen rate takes — and faster alternatives.
+                Meaningless for POWER (an instantaneous MW capacity, not an
+                accumulating quantity), so it's hidden for a power goal. */}
+            {!isPower && (
+              <>
+                <div className="wizard-total-row">
+                  <label className="wizard-total-toggle">
+                    <input
+                      type="checkbox"
+                      checked={totalOn}
+                      onChange={(e) => setTotalOn(e.target.checked)}
+                      data-testid="wizard-total-toggle"
+                    />
+                    <span className="t-label">TOTAL-QUANTITY GOAL (MILESTONE)</span>
+                  </label>
+                  {totalOn && (
+                    <div className="wizard-total-inputs">
+                      <span className="t-label">NEED</span>
+                      <input
+                        type="number"
+                        className="mono wizard-total"
+                        min={1}
+                        step={100}
+                        value={total}
+                        onChange={(e) => setTotal(Number(e.target.value))}
+                        data-testid="wizard-total"
+                      />
+                      <span className="t-label">TOTAL</span>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            {totalOn && total > 0 && (
-              <div className="wizard-ladder mono" data-testid="wizard-ladder">
-                {[rate, rate * 2, rate * 4]
-                  .filter((r) => r > 0 && isFinite(r))
-                  .map((r, i) => (
-                    <span key={i} className="wizard-ladder-rung">
-                      at {fmtRate(r)}/min → {fmtDuration(total / r)}
-                    </span>
-                  ))}
-              </div>
+                {totalOn && total > 0 && (
+                  <div className="wizard-ladder mono" data-testid="wizard-ladder">
+                    {[rate, rate * 2, rate * 4]
+                      .filter((r) => r > 0 && isFinite(r))
+                      .map((r, i) => (
+                        <span key={i} className="wizard-ladder-rung">
+                          at {fmtRate(r)}/min → {fmtDuration(total / r)}
+                        </span>
+                      ))}
+                  </div>
+                )}
+              </>
             )}
 
             {deficitChips.length > 0 && (
@@ -377,7 +403,12 @@ export default function WizardModal() {
             </div>
 
             <footer className="wizard-foot">
-              <button className="btn btn-primary" onClick={() => void solve()} data-testid="wizard-solve">
+              <button
+                className="btn btn-primary"
+                onClick={() => void solve()}
+                disabled={isPower && !powerRecipe}
+                data-testid="wizard-solve"
+              >
                 SOLVE ⏎
               </button>
               <span className="mono wizard-foot-note">RUNS LOCALLY · TYPICALLY &lt;1s AT THIS SCALE</span>

@@ -129,6 +129,19 @@
     "mDisplayName": "Dark Matter Crystal",
     "mForm": "RF_SOLID",
     "mStackSize": "SS_MEDIUM"
+   },
+   {
+    "ClassName": "Desc_NuclearFuelRod_C",
+    "mDisplayName": "Uranium Fuel Rod",
+    "mForm": "RF_SOLID",
+    "mStackSize": "SS_SMALL",
+    "mEnergyValue": "750000.000000"
+   },
+   {
+    "ClassName": "Desc_NuclearWaste_C",
+    "mDisplayName": "Uranium Waste",
+    "mForm": "RF_SOLID",
+    "mStackSize": "SS_HUGE"
    }
   ]
  },
@@ -252,6 +265,14 @@
     "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/HadronCollider/Build_HadronCollider.Build_HadronCollider_C\")",
     "mVariablePowerConsumptionConstant": "500.000000",
     "mVariablePowerConsumptionFactor": "1000.000000"
+   },
+   {
+    "ClassName": "Recipe_NuclearFuelRod_C",
+    "mDisplayName": "Uranium Fuel Rod",
+    "mIngredients": "((ItemClass=\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/RawResources/Coal/Desc_Coal.Desc_Coal_C'\",Amount=50))",
+    "mProduct": "((ItemClass=\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/Parts/NuclearFuelRod/Desc_NuclearFuelRod.Desc_NuclearFuelRod_C'\",Amount=1))",
+    "mManufactoringDuration": "6.000000",
+    "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/AssemblerMk1/Build_AssemblerMk1.Build_AssemblerMk1_C\")"
    }
   ]
  },
@@ -399,6 +420,25 @@
       "mFuelClass": "Desc_LiquidFuel_C",
       "mSupplementalResourceClass": "",
       "mByproduct": ""
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorNuclear'",
+  "Classes": [
+   {
+    "ClassName": "Build_GeneratorNuclear_C",
+    "mDisplayName": "Nuclear Power Plant",
+    "mPowerProduction": "2500.000000",
+    "mSupplementalToPowerRatio": "1.600000",
+    "mFuel": [
+     {
+      "mFuelClass": "Desc_NuclearFuelRod_C",
+      "mSupplementalResourceClass": "Desc_Water_C",
+      "mByproduct": "Desc_NuclearWaste_C",
+      "mByproductAmount": "50"
      }
     ]
    }

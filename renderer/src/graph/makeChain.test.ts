@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
 import type { GameData } from "../state/types";
-import { makeableItems, planChain, planRawWiring, powerOptions, sizePowerBank, splitAcrossPorts } from "./makeChain";
+import {
+  generatorOptions,
+  makeableItems,
+  planChain,
+  planRawWiring,
+  powerOptions,
+  sizePowerBank,
+  splitAcrossPorts,
+} from "./makeChain";
 
 // Minimal synthetic catalog: Iron Ore (raw) → Iron Ingot → {Iron Plate, Iron Rod},
 // plus Water (fluid) → Fake item to prove fluids are excluded.
@@ -349,5 +357,84 @@ describe("powerOptions exclusions + clock floor (review hardening)", () => {
     expect(s.count).toBe(1);
     expect(s.clock).toBeCloseTo(0.01);
     expect(s.fuelNeed).toBeCloseTo(0.3); // 1 gen × 1% × 30/min
+  });
+});
+
+// The supply-chain WIZARD picker is broader than MAKE POWER: it plans the whole
+// fuel chain, so fluid fuels and multi-product (nuclear waste) burns — which
+// powerOptions deliberately drops — MUST be offered here.
+describe("generatorOptions (wizard picker — full generator set)", () => {
+  const machines = {
+    Build_GeneratorCoal_C: { className: "Build_GeneratorCoal_C", displayName: "Coal Generator", kind: "generator", powerMw: 75 },
+    Build_GeneratorFuel_C: { className: "Build_GeneratorFuel_C", displayName: "Fuel Generator", kind: "generator", powerMw: 250 },
+    Build_GeneratorNuclear_C: { className: "Build_GeneratorNuclear_C", displayName: "Nuclear Power Plant", kind: "generator", powerMw: 2500 },
+    Build_GeneratorGeoThermal_C: { className: "Build_GeneratorGeoThermal_C", displayName: "Geothermal Generator", kind: "generator", powerMw: 0 },
+    Build_Constructor_C: { className: "Build_Constructor_C", displayName: "Constructor", kind: "manufacturer", powerMw: 4 },
+  };
+  const items = {
+    Desc_Coal_C: { className: "Desc_Coal_C", displayName: "Coal", form: "RF_SOLID", stackSize: "" },
+    Desc_LiquidFuel_C: { className: "Desc_LiquidFuel_C", displayName: "Fuel", form: "RF_LIQUID", stackSize: "" },
+    Desc_NuclearFuelRod_C: { className: "Desc_NuclearFuelRod_C", displayName: "Uranium Fuel Rod", form: "RF_SOLID", stackSize: "" },
+    Desc_Water_C: { className: "Desc_Water_C", displayName: "Water", form: "RF_LIQUID", stackSize: "" },
+  };
+  const cat = (recipes: object) => ({ items, machines, recipes }) as unknown as GameData;
+
+  it("offers a FLUID-fuel burn (Fuel Generator) — powerOptions would drop it", () => {
+    const g = cat({
+      Recipe_Power_Fuel: {
+        className: "Recipe_Power_Fuel",
+        displayName: "Fuel Generator — Fuel",
+        durationS: 60,
+        ingredients: [["Desc_LiquidFuel_C", 20]],
+        products: [["__PowerMW", 250]],
+        producedIn: ["Build_GeneratorFuel_C"],
+        alternate: false,
+      },
+    });
+    const opts = generatorOptions(g);
+    expect(opts).toHaveLength(1);
+    expect(opts[0]).toMatchObject({ recipe: "Recipe_Power_Fuel", fuel: "Desc_LiquidFuel_C", mwPer: 250 });
+  });
+
+  it("offers a MULTI-PRODUCT nuclear burn (waste byproduct) — powerOptions would drop it", () => {
+    const g = cat({
+      Recipe_Power_Nuclear: {
+        className: "Recipe_Power_Nuclear",
+        displayName: "Nuclear Power Plant — Uranium Fuel Rod",
+        durationS: 60,
+        ingredients: [["Desc_NuclearFuelRod_C", 0.2], ["Desc_Water_C", 240]],
+        products: [["__PowerMW", 2500], ["Desc_NuclearWaste_C", 10]],
+        producedIn: ["Build_GeneratorNuclear_C"],
+        alternate: false,
+      },
+    });
+    const opts = generatorOptions(g);
+    expect(opts).toHaveLength(1);
+    // primary fuel is the first ingredient (fuel before supplemental water)
+    expect(opts[0]).toMatchObject({ recipe: "Recipe_Power_Nuclear", fuel: "Desc_NuclearFuelRod_C", mwPer: 2500 });
+  });
+
+  it("excludes a FUEL-LESS generator (geothermal) — it's placed via geysers", () => {
+    const g = cat({
+      Recipe_Power_Geo: {
+        className: "Recipe_Power_Geo",
+        displayName: "Geothermal",
+        durationS: 60,
+        ingredients: [],
+        products: [["__PowerMW", 200]],
+        producedIn: ["Build_GeneratorGeoThermal_C"],
+        alternate: false,
+      },
+    });
+    expect(generatorOptions(g)).toEqual([]);
+  });
+
+  it("sorts by nameplate MW desc (nuclear, then fuel, then coal)", () => {
+    const g = cat({
+      Recipe_Power_Coal: { className: "Recipe_Power_Coal", displayName: "c", durationS: 60, ingredients: [["Desc_Coal_C", 15]], products: [["__PowerMW", 75]], producedIn: ["Build_GeneratorCoal_C"], alternate: false },
+      Recipe_Power_Fuel: { className: "Recipe_Power_Fuel", displayName: "f", durationS: 60, ingredients: [["Desc_LiquidFuel_C", 20]], products: [["__PowerMW", 250]], producedIn: ["Build_GeneratorFuel_C"], alternate: false },
+      Recipe_Power_Nuclear: { className: "Recipe_Power_Nuclear", displayName: "n", durationS: 60, ingredients: [["Desc_NuclearFuelRod_C", 0.2]], products: [["__PowerMW", 2500]], producedIn: ["Build_GeneratorNuclear_C"], alternate: false },
+    });
+    expect(generatorOptions(g).map((o) => o.mwPer)).toEqual([2500, 250, 75]);
   });
 });
