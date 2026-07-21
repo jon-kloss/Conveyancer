@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
+import { isPlainNode } from "../state/types";
 import { itemLabel } from "../lib/format";
 import { modKey } from "../lib/keys";
 
@@ -50,6 +51,10 @@ export default function SearchBox({ onJump }: { onJump: (pos: { x: number; y: nu
         });
     }
     for (const n of world.nodes) {
+      // Only plain nodes are jumpable/claimable today — a geyser/satellite hit
+      // would fly to a site that MapView's filtered resolvedNodes can't select
+      // (a dead-end click), so exclude them until their placement features land.
+      if (!isPlainNode(n)) continue;
       const item = itemLabel(gamedata.items, n.item);
       if (item.toLowerCase().includes(q) || n.id.includes(q)) {
         // Jump to the node's RESOLVED position — a corrected (override)

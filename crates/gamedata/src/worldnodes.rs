@@ -35,14 +35,32 @@ fn zone_surface() -> String {
     "surface".into()
 }
 
+fn node_type_default() -> String {
+    "node".into()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldNode {
     pub id: String,
-    /// Item class, e.g. `Desc_OreIron_C`.
+    /// Item class, e.g. `Desc_OreIron_C`. For geysers this is the sentinel
+    /// `Desc_Geyser_C` (a siting point for a Geothermal Generator, not an
+    /// extractable resource).
     pub item: String,
     /// pure | normal | impure
     pub purity: String,
+    /// node | geyser | fracking-satellite. `node` = a plain miner/oil-pump
+    /// resource node; `geyser` = a geothermal siting point; `fracking-satellite`
+    /// = one activated satellite of a resource well (see `well`). Defaults to
+    /// `node` for pre-v3 snapshots.
+    #[serde(default = "node_type_default")]
+    pub node_type: String,
+    /// Present only for `fracking-satellite` nodes: the reconstructed resource
+    /// well this satellite belongs to (all satellites sharing a well are fed by
+    /// one Resource Well Pressurizer). Reconstructed by proximity in
+    /// `gen-world-nodes.py` — the vendor dataset carries no core grouping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub well: Option<String>,
     pub x: f64,
     pub y: f64,
     /// Elevation in meters (defaults 0 for older snapshots).
@@ -56,6 +74,19 @@ pub struct WorldNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entrance: Option<Entrance>,
     pub region: String,
+}
+
+impl WorldNode {
+    /// True for a plain miner / oil-pump resource node — the only site type the
+    /// app currently claims, binds imported extractors to, and offers as an
+    /// opportunity. Geysers (geothermal) and fracking satellites are in the
+    /// catalog but not yet wired to claim/placement; the consumers that would
+    /// act on a node gate on this so the new sites stay inert until their
+    /// features land (game-parity arc). Callers that DO support a new type
+    /// (future geyser/well placement) check `node_type` directly instead.
+    pub fn is_plain_node(&self) -> bool {
+        self.node_type == "node"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +145,19 @@ mod tests {
                 n.id
             );
             assert!(
+                ["node", "geyser", "fracking-satellite"].contains(&n.node_type.as_str()),
+                "{} node_type {}",
+                n.id,
+                n.node_type
+            );
+            // Only fracking satellites carry a well; every satellite must.
+            assert_eq!(
+                n.well.is_some(),
+                n.node_type == "fracking-satellite",
+                "{} well/type mismatch",
+                n.id
+            );
+            assert!(
                 ["surface", "cave"].contains(&n.zone.as_str()),
                 "{} zone",
                 n.id
@@ -136,6 +180,33 @@ mod tests {
         // The community dataset carries no cave/entrance zoning yet (BACKLOG);
         // cave support is pinned by cave_nodes_parse_with_entrances below.
         let _ = caves;
+
+        // v3 sites — EXACT counts so any generator/vendor drift is caught (a
+        // loose `>=` would hide a WELL_EPS_M regression that reshapes the wells
+        // or a dropped section). 608 = 459 plain + 31 geysers + 118 satellites.
+        let count = |t: &str| snap.nodes.iter().filter(|n| n.node_type == t).count();
+        assert_eq!(snap.nodes.len(), 608, "total nodes");
+        assert_eq!(count("node"), 459, "plain nodes");
+        assert_eq!(count("geyser"), 31, "geysers");
+        assert_eq!(count("fracking-satellite"), 118, "fracking satellites");
+        // Nitrogen exists ONLY as fracking satellites (nothing else produces it).
+        assert!(
+            snap.nodes
+                .iter()
+                .filter(|n| n.item == "Desc_NitrogenGas_C")
+                .all(|n| n.node_type == "fracking-satellite"),
+            "every nitrogen node is a fracking satellite"
+        );
+        let wells: std::collections::BTreeSet<_> = snap
+            .nodes
+            .iter()
+            .filter_map(|n| n.well.as_deref())
+            .collect();
+        assert_eq!(
+            wells.len(),
+            17,
+            "reconstructed wells (6 N + 8 water + 3 oil)"
+        );
     }
 
     #[test]
@@ -203,5 +274,46 @@ mod tests {
         assert_eq!(n.z, 0.0);
         assert_eq!(n.zone, "surface");
         assert!(n.entrance.is_none());
+        assert_eq!(n.node_type, "node", "pre-v3 nodes default to plain node");
+        assert!(n.well.is_none());
+    }
+
+    fn node(node_type: &str, well: Option<&str>) -> super::WorldNode {
+        super::WorldNode {
+            id: "x".into(),
+            item: "Desc_NitrogenGas_C".into(),
+            purity: "pure".into(),
+            node_type: node_type.into(),
+            well: well.map(Into::into),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            zone: "surface".into(),
+            entrance: None,
+            region: "grass-fields".into(),
+        }
+    }
+
+    #[test]
+    fn is_plain_node_only_true_for_node_type() {
+        // The single gate every node consumer keys off — a geyser or fracking
+        // satellite must read as NOT plain, or the "inert" guarantee collapses.
+        assert!(node("node", None).is_plain_node());
+        assert!(!node("geyser", None).is_plain_node());
+        assert!(!node("fracking-satellite", Some("well-nitrogen-1")).is_plain_node());
+    }
+
+    #[test]
+    fn v3_node_round_trips_and_plain_nodes_omit_well() {
+        // A satellite carries nodeType + well through serialize → deserialize.
+        let sat = node("fracking-satellite", Some("well-nitrogen-1"));
+        let back: super::WorldNode =
+            serde_json::from_str(&serde_json::to_string(&sat).unwrap()).unwrap();
+        assert_eq!(back.node_type, "fracking-satellite");
+        assert_eq!(back.well.as_deref(), Some("well-nitrogen-1"));
+        // A plain node serializes WITHOUT a `well` key (skip_serializing_if), so
+        // it never round-trips a spurious null that downstream code might read.
+        let plain = serde_json::to_string(&node("node", None)).unwrap();
+        assert!(!plain.contains("well"), "plain node omits well: {plain}");
     }
 }

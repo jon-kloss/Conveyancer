@@ -93,6 +93,46 @@ fn claim_binding_snapshot_and_save_local() {
     assert_eq!(claimed, 2);
 }
 
+/// Regression for the inert-catalog gate: `bind_extractors` matches by PROXIMITY
+/// (not item), so a v3 geyser/satellite sitting NEARER an imported miner than its
+/// real node must NOT steal the bind. The `is_plain_node()` gate keeps the miner
+/// on its plain iron node even though a geyser is closer.
+#[test]
+fn imported_miner_binds_plain_node_not_a_closer_geyser() {
+    let mut s = Session::in_memory(None).unwrap();
+    let plain = s.world.nodes[0].clone();
+    // A geyser 3 m from the plain node — the miner will sit between them, closer
+    // to the geyser, so a proximity-only bind (no gate) would pick the geyser.
+    s.world.nodes.push(gamedata::worldnodes::WorldNode {
+        id: "geyser_bait".into(),
+        item: "Desc_Geyser_C".into(),
+        purity: "pure".into(),
+        node_type: "geyser".into(),
+        well: None,
+        x: plain.x + 3.0,
+        y: plain.y,
+        z: 0.0,
+        zone: "surface".into(),
+        entrance: None,
+        region: plain.region.clone(),
+    });
+
+    let snap = ImportSnapshot {
+        save_name: "GEYSERBAIT".into(),
+        machines: vec![smelter(plain.x, plain.y)],
+        // miner 2 m from the plain node, 1 m from the geyser → geyser is nearer.
+        extractors: vec![miner(plain.x + 2.0, plain.y, "actor")],
+        ..Default::default()
+    };
+    s.import_save(snap).unwrap();
+
+    let claim = s.state.node_claims.values().next().expect("one claim");
+    assert_eq!(
+        claim.node, plain.id,
+        "miner binds its plain node, not the nearer geyser"
+    );
+}
+
 /// The save's `mPurityOverride` is authoritative: importing a miner whose save
 /// purity disagrees with the bundled catalog records a purity override and bakes
 /// it into the session's world, so the map + claim rate read the real purity

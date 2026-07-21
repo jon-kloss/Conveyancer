@@ -281,6 +281,18 @@ export interface WorldNode {
   id: string;
   item: string;
   purity: "pure" | "normal" | "impure";
+  /**
+   * node = plain miner/oil-pump resource node; geyser = a geothermal siting
+   * point; fracking-satellite = one activated satellite of a resource well.
+   * The Rust side applies `serde(default = "node")` for pre-v3 snapshots, so
+   * this field is always populated by the time it crosses the WASM boundary.
+   * Rendering/claim for geysers and fracking satellites lands with their
+   * placement features; today only "node" is drawn and claimable — gate with
+   * `isPlainNode` below.
+   */
+  nodeType: "node" | "geyser" | "fracking-satellite";
+  /** present only for fracking-satellite nodes: the reconstructed well */
+  well?: string;
   x: number;
   y: number;
   /** elevation in meters */
@@ -290,6 +302,14 @@ export interface WorldNode {
   entrance?: { x: number; y: number; z: number };
   region: string;
 }
+/**
+ * The single gate for "is this a claimable/renderable resource node today".
+ * Mirrors Rust `WorldNode::is_plain_node()`. Geysers and fracking satellites
+ * are in the catalog but not yet wired to claim/placement, so every UI
+ * consumer that acts on a node filters through this (map render, ⌘K search).
+ */
+export const isPlainNode = (n: { nodeType: WorldNode["nodeType"] }): boolean =>
+  n.nodeType === "node";
 export interface WorldRegion { id: string; name: string; labelX: number; labelY: number }
 export interface World {
   version: number;

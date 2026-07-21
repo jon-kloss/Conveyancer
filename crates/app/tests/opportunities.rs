@@ -1344,6 +1344,61 @@ fn untapped_node_nearest_pure_unclaimed() {
     );
 }
 
+/// Inert-catalog gate: `untapped_node` must NOT offer a v3 geyser or fracking
+/// satellite even when it is PURE and in range (the catalog has 85 pure
+/// non-plain sites, so the `purity == "pure"` clause does not mask them). A pure
+/// plain node beside them IS still offered — proving the test isn't vacuously
+/// green because the whole family went silent.
+#[test]
+fn untapped_node_skips_geysers_and_fracking_satellites() {
+    let mut s = Session::in_memory(None).unwrap();
+    // an empty corner so only our three planted nodes are in range
+    mk_factory(&mut s, "WELL CAMP", 50000.0, 50000.0);
+    let plant = |id: &str, item: &str, node_type: &str, dy: f64| WorldNode {
+        id: id.into(),
+        item: item.into(),
+        purity: "pure".into(),
+        node_type: node_type.into(),
+        well: (node_type == "fracking-satellite").then(|| "well-nitrogen-1".into()),
+        x: 50100.0,
+        y: 50000.0 + dy,
+        z: 0.0,
+        zone: "surface".into(),
+        entrance: None,
+        region: "grass-fields".into(),
+    };
+    s.world
+        .nodes
+        .push(plant("plain_iron", "Desc_OreIron_C", "node", 0.0));
+    s.world
+        .nodes
+        .push(plant("bait_geyser", "Desc_Geyser_C", "geyser", 50.0));
+    s.world.nodes.push(plant(
+        "bait_nitro",
+        "Desc_NitrogenGas_C",
+        "fracking-satellite",
+        100.0,
+    ));
+
+    let ids: std::collections::BTreeSet<String> = next(&mut s)
+        .iter()
+        .filter(|o| o.kind == OpportunityKind::UntappedNode)
+        .map(|o| o.id.clone())
+        .collect();
+    assert!(
+        ids.contains("untapped_node:plain_iron"),
+        "the pure plain node IS offered"
+    );
+    assert!(
+        !ids.contains("untapped_node:bait_geyser"),
+        "a pure geyser is NOT offered"
+    );
+    assert!(
+        !ids.contains("untapped_node:bait_nitro"),
+        "a pure fracking satellite is NOT offered"
+    );
+}
+
 /// L3: a cave node's ENTRANCE always anchors its distance — a plan-local
 /// position override corrects the node marker, not the way in. If the
 /// override won here (9 500 m) the node would vanish from the radius
@@ -1366,6 +1421,8 @@ fn untapped_node_entrance_wins_over_override() {
             y: 50000.0,
             z: 0.0,
         }),
+        node_type: "node".into(),
+        well: None,
         region: "grass-fields".into(),
     });
     s.edit(vec![Command::SetNodeOverride {
@@ -1458,6 +1515,8 @@ fn untapped_node_radius_boundary_is_inclusive() {
         z: 0.0,
         zone: "surface".into(),
         entrance: None,
+        node_type: "node".into(),
+        well: None,
         region: "grass-fields".into(),
     };
     s.world.nodes = vec![
@@ -1496,6 +1555,8 @@ fn untapped_node_surfaces_only_catalog_pure_nodes() {
         z: 0.0,
         zone: "surface".into(),
         entrance: None,
+        node_type: "node".into(),
+        well: None,
         region: "grass-fields".into(),
     });
 
