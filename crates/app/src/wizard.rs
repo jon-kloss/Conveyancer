@@ -495,7 +495,7 @@ pub fn global_solve(
                 log(
                     phase,
                     &format!(
-                        "{}: supply assumed — no {} nodes in the world snapshot (unmetered until wells land)",
+                        "{}: supply assumed — no claimable {} nodes in the world snapshot (unmetered until wells land)",
                         item_name(item),
                         item_name(item)
                     ),

@@ -181,23 +181,32 @@ mod tests {
         // cave support is pinned by cave_nodes_parse_with_entrances below.
         let _ = caves;
 
-        // v3 sites: geysers (geothermal), fracking satellites grouped into wells.
-        let geysers = snap
-            .nodes
-            .iter()
-            .filter(|n| n.node_type == "geyser")
-            .count();
-        assert!(geysers >= 20, "bundled geysers: {geysers}");
+        // v3 sites — EXACT counts so any generator/vendor drift is caught (a
+        // loose `>=` would hide a WELL_EPS_M regression that reshapes the wells
+        // or a dropped section). 608 = 459 plain + 31 geysers + 118 satellites.
+        let count = |t: &str| snap.nodes.iter().filter(|n| n.node_type == t).count();
+        assert_eq!(snap.nodes.len(), 608, "total nodes");
+        assert_eq!(count("node"), 459, "plain nodes");
+        assert_eq!(count("geyser"), 31, "geysers");
+        assert_eq!(count("fracking-satellite"), 118, "fracking satellites");
+        // Nitrogen exists ONLY as fracking satellites (nothing else produces it).
         assert!(
-            snap.nodes.iter().any(|n| n.item == "Desc_NitrogenGas_C"),
-            "nitrogen wells present"
+            snap.nodes
+                .iter()
+                .filter(|n| n.item == "Desc_NitrogenGas_C")
+                .all(|n| n.node_type == "fracking-satellite"),
+            "every nitrogen node is a fracking satellite"
         );
         let wells: std::collections::BTreeSet<_> = snap
             .nodes
             .iter()
             .filter_map(|n| n.well.as_deref())
             .collect();
-        assert!(wells.len() >= 10, "reconstructed wells: {}", wells.len());
+        assert_eq!(
+            wells.len(),
+            17,
+            "reconstructed wells (6 N + 8 water + 3 oil)"
+        );
     }
 
     #[test]
@@ -267,5 +276,44 @@ mod tests {
         assert!(n.entrance.is_none());
         assert_eq!(n.node_type, "node", "pre-v3 nodes default to plain node");
         assert!(n.well.is_none());
+    }
+
+    fn node(node_type: &str, well: Option<&str>) -> super::WorldNode {
+        super::WorldNode {
+            id: "x".into(),
+            item: "Desc_NitrogenGas_C".into(),
+            purity: "pure".into(),
+            node_type: node_type.into(),
+            well: well.map(Into::into),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            zone: "surface".into(),
+            entrance: None,
+            region: "grass-fields".into(),
+        }
+    }
+
+    #[test]
+    fn is_plain_node_only_true_for_node_type() {
+        // The single gate every node consumer keys off — a geyser or fracking
+        // satellite must read as NOT plain, or the "inert" guarantee collapses.
+        assert!(node("node", None).is_plain_node());
+        assert!(!node("geyser", None).is_plain_node());
+        assert!(!node("fracking-satellite", Some("well-nitrogen-1")).is_plain_node());
+    }
+
+    #[test]
+    fn v3_node_round_trips_and_plain_nodes_omit_well() {
+        // A satellite carries nodeType + well through serialize → deserialize.
+        let sat = node("fracking-satellite", Some("well-nitrogen-1"));
+        let back: super::WorldNode =
+            serde_json::from_str(&serde_json::to_string(&sat).unwrap()).unwrap();
+        assert_eq!(back.node_type, "fracking-satellite");
+        assert_eq!(back.well.as_deref(), Some("well-nitrogen-1"));
+        // A plain node serializes WITHOUT a `well` key (skip_serializing_if), so
+        // it never round-trips a spurious null that downstream code might read.
+        let plain = serde_json::to_string(&node("node", None)).unwrap();
+        assert!(!plain.contains("well"), "plain node omits well: {plain}");
     }
 }

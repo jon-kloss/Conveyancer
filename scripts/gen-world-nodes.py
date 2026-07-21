@@ -52,8 +52,8 @@ def region_of(x, y):
 def reconstruct_wells(sats):
     """Assign each fracking satellite a `well` id by union-find clustering
     within-resource on WELL_EPS_M. Returns {satellite id -> well id}. Well ids
-    are `well-<resource-slug>-<n>`, numbered by ascending (x, y) of the well's
-    first satellite so the labeling is deterministic across runs."""
+    are `well-<resource-slug>-<n>`, numbered by the ascending minimum (x, y)
+    among each well's satellites so the labeling is deterministic across runs."""
     by_res = defaultdict(list)
     for s in sats:
         by_res[s["class_name"]].append(s)

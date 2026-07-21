@@ -1066,7 +1066,12 @@ mod tests {
         // it can be claimed on a fracking-satellite node (purity-scaled rate),
         // exactly like a miner.
         let fe = &gd.machines["Build_FrackingExtractor_C"];
-        assert!(matches!(fe.kind, MachineKind::Extractor { .. }));
+        // Pin the extraction shape the placement PR will consume: 1000/cycle ÷
+        // 1 s → 60 m³/min at normal purity (× purity), 0 power.
+        assert!(
+            matches!(fe.kind, MachineKind::Extractor { items_per_cycle, cycle_time_s }
+                if items_per_cycle == 1000.0 && cycle_time_s == 1.0)
+        );
         assert_eq!(fe.display_name, "Resource Well Extractor");
         assert_eq!(
             fe.power_mw, 0.0,
@@ -1080,6 +1085,17 @@ mod tests {
                 .produced_in
                 .contains(&"Build_FrackingExtractor_C".to_string())),
             "fracking extraction is claimed on a satellite node, not placed via a recipe"
+        );
+        // The Pressurizer (Resource Well Activator) is recognized as a buildable
+        // but NOT yet parsed as a machine — its 150 MW power draw is wired into
+        // the solver by the fracking placement PR, not here.
+        assert!(
+            gd.buildables.contains_key("Build_FrackingSmasher_C"),
+            "Pressurizer is catalogued as a buildable"
+        );
+        assert!(
+            !gd.machines.contains_key("Build_FrackingSmasher_C"),
+            "Pressurizer is not a machine yet (no power/placement modeling in this PR)"
         );
     }
 

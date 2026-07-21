@@ -2005,6 +2005,81 @@ fn nodeless_resource_is_supply_assumed() {
     );
 }
 
+/// Inert-catalog gate (the mutation-killing twin of the test above): nitrogen
+/// exists in the bundled world ONLY as fracking satellites (45 of them, no plain
+/// node). Because those satellites aren't plain, the wizard must STILL treat
+/// nitrogen as supply-assumed — no claim, no port. If `is_plain_node()` were
+/// dropped from wizard's `no_node_resource`/siting filter, the satellites would
+/// match and the wizard would stamp a MINER claim on a nitrogen satellite; this
+/// test fails in exactly that case (the zero-node test above cannot catch it).
+#[test]
+fn nitrogen_satellites_do_not_make_nitrogen_claimable() {
+    let mut s = Session::in_memory(None).unwrap();
+    // sanity: the catalog carries nitrogen ONLY as fracking satellites
+    assert!(
+        s.world
+            .nodes
+            .iter()
+            .any(|n| n.item == "Desc_NitrogenGas_C" && n.node_type == "fracking-satellite"),
+        "bundled catalog has nitrogen satellites"
+    );
+    assert!(
+        !s.world
+            .nodes
+            .iter()
+            .any(|n| n.item == "Desc_NitrogenGas_C" && n.node_type == "node"),
+        "and no plain nitrogen node"
+    );
+    // real Desc_NitrogenGas_C as a resource + a recipe that consumes it
+    s.gamedata.items.insert(
+        "Desc_NitrogenGas_C".into(),
+        mk_item("Desc_NitrogenGas_C", true),
+    );
+    s.gamedata.recipes.insert(
+        "Recipe_NitroWidget_C".into(),
+        mk_recipe(
+            "Recipe_NitroWidget_C",
+            vec![("Desc_NitrogenGas_C", 2.0), ("Desc_OreIron_C", 2.0)],
+            vec![("Desc_NitroWidget_C", 2.0)],
+        ),
+    );
+    s.gamedata.items.insert(
+        "Desc_NitroWidget_C".into(),
+        mk_item("Desc_NitroWidget_C", false),
+    );
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_NitroWidget_C", 30.0));
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal (nitrogen supply-assumed), got {outcome:?}");
+    };
+    assert!(
+        log_lines.iter().any(|l| l.contains("supply assumed")),
+        "nitrogen is supply-assumed despite the satellites: {log_lines:?}"
+    );
+    // no claim references any nitrogen satellite, and no nitrogen in port
+    let nitro_node_ids: std::collections::BTreeSet<&str> = s
+        .world
+        .nodes
+        .iter()
+        .filter(|n| n.item == "Desc_NitrogenGas_C")
+        .map(|n| n.id.as_str())
+        .collect();
+    for i in &proposal.items {
+        for c in &i.commands {
+            match c {
+                Command::ClaimNode { node, .. } => assert!(
+                    !nitro_node_ids.contains(node.as_str()),
+                    "no claim on a nitrogen satellite: {node}"
+                ),
+                Command::AddPort { item, .. } => {
+                    assert_ne!(item, "Desc_NitrogenGas_C", "no nitrogen in port")
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// A nodeless resource WITH a placeable extractor (like water: a Water
 /// Extractor runs a zero-ingredient extraction recipe) is REAL routable demand,
 /// not an assumption. The wizard claims no node (there is none) but emits an
