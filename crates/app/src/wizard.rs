@@ -424,15 +424,26 @@ pub fn global_solve(
     }
 
     // A world-sourced raw (FGResourceDescriptor) with NO node in the world
-    // snapshot — water today, nitrogen and other well gases until wells land —
-    // cannot be claimed or metered. Its supply is ASSUMED: no claim, no in
-    // port, no feed edge, no goal wiring. Generalizes the old hardcoded
-    // Desc_Water_C checks (water is exactly a resource with zero nodes, so its
-    // behavior is unchanged byte-for-byte).
-    let supply_assumed = |item: &str| -> bool {
+    // snapshot can never be CLAIMED (there's no node) — siting always skips it.
+    // Whether its supply is truly ASSUMED then splits on one thing: is there a
+    // placeable extractor for it?
+    //   - Water HAS one (Build_WaterPump_C runs a zero-ingredient extraction
+    //     recipe), so it is REAL demand: the site gets an UNCAPPED water IN port
+    //     the player pipes to from a Water Extractor. Unrouted, the strict fluid
+    //     rule reads it as 0 — an honest deficit that gates consumers, never
+    //     free water.
+    //   - Nitrogen / other well gases have no placeable source until Resource
+    //     Wells land, so they stay fully assumed: no port, no edge, no wiring.
+    let no_node_resource = |item: &str| -> bool {
         gd.items.get(item).map(|i| i.is_resource).unwrap_or(false)
             && !world.nodes.iter().any(|n| n.item == item)
     };
+    let placeable_source = |item: &str| -> bool {
+        gd.recipes
+            .values()
+            .any(|r| r.ingredients.is_empty() && r.products.iter().any(|(i, _)| i == item))
+    };
+    let supply_assumed = |item: &str| -> bool { no_node_resource(item) && !placeable_source(item) };
 
     // ---------- phase 3: siting ----------
     let phase = "SITING";
@@ -458,15 +469,28 @@ pub fn global_solve(
     let mut budget = c.node_budget;
     let mut binding: Option<String> = None;
     for (item, need) in &raw {
-        if supply_assumed(item) {
-            log(
-                phase,
-                &format!(
-                    "{}: supply assumed — no {} nodes in the world snapshot (unmetered until wells land)",
-                    item_name(item),
-                    item_name(item)
-                ),
-            );
+        // Nodeless raws can't be claimed. Water (placeable) still gets an
+        // uncapped IN port to pipe to (below); a truly sourceless gas is assumed.
+        if no_node_resource(item) {
+            if placeable_source(item) {
+                log(
+                    phase,
+                    &format!(
+                        "{}: no node — route it in from a {} (pipe a supply here)",
+                        item_name(item),
+                        item_name(item)
+                    ),
+                );
+            } else {
+                log(
+                    phase,
+                    &format!(
+                        "{}: supply assumed — no {} nodes in the world snapshot (unmetered until wells land)",
+                        item_name(item),
+                        item_name(item)
+                    ),
+                );
+            }
             continue;
         }
         let mut candidates: Vec<&gamedata::worldnodes::WorldNode> = world
@@ -628,13 +652,22 @@ pub fn global_solve(
     let mut y = 80.0;
     for (item, need) in &raw {
         if supply_assumed(item) {
-            continue; // assumed raws get no in port — nothing meters them
+            continue; // assumed raws (well gases) get no in port — nothing meters them
         }
-        let ceiling: f64 = picked_nodes
-            .iter()
-            .filter(|(_, i, _)| i == item)
-            .map(|(_, _, r)| r)
-            .sum();
+        // A nodeless-but-placeable raw (water) has no claimed extraction to
+        // meter it: give it an UNCAPPED in port so the strict fluid rule reads
+        // it as 0 until the player pipes water in — a routable, honest demand,
+        // never assumed. A node-backed raw keeps its extraction ceiling.
+        let rate_ceiling = if no_node_resource(item) {
+            None
+        } else {
+            let ceiling: f64 = picked_nodes
+                .iter()
+                .filter(|(_, i, _)| i == item)
+                .map(|(_, _, r)| r)
+                .sum();
+            Some(ceiling.max(*need))
+        };
         push(
             &mut cmds,
             &mut aliases,
@@ -643,7 +676,7 @@ pub fn global_solve(
                 direction: PortDirection::In,
                 item: item.clone(),
                 rate: 0.0,
-                rate_ceiling: Some(ceiling.max(*need)),
+                rate_ceiling,
                 graph_pos: GraphPos { x: 0.0, y },
             },
             Some(&format!("in.{item}")),

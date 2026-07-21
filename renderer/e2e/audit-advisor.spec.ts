@@ -197,6 +197,9 @@ test("ignorePower demotes power_deficit, appends the note, and hides power_margi
     const gen1 = await mkFactory(request, "AUDIT OD GEN", 7000, 7000);
     created.push(gen1);
     const gen1Coal = await addPort(request, gen1, "in", "Desc_Coal_C", 480, 0);
+    // Coal generators draw supplemental water (45 m³/min each); a ceilinged
+    // water IN port assumes an off-plan source so the bank runs.
+    const gen1Water = await addPort(request, gen1, "in", "Desc_Water_C", 300, 0);
     const gen1Mw = await addPort(request, gen1, "out", "__PowerMW", null, 600);
     const gen1G = await addGroup(
       request,
@@ -206,6 +209,7 @@ test("ignorePower demotes power_deficit, appends the note, and hides power_margi
       2,
     );
     await belt(request, gen1, P(gen1Coal), G(gen1G), "Desc_Coal_C");
+    await belt(request, gen1, P(gen1Water), G(gen1G), "Desc_Water_C");
     await belt(request, gen1, G(gen1G), P(gen1Mw), "__PowerMW");
     await setRate(request, gen1Mw, 30);
 
@@ -225,6 +229,7 @@ test("ignorePower demotes power_deficit, appends the note, and hides power_margi
     const gen2 = await mkFactory(request, "AUDIT THIN GEN", 7000, 7600);
     created.push(gen2);
     const gen2Coal = await addPort(request, gen2, "in", "Desc_Coal_C", 480, 0);
+    const gen2Water = await addPort(request, gen2, "in", "Desc_Water_C", 300, 0);
     const gen2Mw = await addPort(request, gen2, "out", "__PowerMW", null, 600);
     const gen2G = await addGroup(
       request,
@@ -234,6 +239,7 @@ test("ignorePower demotes power_deficit, appends the note, and hides power_margi
       2,
     );
     await belt(request, gen2, P(gen2Coal), G(gen2G), "Desc_Coal_C");
+    await belt(request, gen2, P(gen2Water), G(gen2G), "Desc_Water_C");
     await belt(request, gen2, G(gen2G), P(gen2Mw), "__PowerMW");
     await setRate(request, gen2Mw, 75);
 

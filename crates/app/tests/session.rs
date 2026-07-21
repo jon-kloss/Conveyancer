@@ -1237,6 +1237,20 @@ fn generator_factories_and_circuits() {
         .unwrap()
         .created[0]
         .clone();
+    // Supplemental water for the coal generators (45 m³/min each); a non-binding
+    // 1000 ceiling lets the bank run fuel-limited.
+    let water_in = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Water_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(1000.0),
+            graph_pos: GraphPos { x: 0.0, y: 200.0 },
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
     let mw_out = s
         .edit(vec![Command::AddPort {
             factory: plant.clone(),
@@ -1270,6 +1284,14 @@ fn generator_factories_and_circuits() {
         EdgeEnd::Port(coal_in),
         EdgeEnd::Group(gens.clone()),
         "Desc_Coal_C",
+        3,
+    );
+    connect_in(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(water_in),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Water_C",
         3,
     );
     connect_in(
@@ -1532,6 +1554,196 @@ fn water_pump_group_produces_water_from_nothing() {
         dg.out_rates
     );
     assert!(dg.in_rates.is_empty(), "extraction consumes nothing");
+}
+
+#[test]
+fn water_routed_over_pipe_gates_downstream_generator() {
+    // The headline fidelity scenario: a Water Extractor factory pipes water to a
+    // separate coal-plant factory, and the coal generators' power output is
+    // gated by how much water actually arrives over the pipe. Proves (1) pipe
+    // routes are creatable and bind their ports, (2) they propagate fluid supply
+    // across the empire like a belt, and (3) supplemental water is the binding
+    // constraint on generation — no free water, no assumed supply.
+    let mut s = Session::in_memory(None).unwrap();
+
+    // Upstream: a Water Extractor shipping a THROTTLED 20 m³/min out (below the
+    // 45 a single coal generator wants at full tilt).
+    let water_fid = mk_factory(&mut s, "WATER WORKS", 0.0);
+    let pump = add_group(
+        &mut s,
+        &water_fid,
+        "Build_WaterPump_C",
+        "Recipe_Extract_Build_WaterPump",
+        gp(200.0, 0.0),
+    );
+    let water_out = mk_port(&mut s, &water_fid, PortDirection::Out, "Desc_Water_C", None);
+    connect(
+        &mut s,
+        &water_fid,
+        EdgeEnd::Group(pump),
+        EdgeEnd::Port(water_out.clone()),
+        "Desc_Water_C",
+        1,
+    );
+    s.edit(vec![Command::SetPortRate {
+        id: water_out.clone(),
+        rate: 20.0,
+    }])
+    .unwrap();
+
+    // Downstream: a coal plant with coal on tap and a water IN port, power left
+    // unwired so the generator runs at its (fuel+water-limited) nameplate.
+    let plant = mk_factory(&mut s, "POWER PLANT", 800.0);
+    let coal_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Coal_C", Some(480.0));
+    let water_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Water_C", None);
+    let gens = add_group(
+        &mut s,
+        &plant,
+        "Build_GeneratorCoal_C",
+        "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C",
+        gp(0.0, 0.0),
+    );
+    connect(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(coal_in),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Coal_C",
+        6,
+    );
+    connect(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(water_in.clone()),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Water_C",
+        1,
+    );
+
+    // Draw the PIPE: water OUT (WATER WORKS) → water IN (POWER PLANT), Mk.1
+    // (300 m³/min cap, non-binding here).
+    let r = s
+        .edit(vec![Command::AddRoute {
+            kind: RouteKind::Pipe { tier: 1 },
+            from: water_out.clone(),
+            to: water_in.clone(),
+            path: vec![
+                MapPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                MapPos {
+                    x: 800.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+        }])
+        .unwrap();
+    let pipe = r.created[0].clone();
+    // P1: the pipe route binds both fluid ports.
+    assert_eq!(
+        s.state.ports[&water_out].bound_route.as_deref(),
+        Some(pipe.as_str()),
+        "pipe binds the source water port"
+    );
+    assert_eq!(
+        s.state.ports[&water_in].bound_route.as_deref(),
+        Some(pipe.as_str()),
+        "pipe binds the sink water port"
+    );
+
+    // Water-limited: 20 m³/min arrives, a full 75 MW generator wants 45, so it
+    // runs at 20/45 → 33.3 MW. This is the whole point: routed water gates power.
+    let d = s.solve_all_readonly();
+    let gen = d.total_generation_mw;
+    assert!(
+        (gen - 75.0 * 20.0 / 45.0).abs() < 0.5,
+        "generation is limited by the water piped in (expected ~33.3 MW): {gen}"
+    );
+    // P2: the pipe carries exactly the water the generator draws.
+    let flow = d.routes[&pipe].flow;
+    assert!(
+        (flow - 20.0).abs() < 0.5,
+        "pipe flow equals the routed water: {flow}"
+    );
+
+    // Open the tap to 45 m³/min: the same generator now reaches full nameplate.
+    s.edit(vec![Command::SetPortRate {
+        id: water_out,
+        rate: 45.0,
+    }])
+    .unwrap();
+    let d = s.solve_all_readonly();
+    assert!(
+        (d.total_generation_mw - 75.0).abs() < 0.5,
+        "more water piped in → full 75 MW: {}",
+        d.total_generation_mw
+    );
+    assert!(
+        (d.routes[&pipe].flow - 45.0).abs() < 0.5,
+        "pipe now carries the full 45 m³/min: {}",
+        d.routes[&pipe].flow
+    );
+}
+
+#[test]
+fn unrouted_planned_water_port_supplies_nothing() {
+    // Honesty guarantee: a PLANNED water IN port with no pipe and no explicit
+    // ceiling is not free water — a fluid arrives only by pipe. The coal plant
+    // reads 0 MW until either a pipe feeds the port or the planner explicitly
+    // ceilings it to assume an off-plan source.
+    let mut s = Session::in_memory(None).unwrap();
+    let plant = mk_factory(&mut s, "DRY PLANT", 0.0);
+    let coal_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Coal_C", Some(480.0));
+    let water_in = mk_port(&mut s, &plant, PortDirection::In, "Desc_Water_C", None);
+    let gens = add_group(
+        &mut s,
+        &plant,
+        "Build_GeneratorCoal_C",
+        "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C",
+        gp(0.0, 0.0),
+    );
+    connect(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(coal_in),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Coal_C",
+        6,
+    );
+    connect(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(water_in.clone()),
+        EdgeEnd::Group(gens),
+        "Desc_Water_C",
+        1,
+    );
+
+    // Coal is on tap (solid boundary, lenient) but water is an unrouted planned
+    // fluid port → 0 supply → the generator can't burn → 0 MW.
+    let d = s.solve_all_readonly();
+    assert!(
+        d.total_generation_mw.abs() < 1e-6,
+        "no water routed → no power, got {} MW",
+        d.total_generation_mw
+    );
+
+    // Explicitly ceiling the water port: the planner is now asserting an off-plan
+    // water source, so the generator runs at full nameplate.
+    s.edit(vec![Command::SetPortCeiling {
+        id: water_in,
+        rate_ceiling: Some(45.0),
+    }])
+    .unwrap();
+    let d = s.solve_all_readonly();
+    assert!(
+        (d.total_generation_mw - 75.0).abs() < 0.5,
+        "an explicit water ceiling assumes supply → full 75 MW: {}",
+        d.total_generation_mw
+    );
 }
 
 #[test]
@@ -3277,6 +3489,14 @@ fn solved_generator_keeps_real_output_in_grid_sum() {
         "Desc_Coal_C",
         Some(480.0),
     );
+    // Supplemental water for the coal generator (45 m³/min), non-binding supply.
+    let water_in = mk_port(
+        &mut s,
+        &plant,
+        PortDirection::In,
+        "Desc_Water_C",
+        Some(480.0),
+    );
     let mw_out = mk_port(&mut s, &plant, PortDirection::Out, "__PowerMW", None);
     let gens = add_group(
         &mut s,
@@ -3291,6 +3511,14 @@ fn solved_generator_keeps_real_output_in_grid_sum() {
         EdgeEnd::Port(coal_in),
         EdgeEnd::Group(gens.clone()),
         "Desc_Coal_C",
+        6,
+    );
+    connect(
+        &mut s,
+        &plant,
+        EdgeEnd::Port(water_in),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Water_C",
         6,
     );
     connect(

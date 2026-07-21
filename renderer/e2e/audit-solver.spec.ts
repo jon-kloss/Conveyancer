@@ -238,8 +238,19 @@ test("un-wired driven generator generates at fuel-limited nameplate, no shortfal
     await modal.getByTestId("mfr-power-build-Desc_Coal_C").click();
     await expect(modal).toBeHidden();
 
-    // Plain hydrate = Recompute solve. driven_cycles still drives the un-wired
-    // generator bank toward its fuel-limited nameplate.
+    // MAKE POWER now emits an uncapped supplemental-water demand: the bank is
+    // water-starved (0 MW) until water arrives. Supply it (an explicit ceiling
+    // stands in for a routed pipe) so this probe can isolate the FUEL-limited
+    // driven-nameplate behavior — the thing under test.
+    const h0 = await hydrate(request);
+    const waterPort = Object.entries<any>(h0.plan.ports).find(
+      ([, p]) => p.factory === f && p.item === "Desc_Water_C" && p.direction === "in",
+    );
+    expect(waterPort, "MAKE POWER built a water IN port").toBeTruthy();
+    await edit(request, [{ type: "set_port_ceiling", id: waterPort![0], rateCeiling: 300 }]);
+
+    // Plain hydrate = Recompute solve. driven_cycles still drives the
+    // (power-)un-wired generator bank toward its fuel-limited nameplate.
     const h = await hydrate(request);
     const bank = Object.entries<any>(h.plan.groups).find(
       ([, g]) => g.factory === f && String(g.machine).toLowerCase().includes("generator"),

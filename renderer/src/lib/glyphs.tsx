@@ -34,6 +34,14 @@ const BODIES: Record<string, ReactNode> = {
       <circle cx="15.5" cy="12" r="1.4" fill="currentColor" />
     </>
   ),
+  // Fluid pipe: a tube with two flange joints (vs the belt's rollers).
+  pipe: (
+    <>
+      <rect x="3" y="8.5" width="18" height="7" rx="3.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <line x1="8.5" y1="7" x2="8.5" y2="17" stroke="currentColor" strokeWidth="1.8" />
+      <line x1="15.5" y1="7" x2="15.5" y2="17" stroke="currentColor" strokeWidth="1.8" />
+    </>
+  ),
   rail: (
     <>
       <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" strokeWidth="1.8" />

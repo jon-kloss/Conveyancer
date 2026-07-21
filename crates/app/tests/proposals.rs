@@ -143,6 +143,20 @@ fn gen_factory(s: &mut Session, name: &str, mw: f64) -> Id {
         .unwrap()
         .created[0]
         .clone();
+    // Coal generators draw supplemental water (45 m³/min each); an uncapped
+    // supply keeps it non-binding so the bank stays fuel-limited.
+    let water_in = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Water_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(1000.0),
+            graph_pos: gp(0.0, 200.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
     let mw_out = s
         .edit(vec![Command::AddPort {
             factory: plant.clone(),
@@ -181,6 +195,11 @@ fn gen_factory(s: &mut Session, name: &str, mw: f64) -> Id {
             EdgeEnd::Port(coal_in),
             EdgeEnd::Group(gens.clone()),
             "Desc_Coal_C",
+        ),
+        (
+            EdgeEnd::Port(water_in),
+            EdgeEnd::Group(gens.clone()),
+            "Desc_Water_C",
         ),
         (
             EdgeEnd::Group(gens),
@@ -379,6 +398,19 @@ fn build_base(s: &mut Session) -> (Id, Id) {
         .unwrap()
         .created[0]
         .clone();
+    // Supplemental water for the coal generator (45 m³/min), non-binding supply.
+    let water_in = s
+        .edit(vec![Command::AddPort {
+            factory: plant.clone(),
+            direction: PortDirection::In,
+            item: "Desc_Water_C".into(),
+            rate: 0.0,
+            rate_ceiling: Some(1000.0),
+            graph_pos: gp(0.0, 200.0),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
     let mw_out = s
         .edit(vec![Command::AddPort {
             factory: plant.clone(),
@@ -417,6 +449,11 @@ fn build_base(s: &mut Session) -> (Id, Id) {
             EdgeEnd::Port(coal_in),
             EdgeEnd::Group(gens.clone()),
             "Desc_Coal_C",
+        ),
+        (
+            EdgeEnd::Port(water_in),
+            EdgeEnd::Group(gens.clone()),
+            "Desc_Water_C",
         ),
         (
             EdgeEnd::Group(gens),
@@ -1966,6 +2003,68 @@ fn nodeless_resource_is_supply_assumed() {
                 if item == "Desc_OreIron_C" && *direction == PortDirection::In))),
         "iron ore gets a metered in port"
     );
+}
+
+/// A nodeless resource WITH a placeable extractor (like water: a Water
+/// Extractor runs a zero-ingredient extraction recipe) is REAL routable demand,
+/// not an assumption. The wizard claims no node (there is none) but emits an
+/// UNCAPPED in port to pipe to, and the SITING log says "route it in", not
+/// "supply assumed". This is the option-2 realization of routed water.
+#[test]
+fn nodeless_resource_with_extractor_is_routable_demand() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.gamedata
+        .items
+        .insert("Desc_Wet_C".into(), mk_item("Desc_Wet_C", true));
+    // A zero-ingredient extraction recipe makes Desc_Wet_C placeable (the water
+    // pump shape), so it is sourced-and-routed rather than assumed.
+    s.gamedata.recipes.insert(
+        "Recipe_Extract_Wet_C".into(),
+        mk_recipe("Recipe_Extract_Wet_C", vec![], vec![("Desc_Wet_C", 120.0)]),
+    );
+    s.gamedata.recipes.insert(
+        "Recipe_WetWidget_C".into(),
+        mk_recipe(
+            "Recipe_WetWidget_C",
+            vec![("Desc_Wet_C", 2.0), ("Desc_OreIron_C", 2.0)],
+            vec![("Desc_WetWidget_C", 2.0)],
+        ),
+    );
+    s.gamedata.items.insert(
+        "Desc_WetWidget_C".into(),
+        mk_item("Desc_WetWidget_C", false),
+    );
+
+    let (outcome, log_lines) = solve_with_log(&s, goal_for("Desc_WetWidget_C", 30.0));
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    // Honest, routable framing — not the "supply assumed" of a sourceless gas.
+    assert!(
+        log_lines.iter().any(|l| l.contains("route it in")),
+        "siting names the routable supply: {log_lines:?}"
+    );
+    // An UNCAPPED in port is emitted (rate_ceiling None) — a deficit until piped.
+    let uncapped_port = proposal.items.iter().any(|i| {
+        i.commands.iter().any(|c| {
+            matches!(c,
+                Command::AddPort { item, direction, rate_ceiling, .. }
+                if item == "Desc_Wet_C"
+                    && *direction == PortDirection::In
+                    && rate_ceiling.is_none())
+        })
+    });
+    assert!(
+        uncapped_port,
+        "the placeable nodeless resource gets an uncapped, routable in port"
+    );
+    // No node claim — there is no node to claim.
+    let claimed = proposal.items.iter().any(|i| {
+        i.commands
+            .iter()
+            .any(|c| matches!(c, Command::ClaimNode { .. }) && i.detail.contains("Desc_Wet_C"))
+    });
+    assert!(!claimed, "a nodeless resource is never claimed");
 }
 
 /// Audit #129 (1): one unknown-recipe group (imported factories carry recipes

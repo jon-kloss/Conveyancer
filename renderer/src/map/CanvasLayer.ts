@@ -41,8 +41,9 @@ export interface RouteRender {
   /** honest red: downstream registers a deficit through this route while it
    *  runs at full capacity (MapView derives it from Derived.deficits) */
   bottleneck: boolean;
-  /** transport kind — drives the on-line glyph notation (ties, squares, dots) */
-  kind: "belt" | "rail" | "truck" | "drone";
+  /** transport kind — drives the on-line glyph notation (ties, squares, dots)
+   *  and the fluid-blue tint for pipes */
+  kind: "belt" | "pipe" | "rail" | "truck" | "drone";
   /** label chip suffix: MK.n for belts, RAIL/TRUCK/DRONE for transports */
   tag: string;
   itemName: string;
@@ -677,9 +678,14 @@ export class MapCanvasLayer extends L.Layer {
                 ? "--flow-crit"
                 : band === "under"
                   ? "--flow-warn"
-                  : band === "idle"
-                    ? "--steel-500"
-                    : "--flow-ok",
+                  : // a healthy/idle pipe reads fluid-blue (matches the graph's
+                    // pipe tint) so it's distinguishable from a belt at a glance;
+                    // a starved or over-full pipe still shows red/amber.
+                    r.kind === "pipe"
+                    ? "--bp-400"
+                    : band === "idle"
+                      ? "--steel-500"
+                      : "--flow-ok",
             );
         ctx.lineWidth = band === "bottleneck" ? 6 : 2;
         // drones read as dotted air routes; the band grammar overrides. Idle

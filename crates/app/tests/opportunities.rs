@@ -214,10 +214,14 @@ fn belt_route(s: &mut Session, from: &Id, to: &Id, tier: u8) -> Id {
         .clone()
 }
 
-/// coal in → coal generator → `rate` MW out (grid generation).
+/// coal + water in → coal generator → `rate` MW out (grid generation). The
+/// coal generator draws supplemental water (45 m³/min each, 180 for the 4-gen
+/// bank); a comfortably-oversized 480 ceiling keeps it non-binding so the bank
+/// runs fuel-limited exactly as before water became a real input.
 fn coal_plant(s: &mut Session, name: &str, x: f64, y: f64, rate: f64) -> Id {
     let fid = mk_factory(s, name, x, y);
     let coal_in = add_port(s, &fid, PortDirection::In, "Desc_Coal_C", Some(480.0));
+    let water_in = add_port(s, &fid, PortDirection::In, "Desc_Water_C", Some(480.0));
     let mw_out = add_port(s, &fid, PortDirection::Out, "__PowerMW", None);
     let gens = add_group(
         s,
@@ -232,6 +236,13 @@ fn coal_plant(s: &mut Session, name: &str, x: f64, y: f64, rate: f64) -> Id {
         EdgeEnd::Port(coal_in),
         EdgeEnd::Group(gens.clone()),
         "Desc_Coal_C",
+    );
+    belt(
+        s,
+        &fid,
+        EdgeEnd::Port(water_in),
+        EdgeEnd::Group(gens.clone()),
+        "Desc_Water_C",
     );
     belt(
         s,
@@ -2459,6 +2470,7 @@ fn unwired_generator_still_generates_at_nameplate() {
     let mut s = Session::in_memory(None).unwrap();
     let fid = mk_factory(&mut s, "BURNER PLANT", 0.0, 0.0);
     let coal_in = add_port(&mut s, &fid, PortDirection::In, "Desc_Coal_C", Some(480.0));
+    let water_in = add_port(&mut s, &fid, PortDirection::In, "Desc_Water_C", Some(480.0));
     let gens = add_group(
         &mut s,
         &fid,
@@ -2466,16 +2478,24 @@ fn unwired_generator_still_generates_at_nameplate() {
         "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C",
         4,
     );
-    // Fuel wired; deliberately NO power output port.
+    // Fuel + supplemental water wired; deliberately NO power output port.
     belt(
         &mut s,
         &fid,
         EdgeEnd::Port(coal_in),
-        EdgeEnd::Group(gens),
+        EdgeEnd::Group(gens.clone()),
         "Desc_Coal_C",
     );
+    belt(
+        &mut s,
+        &fid,
+        EdgeEnd::Port(water_in),
+        EdgeEnd::Group(gens),
+        "Desc_Water_C",
+    );
     let derived = s.solve_all_readonly();
-    // 4 coal generators × 75 MW = 300 MW nameplate; coal ceiling 480 ≥ 60 needed.
+    // 4 coal generators × 75 MW = 300 MW nameplate; coal ceiling 480 ≥ 60 needed,
+    // water ceiling 480 ≥ 180 needed — both non-binding, so fuel-limited nameplate.
     let gen = derived.total_generation_mw;
     assert!(
         (gen - 300.0).abs() < 1.0,

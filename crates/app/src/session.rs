@@ -1934,7 +1934,10 @@ impl Session {
     fn empire_order(&self) -> (Vec<Id>, bool) {
         let mut deps: BTreeMap<Id, Vec<Id>> = BTreeMap::new(); // factory -> upstream factories
         for r in self.state.routes.values() {
-            if !matches!(r.kind, RouteKind::Power | RouteKind::Pipe { .. }) {
+            // Pipe routes now carry material supply (water), so they impose an
+            // upstream→downstream dependency like belts. Only Power stays out —
+            // it's a grid relation, not a material feed.
+            if !matches!(r.kind, RouteKind::Power) {
                 let (Some(src), Some(dst)) = (
                     self.state.ports.get(&r.endpoints.0),
                     self.state.ports.get(&r.endpoints.1),
@@ -2064,6 +2067,29 @@ impl Session {
                                 None => *supply,
                             });
                         }
+                    } else if input.ceiling.is_none()
+                        && port.status != Status::Built
+                        && self
+                            .gamedata
+                            .items
+                            .get(&port.item)
+                            .map(|i| i.is_fluid())
+                            .unwrap_or(false)
+                    {
+                        // A fluid arrives ONLY by pipe (or in-factory extraction,
+                        // which is a group output, not an IN port). So an
+                        // unrouted PLANNED fluid IN port with no explicit supply
+                        // ceiling delivers nothing — route a pipe to it, or set an
+                        // explicit ceiling to assume an off-plan source. This is
+                        // what makes supplemental water genuinely require routing.
+                        //
+                        // Two carve-outs keep it honest, not punitive:
+                        //  - Solids keep the lenient open-boundary assumption.
+                        //  - A ◆ BUILT port is observed reality: an imported plant
+                        //    is running in-game, so its untraced water is assumed
+                        //    present (mirrors #58 — never show a running plant at
+                        //    0 MW just because the save didn't expose its pipes).
+                        input.ceiling = Some(0.0);
                     }
                 }
             }
@@ -2850,6 +2876,11 @@ fn cargo_capacity(
     let stack = stack_size_of(gd, item);
     match kind {
         RouteKind::Belt { tier } => Some((belt_capacity(*tier), None)),
+        // Pipes carry fluids at a fixed per-tier ceiling (300/600 m³/min), no
+        // distance math — the same shape as belts. Making this Some (was None)
+        // is what lets water propagate across a route in feed_downstream and
+        // surface as a deficit like any other cargo.
+        RouteKind::Pipe { tier } => Some((pipe_capacity(*tier), None)),
         RouteKind::Rail { spec } => {
             let m = rail_math(path_len_m, spec, stack);
             Some((m.throughput_per_min, Some(m)))
@@ -2862,7 +2893,7 @@ fn cargo_capacity(
             let m = drone_math(path_len_m, spec, stack);
             Some((m.throughput_per_min, Some(m)))
         }
-        RouteKind::Pipe { .. } | RouteKind::Power => None,
+        RouteKind::Power => None,
     }
 }
 

@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { fmtRate, itemLabel } from "../lib/format";
 import ItemIcon from "../lib/ItemIcon";
-import { POWER_ITEM, effClock, effCount, type Command, type EdgeEnd, type Id } from "../state/types";
+import { isFluidItem, POWER_ITEM, effClock, effCount, type Command, type EdgeEnd, type Id } from "../state/types";
 import {
   makeableItems,
   planChain,
@@ -364,6 +364,19 @@ export default function MakeFromResources({
       if (!shares.length) return;
       const wiring = planRawWiring(shares, [{ key: "bank", rate: fuelNeed }]);
 
+      // Supplemental fluids (coal/nuclear draw water) become UNCAPPED IN ports:
+      // a real, routable demand the bank can't run without. The bank reads 0 MW
+      // with a water deficit until the player pipes water in from a Water
+      // Extractor — no assumed free water. (See the strict fluid rule in the
+      // empire solve.)
+      const recipe = gamedata.recipes[opt.recipe];
+      const fluids = (recipe?.ingredients ?? [])
+        .filter(([it]) => it !== opt.fuel && isFluidItem(gamedata, it))
+        .map(([it, amt]) => ({
+          item: it,
+          rate: recipe && recipe.durationS > 0 ? (count * clock * amt * 60) / recipe.durationS : 0,
+        }));
+
       const baseX = Math.max(0, ...inPorts.map((p) => p.graphPos.x)) + 300;
       const cmds: Command[] = [
         { type: "add_group", factory: factoryId, machine: opt.machine, recipe: opt.recipe, count, clock, graphPos: { x: baseX, y: 80 }, floor: 0 },
@@ -376,19 +389,31 @@ export default function MakeFromResources({
             floor: 0,
           }),
         ),
+        ...fluids.map(
+          (f, i): Command => ({
+            type: "add_port",
+            factory: factoryId,
+            direction: "in",
+            item: f.item,
+            rate: 0,
+            rateCeiling: null,
+            graphPos: { x: 0, y: 300 + i * 128 },
+          }),
+        ),
       ];
       const ids = await dispatch(cmds);
       if (!ids) return;
       const bankId = ids[0];
       const junctionId = new Map(wiring.junctions.map((j, i) => [j.key, ids[1 + i]]));
+      const fluidPortIds = fluids.map((_, i) => ids[1 + wiring.junctions.length + i]);
       const end = (r: WiringRef): EdgeEnd =>
         r.kind === "port"
           ? { kind: "port", id: r.id }
           : r.kind === "junction"
             ? { kind: "junction", id: junctionId.get(r.key)! }
             : { kind: "group", id: bankId };
-      await dispatch(
-        wiring.edges.map(
+      await dispatch([
+        ...wiring.edges.map(
           (e): Command => ({
             type: "add_edge",
             factory: factoryId,
@@ -398,11 +423,23 @@ export default function MakeFromResources({
             tier: minBeltTier(e.rate),
           }),
         ),
-      );
+        // wire each supplemental fluid from its IN port to the bank on a pipe
+        ...fluids.map(
+          (f, i): Command => ({
+            type: "add_edge",
+            factory: factoryId,
+            from: { kind: "port", id: fluidPortIds[i] },
+            to: { kind: "group", id: bankId },
+            item: f.item,
+            tier: f.rate > 300 ? 2 : 1,
+          }),
+        ),
+      ]);
       await dispatch([{ type: "tidy_layout", factory: factoryId }]).catch(() => {});
       setSelection(null);
+      const waterNote = fluids.length ? ` Route ${fluids.map((f) => name(f.item)).join(" + ")} to it to bring it online.` : "";
       pushToast(
-        `Built ${count} × ${gamedata.machines[opt.machine]?.displayName ?? "generator"} — ⚡ ${Math.round(mw)} MW from ${name(opt.fuel)}.`,
+        `Built ${count} × ${gamedata.machines[opt.machine]?.displayName ?? "generator"} — ⚡ ${Math.round(mw)} MW from ${name(opt.fuel)}.${waterNote}`,
         "success",
       );
       onClose();
@@ -690,8 +727,8 @@ export default function MakeFromResources({
           );
         })}
         <div className="mfr-power-note">
-          In-game coal/fuel plants also need piped water — pipes aren't modeled here, so plan
-          extractors separately.
+          Coal/nuclear plants draw supplemental water: the bank builds with a water IN port and reads
+          0 MW until you pipe water to it from a Water Extractor.
         </div>
       </div>
     ) : null;

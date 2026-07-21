@@ -400,9 +400,11 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
         build_version: build_version.to_string(),
         ..Default::default()
     };
-    // (generator class, MW, fuels) where each fuel carries its optional
-    // byproduct (item class, amount per fuel item burned) — nuclear waste.
-    let mut generator_fuels: Vec<(String, f64, Vec<FuelEntry>)> = Vec::new();
+    // (generator class, MW, supplemental water m³/min, fuels) where each fuel
+    // carries its optional byproduct (item class, amount per fuel item burned) —
+    // nuclear waste. Water is per-generator (coal 45, nuclear 240), same for
+    // every fuel that generator burns.
+    let mut generator_fuels: Vec<(String, f64, f64, Vec<FuelEntry>)> = Vec::new();
     // Water pumps (FGBuildableWaterPump) extract water from any water surface —
     // there is NO world node to claim (unlike ores/oil), so water can't arrive
     // through a map claim. We give each pump a synthesized extraction recipe
@@ -566,6 +568,11 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         p if p > 0.0 => p,
                         _ => f(c, "mVariablePowerProductionFactor"),
                     };
+                    // Supplemental water: mSupplementalToPowerRatio is top-level
+                    // on the generator (m³ per MW·… scaled by 60/1000 to m³/min).
+                    // Coal 75·10 = 45, Nuclear 2500·1.6 = 240; others 0. The
+                    // resource is always Desc_Water_C in the real data.
+                    let water_per_min = f(c, "mSupplementalToPowerRatio") * mw * 60.0 / 1000.0;
                     // fuel classes: modern Docs nests them in mFuel[].mFuelClass,
                     // with the burn byproduct (nuclear waste) alongside.
                     let mut fuels: Vec<FuelEntry> = Vec::new();
@@ -594,7 +601,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                             },
                         },
                     );
-                    generator_fuels.push((class_name, mw, fuels));
+                    generator_fuels.push((class_name, mw, water_per_min, fuels));
                 }
             }
             "FGSchematic" => {
@@ -743,10 +750,9 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
 
     // Synthesize fuel-burn recipes: MW·60 MJ/min ÷ fuel MJ = fuel/min.
     // Runs after fluid normalization (see above) so these recipes keep their
-    // already-correct m³/min amounts. Supplemental fluids (water) wait for
-    // the pipe network model — noted in DECISIONS.md; the fuel math itself
-    // is exact.
-    for (gen_class, mw, fuels) in generator_fuels {
+    // already-correct m³/min amounts — supplemental water below is likewise
+    // supplied pre-normalized, so it skips the ÷1000 pass.
+    for (gen_class, mw, water_per_min, fuels) in generator_fuels {
         for (fuel, byproduct) in fuels {
             let Some(fuel_item) = gd.items.get(&fuel) else {
                 continue;
@@ -763,6 +769,14 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
             if let Some((bp_class, bp_amount)) = byproduct {
                 products.push((bp_class, bp_amount * per_min));
             }
+            // Supplemental water rides as an ordinary fluid ingredient (coal 45,
+            // nuclear 240 m³/min) so the solver pulls it from Water Extractor /
+            // pump recipes exactly like it back-solves fuel. Gated on the water
+            // item existing (a trimmed fixture may omit it).
+            let mut ingredients = vec![(fuel, per_min)];
+            if water_per_min > 0.0 && gd.items.contains_key(WATER_ITEM) {
+                ingredients.push((WATER_ITEM.to_string(), water_per_min));
+            }
             gd.recipes.insert(
                 class_name.clone(),
                 Recipe {
@@ -777,7 +791,7 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         fuel_item.display_name
                     ),
                     duration_s: 60.0,
-                    ingredients: vec![(fuel, per_min)],
+                    ingredients,
                     products,
                     produced_in: vec![gen_class.clone()],
                     variable_power_mw: None,
@@ -976,7 +990,16 @@ mod tests {
             .values()
             .find(|r| r.produced_in.contains(&"Build_GeneratorCoal_C".to_string()))
             .expect("synthesized burn recipe");
-        assert_eq!(burn.ingredients, vec![("Desc_Coal_C".to_string(), 15.0)]);
+        // Coal burns 15 coal/min and draws supplemental water: 75 MW ·
+        // mSupplementalToPowerRatio 10 · 60 ÷ 1000 = 45 m³/min, riding the
+        // recipe as an ordinary fluid ingredient the solver must source.
+        assert_eq!(
+            burn.ingredients,
+            vec![
+                ("Desc_Coal_C".to_string(), 15.0),
+                (WATER_ITEM.to_string(), 45.0)
+            ]
+        );
         assert_eq!(burn.products, vec![(POWER_ITEM.to_string(), 75.0)]);
         assert_eq!(gd.items[POWER_ITEM].display_name, "Power");
     }
@@ -1037,6 +1060,35 @@ mod tests {
         );
         // A fuel without mByproduct keeps a power-only product list — pinned
         // by the coal generator in parses_bundled_fixture above.
+    }
+
+    #[test]
+    fn burn_recipe_carries_supplemental_water() {
+        // Nuclear draws supplemental water via mSupplementalToPowerRatio (top-
+        // level on the generator, not per-fuel): 2500 MW · 1.6 · 60 ÷ 1000 =
+        // 240 m³/min — the well-known real Nuclear Power Plant water figure,
+        // and the anchor that confirms the ratio→flow formula. Water rides the
+        // burn recipe as an ordinary fluid ingredient alongside the fuel rod.
+        let docs = r#"[
+          {"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptorNuclearFuel'","Classes":[
+            {"ClassName":"Desc_NuclearFuelRod_C","mDisplayName":"Uranium Fuel Rod","mForm":"RF_SOLID","mStackSize":"SS_SMALL","mEnergyValue":"750000"}]},
+          {"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptorBiomass'","Classes":[
+            {"ClassName":"Desc_Water_C","mDisplayName":"Water","mForm":"RF_LIQUID","mStackSize":"SS_FLUID","mEnergyValue":"0"}]},
+          {"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorNuclear'","Classes":[
+            {"ClassName":"Build_GeneratorNuclear_C","mDisplayName":"Nuclear Power Plant","mPowerProduction":"2500","mSupplementalToPowerRatio":"1.600000",
+             "mFuel":[{"mFuelClass":"Desc_NuclearFuelRod_C","mSupplementalResourceClass":"Desc_Water_C"}]}]}
+        ]"#;
+        let gd = parse_docs(docs, "test").unwrap();
+        let burn = &gd.recipes["Recipe_Power_Build_GeneratorNuclear_Desc_NuclearFuelRod_C"];
+        assert_eq!(
+            burn.ingredients,
+            vec![
+                ("Desc_NuclearFuelRod_C".to_string(), 0.2),
+                (WATER_ITEM.to_string(), 240.0)
+            ]
+        );
+        // Generators with no supplemental resource (ratio 0) stay water-free —
+        // the Fuel generator in parses_bundled_fixture pins that path.
     }
 
     #[test]

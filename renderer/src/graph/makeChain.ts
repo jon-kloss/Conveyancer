@@ -169,13 +169,17 @@ export function powerOptions(g: GameData, available: ReadonlySet<string>): Power
   const out: PowerOption[] = [];
   for (const r of Object.values(g.recipes)) {
     if (r.products.length !== 1 || r.products[0][0] !== POWER_ITEM) continue;
-    if (r.ingredients.length !== 1) continue;
-    const [fuel] = r.ingredients[0];
-    if (!available.has(fuel) || !isBeltable(g, fuel)) continue;
+    // The burn's primary fuel is its single SOLID (belt-fed) ingredient;
+    // supplemental fluids (coal/nuclear water) ride pipes and are wired as a
+    // separate demand at build time, so they don't disqualify the recipe.
+    const solids = r.ingredients.filter(([it]) => isBeltable(g, it));
+    if (solids.length !== 1) continue;
+    const [fuel, fuelAmt] = solids[0];
+    if (!available.has(fuel)) continue;
     const machine = r.producedIn.find((m) => g.machines[m]?.kind === "generator");
     if (!machine) continue;
     const mwPer = perMachineOut(r, POWER_ITEM);
-    const fuelPer = r.durationS > 0 ? (r.ingredients[0][1] * 60) / r.durationS : 0;
+    const fuelPer = r.durationS > 0 ? (fuelAmt * 60) / r.durationS : 0;
     if (mwPer <= 0 || fuelPer <= 0) continue;
     out.push({ recipe: r.className, machine, fuel, mwPer, fuelPer });
   }

@@ -29,8 +29,9 @@ import { fmtPower, itemLabel, routeBottleneck } from "../lib/format";
 import "./map.css";
 
 /** Cargo route kinds drawn with the saturation line grammar (A3.1). Pipe is
- *  excluded: not creatable in the UI and it has no derived flow/capacity. */
-const CARGO_KINDS = new Set(["belt", "rail", "truck", "drone"]);
+ *  included: it carries fluid (water) between factories with real derived
+ *  flow/capacity, drawn like a belt but styled fluid-blue. */
+const CARGO_KINDS = new Set(["belt", "pipe", "rail", "truck", "drone"]);
 
 /** Circuit margin level (SDD §12): headroom ≥20% OK, 5–20% WARN, <5% CRIT. */
 function circuitLevel(genMw: number, demandMw: number): "ok" | "warn" | "crit" {
@@ -619,8 +620,13 @@ export default function MapView() {
           capacity: d?.capacity ?? 0,
           // honest red only: a deficit through this route while it runs full
           bottleneck: routeBottleneck(r.id, d?.saturation ?? 0, derived.deficits),
-          kind: r.kind.kind as "belt" | "rail" | "truck" | "drone",
-          tag: r.kind.kind === "belt" ? `MK.${r.kind.tier}` : r.kind.kind.toUpperCase(),
+          kind: r.kind.kind as "belt" | "pipe" | "rail" | "truck" | "drone",
+          tag:
+            r.kind.kind === "belt"
+              ? `MK.${r.kind.tier}`
+              : r.kind.kind === "pipe"
+                ? `PIPE MK.${r.kind.tier}`
+                : r.kind.kind.toUpperCase(),
           itemName: itemLabel(gamedata.items, itemClass).toUpperCase(),
           selected: selection?.kind === "route" && selection.id === r.id,
           ...(laneOf.get(r.id) ?? { lane: 0, lanes: 1 }),

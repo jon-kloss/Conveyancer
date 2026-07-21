@@ -28,7 +28,11 @@ export default function RouteDrawer({ route }: { route: Route }) {
   const dstPort = plan.ports[route.endpoints[1]];
   const srcFactory = srcPort ? plan.factories[srcPort.factory] : null;
   const dstFactory = dstPort ? plan.factories[dstPort.factory] : null;
-  const tier = route.kind.kind === "belt" ? route.kind.tier : 0;
+  // Pipe routes share the belt inspector body — same manifest/tier/load shape —
+  // but carry fluid: pipe wording, Mk.1–2 tiers, and no cargo-kind switcher.
+  const isPipe = route.kind.kind === "pipe";
+  const tier = route.kind.kind === "belt" || isPipe ? route.kind.tier : 0;
+  const tierChoices = isPipe ? [1, 2] : [1, 2, 3, 4, 5, 6];
   const sat = dr?.saturation ?? 0;
   // Efficiency band (shared authority in lib/format): amber = under-used,
   // red = bottleneck (deficit through a full route); a full belt meeting
@@ -50,10 +54,10 @@ export default function RouteDrawer({ route }: { route: Route }) {
         )}
         <div className="drawer-title-block">
           <div className="t-title" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Glyph name={route.kind.kind} size={16} /> BELT ROUTE
+            <Glyph name={route.kind.kind} size={16} /> {isPipe ? "PIPE ROUTE" : "BELT ROUTE"}
           </div>
           <div className="mono drawer-sub">
-            {dr ? fmtKm(dr.lengthM) : "—"} · MK.{tier} · {fmtRate(dr?.capacity ?? 0)}/min CAP
+            {dr ? fmtKm(dr.lengthM) : "—"} · {isPipe ? "PIPE " : ""}MK.{tier} · {fmtRate(dr?.capacity ?? 0)}/min CAP
           </div>
         </div>
         {route.status === "built" ? (
@@ -103,9 +107,11 @@ export default function RouteDrawer({ route }: { route: Route }) {
 
       <section className="drawer-section">
         <h3 className="t-label">LOAD</h3>
-        <KindSwitcher route={route} />
+        {/* A pipe can't become a belt/rail/truck/drone — fluids only ride pipes —
+            so the cargo-kind switcher is hidden for pipe routes. */}
+        {!isPipe && <KindSwitcher route={route} />}
         <div className="drawer-row">
-          <span className="drawer-row-name">Belt tier</span>
+          <span className="drawer-row-name">{isPipe ? "Pipe tier" : "Belt tier"}</span>
           {route.status === "built" ? (
             <span className="mono t-data-12" data-testid="route-tier-built" title="Imported as built — rebuild in-game to change its tier.">
               MK.{tier} · BUILT
@@ -118,7 +124,7 @@ export default function RouteDrawer({ route }: { route: Route }) {
               onChange={(e) => void dispatch([{ type: "set_route_tier", id: route.id, tier: Number(e.target.value) }])}
               data-testid="route-tier-select"
             >
-              {[1, 2, 3, 4, 5, 6].map((t) => (
+              {tierChoices.map((t) => (
                 <option key={t} value={t}>
                   MK.{t}
                 </option>

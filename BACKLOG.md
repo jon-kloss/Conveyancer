@@ -18,10 +18,10 @@ Everything tempting that isn't Phase 1. Tags: v1 (later phase of this release), 
 - v1.1: Node index numbers on map labels (`FE PURE #08` style) once the full node snapshot lands.
 - v1.1: Belt corridor bundling (shared-lane routing when many belts run parallel) and manual waypoint pins on belts.
 - v2: Machine footprint dimensions from pak extraction replacing the community table in `footprints.ts`.
-- v1: Supplemental generator fluids (water for coal/nuclear) — lands with pipes.
+- ~~v1: Supplemental generator fluids (water for coal/nuclear) — lands with pipes.~~ — DONE: coal 45, nuclear 240 m³/min ride the synthesized burn recipes as ordinary fluid inputs (`mSupplementalToPowerRatio × MW × 60/1000`), solved from Water Extractor / pump recipes. Inter-factory `RouteKind::Pipe` routing shipped too: water must be piped from a Water Extractor to a generator factory for it to produce power (planned unrouted fluid IN ports read 0; ◆ built plants assume untraced water). See DECISIONS.md "Routed water".
 - v1.1: Route waypoint editing (paths are multi-point in the model; UI draws straight pin-to-pin).
 - v1.1: Persisted Circuit entities: user naming, breakers, priority switches (grids are derived-only today).
-- v1: Pipe head-lift math from route climb (z groundwork landed; needs pipes).
+- v1.1: Pipe head-lift math from route climb (z groundwork landed; pipe routes now exist — head-lift deliberately deferred: a pipe's flat 300/600 m³/min tier cap ignores vertical climb for now).
 - v1: Rail grade warnings from per-segment slope (z groundwork landed; needs Phase 4 rail).
 - v1.1: Elevation from a licensed heightmap (auto-fill pin z + climb along interior waypoints) — replaces planner-entered z.
 - v1.1: True cross-item MILP recipe selection (per-item scoring today; matters once alternates create trade-offs).
