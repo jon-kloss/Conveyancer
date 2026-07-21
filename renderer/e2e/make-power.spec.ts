@@ -60,10 +60,27 @@ test("MAKE POWER builds a coal generator bank from pooled coal claims", async ({
     expect(edges.some((e) => e.from.kind === "port" && e.from.id === portA)).toBe(true);
     expect(edges.some((e) => e.from.kind === "port" && e.from.id === portB)).toBe(true);
 
-    // The bank actually RUNS: coal genuinely flows down the merger→bank belt
-    // at the pooled 60/min. (totalGenerationMw alone is vacuous here — it
-    // deliberately falls back to nameplate for unsolved factories, so it goes
-    // positive even for a mis-wired bank. Real belt flow can't be faked.)
+    // MAKE POWER emits the supplemental water as an UNCAPPED, routable IN port —
+    // the bank is built but reads 0 MW until water is piped in (no assumed water).
+    const ports0 = Object.values(hydrated.plan.ports) as {
+      id: string;
+      factory: string;
+      item: string;
+      direction: string;
+      rateCeiling: number | null;
+    }[];
+    const waterPort = ports0.find((p) => p.factory === f && p.item === "Desc_Water_C" && p.direction === "in");
+    expect(waterPort, "MAKE POWER built a routable water IN port").toBeTruthy();
+    expect(waterPort!.rateCeiling).toBeNull(); // uncapped → honest deficit until routed
+    // Water-starved: the bank generates nothing yet.
+    expect(hydrated.derived?.totalGenerationMw ?? 0).toBe(0);
+
+    // Bring water on-plan (an explicit ceiling stands in for a routed pipe): the
+    // bank comes alive — coal now flows the pooled 60/min down the merger→bank
+    // belt, and the empire ledger sees the generation. (Real belt flow can't be
+    // faked; totalGenerationMw alone falls back to nameplate for unsolved
+    // factories, but a solved water-starved bank reads a true 0 above.)
+    await edit(request, [{ type: "set_port_ceiling", id: waterPort!.id, rateCeiling: 300 }]);
     const mergerOutId = (Object.entries(hydrated.plan.edges) as [string, (typeof edges)[number]][]).find(
       ([, e]) => e.from.kind === "junction" && e.from.id === merger!.id,
     )![0];
@@ -73,7 +90,6 @@ test("MAKE POWER builds a coal generator bank from pooled coal claims", async ({
         return h.derived?.factories?.[f]?.edges?.[mergerOutId]?.flow ?? 0;
       })
       .toBeGreaterThan(59);
-    // ...and the empire ledger sees the generation.
     const h = await (await page.request.get(`${API}/hydrate`)).json();
     expect(h.derived?.totalGenerationMw ?? 0).toBeGreaterThan(0);
 

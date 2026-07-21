@@ -12,6 +12,7 @@ import {
   DEFAULT_DRONE_SPEC,
   DEFAULT_RAIL_SPEC,
   DEFAULT_TRUCK_SPEC,
+  isFluidItem,
   POWER_ITEM,
   type Id,
   type RouteKind,
@@ -80,7 +81,7 @@ export default function ReceiveFromFactory({
   })();
   const [transport, setTransport] = useState<"belt" | "rail" | "truck" | "drone">("belt");
   const [tier, setTier] = useState(3);
-  const kindFor = (): RouteKind =>
+  const solidKind = (): RouteKind =>
     transport === "belt"
       ? { kind: "belt", tier }
       : transport === "rail"
@@ -88,6 +89,10 @@ export default function ReceiveFromFactory({
         : transport === "truck"
           ? { kind: "truck", spec: { ...DEFAULT_TRUCK_SPEC } }
           : { kind: "drone", spec: { ...DEFAULT_DRONE_SPEC } };
+  // A fluid always rides a pipe (Mk.2 default), whatever the transport picker
+  // says — the medium follows the item's form. Solids use the chosen kind.
+  const kindForItem = (item: string): RouteKind =>
+    isFluidItem(gamedata, item) ? { kind: "pipe", tier: 2 } : solidKind();
 
   const chosen = sourceOuts.filter((p) => effectiveChecked[p.id]);
   const busyRef = useRef(false);
@@ -104,7 +109,7 @@ export default function ReceiveFromFactory({
         src,
         target,
         chosen.map((p) => p.id),
-        kindFor(),
+        kindForItem,
         initialInPort, // bind the port the user launched from, not a sibling
       );
       if (routeIds[0]) setSelection({ kind: "route", id: routeIds[0] });

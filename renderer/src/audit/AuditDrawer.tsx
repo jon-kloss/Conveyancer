@@ -24,8 +24,9 @@ import "./audit.css";
 type Tab = AuditTab;
 
 /** Cargo route kinds audited for saturation (A3.1): throughput vs demand.
- *  Pipe is excluded — not creatable in the UI, no derived flow/capacity. */
-const CARGO_KINDS = ["belt", "rail", "truck", "drone"];
+ *  Pipe is included — it carries fluid between factories with real derived
+ *  flow/capacity, so a saturated water pipe must surface here like a belt. */
+const CARGO_KINDS = ["belt", "pipe", "rail", "truck", "drone"];
 
 interface SatRow {
   key: string;
@@ -236,13 +237,16 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
       if (!d) continue;
       const src = plan.ports[r.endpoints[0]];
       const dst = plan.ports[r.endpoints[1]];
-      const tier = r.kind.kind === "belt" ? r.kind.tier : null;
+      // Belts and pipes carry a tier; pipes top out at Mk.2 (belts Mk.6).
+      const isPipe = r.kind.kind === "pipe";
+      const tier = r.kind.kind === "belt" || r.kind.kind === "pipe" ? r.kind.tier : null;
+      const maxTier = isPipe ? 2 : 6;
       rows.push({
         key: `route-${r.id}`,
         label: `${src ? plan.factories[src.factory]?.name ?? "?" : "?"} ⟶ ${
           dst ? plan.factories[dst.factory]?.name ?? "?" : "?"
         } · ${itemName(r.manifest[0]?.[0] ?? "")}`,
-        tierText: `ROUTE · ${tier != null ? `MK.${tier}` : r.kind.kind.toUpperCase()}`,
+        tierText: `ROUTE · ${tier != null ? `${isPipe ? "PIPE " : ""}MK.${tier}` : r.kind.kind.toUpperCase()}`,
         saturation: d.saturation,
         flow: d.flow,
         capacity: d.capacity,
@@ -258,7 +262,7 @@ export default function AuditDrawer({ open, onToggle }: { open: boolean; onToggl
         // a built rail/truck/drone route has no belt tier, so no chip.
         built: tier != null && r.status === "built",
         upgrade:
-          tier != null && tier < 6 && r.status !== "built"
+          tier != null && tier < maxTier && r.status !== "built"
             ? () => void dispatch([{ type: "set_route_tier", id: r.id, tier: tier + 1 }])
             : null,
       });

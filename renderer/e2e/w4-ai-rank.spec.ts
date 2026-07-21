@@ -171,9 +171,13 @@ test("model ranks and narrates NEXT MOVES; broken provider falls back honestly",
     // at 75 MW feed 16 smelters drawing 64 MW → ~15% headroom (warn band).
     const ridge = await mk("NARRATOR RIDGE", -4200, -1000);
     const coalIn = await port(ridge, "in", "Desc_Coal_C", 480, 0);
+    // Coal generators draw supplemental water (45 m³/min each); a ceilinged
+    // water IN port assumes an off-plan source so the bank runs.
+    const waterIn = await port(ridge, "in", "Desc_Water_C", 300, 0);
     const mwOut = await port(ridge, "out", "__PowerMW", null, 600);
     const gens = await group(ridge, "Build_GeneratorCoal_C", "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C", 4);
     await belt(ridge, P(coalIn), G(gens), "Desc_Coal_C");
+    await belt(ridge, P(waterIn), G(gens), "Desc_Water_C");
     await belt(ridge, G(gens), P(mwOut), "__PowerMW");
     await edit(request, [{ type: "set_port_rate", id: mwOut, rate: 75 }]);
     const ledge = await mk("NARRATOR LEDGE", -3600, -1000);

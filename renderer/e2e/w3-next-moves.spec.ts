@@ -93,9 +93,13 @@ test("next moves: ranked families over API + dashboard cards with live actions",
   // 64 MW (16 smelters @ 4 MW, clock 1.0) → ~15% headroom (warn band).
   const ridge = await mk("BROWNOUT RIDGE", -3000, -600);
   const coalIn = await port(ridge, "in", "Desc_Coal_C", 480, 0);
+  // Coal generators draw supplemental water (45 m³/min each); a ceilinged water
+  // IN port assumes an off-plan source so the bank runs.
+  const waterIn = await port(ridge, "in", "Desc_Water_C", 300, 0);
   const mwOut = await port(ridge, "out", "__PowerMW", null, 600);
   const gens = await group(ridge, "Build_GeneratorCoal_C", "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C", 4);
   await belt(ridge, P(coalIn), G(gens), "Desc_Coal_C");
+  await belt(ridge, P(waterIn), G(gens), "Desc_Water_C");
   await belt(ridge, G(gens), P(mwOut), "__PowerMW");
   await edit(request, [{ type: "set_port_rate", id: mwOut, rate: 75 }]);
 

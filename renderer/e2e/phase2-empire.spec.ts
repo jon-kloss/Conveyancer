@@ -94,9 +94,13 @@ test("empire: belt route, power grid, audit drawer", async ({ page, request }) =
     { type: "claim_node", factory: coalPlant, node: "bp_resourcenode600", extractor: "Build_MinerMk2_C", clock: 1.0 },
   ]);
   const coalIn = await port(coalPlant, "in", "Desc_Coal_C", 120, 0);
+  // Coal generators draw supplemental water (45 m³/min each); an explicitly
+  // ceilinged water IN port assumes an off-plan source so the bank runs.
+  const waterIn = await port(coalPlant, "in", "Desc_Water_C", 300, 0);
   const mwOut = await port(coalPlant, "out", "__PowerMW", null, 600);
   const gens = await group(coalPlant, "Build_GeneratorCoal_C", "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C");
   await belt(coalPlant, P(coalIn), G(gens), "Desc_Coal_C");
+  await belt(coalPlant, P(waterIn), G(gens), "Desc_Water_C");
   await belt(coalPlant, G(gens), P(mwOut), "__PowerMW");
   await edit(request, [{ type: "set_port_rate", id: mwOut, rate: 150 }]);
 

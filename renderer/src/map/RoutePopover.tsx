@@ -10,6 +10,8 @@ import {
   DEFAULT_DRONE_SPEC,
   DEFAULT_RAIL_SPEC,
   DEFAULT_TRUCK_SPEC,
+  isFluidItem,
+  pipeCapacity,
   POWER_ITEM,
   type Command,
   type Id,
@@ -51,17 +53,6 @@ export default function RoutePopover({
     return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
   })();
   const [transport, setTransport] = useState<"belt" | "rail" | "truck" | "drone">(dist >= 800 ? "rail" : "belt");
-  const kindFor = useCallback(
-    (): RouteKind =>
-      transport === "belt"
-        ? { kind: "belt", tier }
-        : transport === "rail"
-          ? { kind: "rail", spec: { ...DEFAULT_RAIL_SPEC } }
-          : transport === "truck"
-            ? { kind: "truck", spec: { ...DEFAULT_TRUCK_SPEC } }
-            : { kind: "drone", spec: { ...DEFAULT_DRONE_SPEC } },
-    [transport, tier],
-  );
 
   const candidates: Candidate[] = useMemo(() => {
     const src = plan.factories[fromFactory];
@@ -108,7 +99,24 @@ export default function RoutePopover({
   // (routeCalc creates nothing), from the two pins' distance and the OUT port's
   // demand (or a user-entered target). ----
   const cand = candidates[picked];
-  const showTrain = !!cand && !cand.power && transport !== "belt";
+  // A fluid rides a PIPE, never a belt or vehicle — the medium follows the
+  // item's form, exactly like intra-factory edges. So a fluid pick forces kind
+  // "pipe" (tiers 1–2) and hides the belt/rail/truck/drone controls.
+  const pickedIsFluid = !!cand && !cand.power && isFluidItem(gamedata, cand.item);
+  const kindFor = useCallback(
+    (): RouteKind =>
+      pickedIsFluid
+        ? { kind: "pipe", tier: Math.min(2, tier) }
+        : transport === "belt"
+          ? { kind: "belt", tier }
+          : transport === "rail"
+            ? { kind: "rail", spec: { ...DEFAULT_RAIL_SPEC } }
+            : transport === "truck"
+              ? { kind: "truck", spec: { ...DEFAULT_TRUCK_SPEC } }
+              : { kind: "drone", spec: { ...DEFAULT_DRONE_SPEC } },
+    [pickedIsFluid, transport, tier],
+  );
+  const showTrain = !!cand && !cand.power && !pickedIsFluid && transport !== "belt";
   const autoDemand = useMemo(() => {
     if (!cand || cand.power) return 0;
     return derived.factories[fromFactory]?.ports[cand.outPort] ?? plan.ports[cand.outPort]?.rate ?? 0;
@@ -229,7 +237,7 @@ export default function RoutePopover({
               <span>{c.label}</span>
             </label>
           ))}
-          {!candidates[picked]?.power && (
+          {!candidates[picked]?.power && !pickedIsFluid && (
             <div className="drawer-row" style={{ marginTop: 8 }}>
               <span className="drawer-row-name">Transport</span>
               <select
@@ -246,7 +254,7 @@ export default function RoutePopover({
               </select>
             </div>
           )}
-          {!candidates[picked]?.power && transport === "belt" && (
+          {!candidates[picked]?.power && !pickedIsFluid && transport === "belt" && (
             <div className="drawer-row" style={{ marginTop: 8 }}>
               <span className="drawer-row-name">Belt tier</span>
               <select className="mono" style={{ height: 24 }} value={tier} onChange={(e) => setTier(Number(e.target.value))}>
@@ -257,6 +265,32 @@ export default function RoutePopover({
                 ))}
               </select>
             </div>
+          )}
+          {!candidates[picked]?.power && pickedIsFluid && (
+            <>
+              <div className="drawer-row" style={{ marginTop: 8 }}>
+                <span className="drawer-row-name">Transport</span>
+                <span className="mono" data-testid="popover-transport-fluid">
+                  PIPE — fluid
+                </span>
+              </div>
+              <div className="drawer-row" style={{ marginTop: 8 }}>
+                <span className="drawer-row-name">Pipe tier</span>
+                <select
+                  className="mono"
+                  style={{ height: 24 }}
+                  value={Math.min(2, tier)}
+                  onChange={(e) => setTier(Number(e.target.value))}
+                  data-testid="popover-pipe-tier"
+                >
+                  {[1, 2].map((t) => (
+                    <option key={t} value={t}>
+                      MK.{t} — {fmtRate(pipeCapacity(t))}/min
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
           )}
           {showTrain && answer && cand && (
             <TrainAnswerBlock

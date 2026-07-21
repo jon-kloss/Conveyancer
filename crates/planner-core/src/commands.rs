@@ -383,6 +383,15 @@ fn valid_tier(tier: u8) -> Result<u8, DomainError> {
     Ok(tier)
 }
 
+fn valid_pipe_tier(tier: u8) -> Result<u8, DomainError> {
+    if !(1..=2).contains(&tier) {
+        return Err(DomainError::Invalid {
+            message: format!("pipe tier {tier} outside Mk.1–Mk.2"),
+        });
+    }
+    Ok(tier)
+}
+
 /// Endpoint midpoint of a route path — where a priority switch sits (square
 /// pin at the line's midpoint, A2.3). Shared by AddPrioritySwitch and
 /// MoveFactoryPin so placement and refresh can never disagree. Empty paths
@@ -1449,11 +1458,20 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     tx.record(state.upsert(Entity::Route(r)));
                 }
                 RouteKind::Belt { .. }
+                | RouteKind::Pipe { .. }
                 | RouteKind::Rail { .. }
                 | RouteKind::Truck { .. }
                 | RouteKind::Drone { .. } => {
+                    // Pipes carry fluids, belts/vehicles carry solids — the
+                    // medium is the item's form (validated at the app/UI layer,
+                    // which offers only the right kind per item). Domain-side we
+                    // treat pipe exactly like a cargo route: OUT→IN, item match,
+                    // one-route-per-port binding; only the tier ceiling differs.
                     if let RouteKind::Belt { tier } = kind {
                         valid_tier(*tier)?;
+                    }
+                    if let RouteKind::Pipe { tier } = kind {
+                        valid_pipe_tier(*tier)?;
                     }
                     let src = state
                         .ports
@@ -1467,7 +1485,7 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                         .ok_or(DomainError::NotFound { id: to.clone() })?;
                     if src.direction != PortDirection::Out || dst.direction != PortDirection::In {
                         return Err(DomainError::Invalid {
-                            message: "belt routes run from an OUT port to an IN port".into(),
+                            message: "routes run from an OUT port to an IN port".into(),
                         });
                     }
                     if src.item != dst.item {
@@ -1497,11 +1515,6 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                     tx.record(state.upsert(Entity::Route(r)));
                     tx.record(state.upsert(Entity::Port(src)));
                     tx.record(state.upsert(Entity::Port(dst)));
-                }
-                RouteKind::Pipe { .. } => {
-                    return Err(DomainError::Invalid {
-                        message: "pipe routes arrive with fluids".into(),
-                    });
                 }
             }
         }
@@ -1545,9 +1558,10 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
             require_planned(r.status, id, "set tier")?;
             match &mut r.kind {
                 RouteKind::Belt { tier: t } => *t = valid_tier(*tier)?,
+                RouteKind::Pipe { tier: t } => *t = valid_pipe_tier(*tier)?,
                 other => {
                     return Err(DomainError::Invalid {
-                        message: format!("{other:?} routes have no belt tier"),
+                        message: format!("{other:?} routes have no adjustable tier"),
                     });
                 }
             }

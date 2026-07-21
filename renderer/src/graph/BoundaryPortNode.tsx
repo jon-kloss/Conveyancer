@@ -5,7 +5,7 @@
 import { Handle, Position } from "@xyflow/react";
 import { useStore } from "../state/store";
 import { fmtRate, itemLabel } from "../lib/format";
-import type { Port } from "../state/types";
+import { isFluidItem, type Port } from "../state/types";
 import ItemIcon from "../lib/ItemIcon";
 
 export interface PortNodeData {
@@ -31,7 +31,10 @@ export default function BoundaryPortNode({ data, selected }: { data: PortNodeDat
   const numCls = `${isProjected ? "projected" : ""} ${settled.has(`/ports/${port.id}`) ? "settle" : ""}`;
   const item = itemLabel(gamedata.items, port.item);
   // Honest source line: a bound route, a node claim covering this item, or
-  // nothing — an unrouted input is solved as supplied, so say so.
+  // nothing. An unrouted SOLID input is solved as supplied (assumed boundary);
+  // an unrouted PLANNED FLUID input supplies 0 (a fluid arrives only by pipe),
+  // so it reads as a demand to route, not an assumption. ◆ Built fluid ports
+  // stay "assumed" — an imported running plant's untraced water is real.
   const plan = useStore((s) => s.plan);
   const world = useStore((s) => s.world);
   const src = (() => {
@@ -40,7 +43,9 @@ export default function BoundaryPortNode({ data, selected }: { data: PortNodeDat
     const claimed = Object.values(plan.nodeClaims).some(
       (c) => c.factory === port.factory && world.nodes.find((n) => n.id === c.node)?.item === port.item,
     );
-    return claimed ? "FROM NODE CLAIM" : "UNROUTED — SUPPLY ASSUMED";
+    if (claimed) return "FROM NODE CLAIM";
+    if (isFluidItem(gamedata, port.item) && port.status !== "built") return "UNROUTED — PIPE IN NEEDED";
+    return "UNROUTED — SUPPLY ASSUMED";
   })();
 
   // Resources (the raw input entering and the finished output leaving) read as

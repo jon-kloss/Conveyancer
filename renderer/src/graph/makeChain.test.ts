@@ -315,9 +315,22 @@ describe("powerOptions exclusions + clock floor (review hardening)", () => {
     expect(powerOptions(g, new Set(["Desc_Coal_C"]))).toEqual([]);
   });
 
-  it("excludes multi-ingredient burns (nuclear-style fuel + water)", () => {
+  it("includes a solid-fuel burn with a supplemental FLUID (coal + water)", () => {
+    // Water rides a pipe and is wired as a separate routable demand at build
+    // time, so it must NOT disqualify the coal burn from MAKE POWER. The fuel is
+    // the single solid ingredient; the water amount is ignored for fuelPer.
     const g = cat({ ingredients: [["Desc_Coal_C", 15], ["Desc_Water_C", 45]] });
-    expect(powerOptions(g, new Set(["Desc_Coal_C", "Desc_Water_C"]))).toEqual([]);
+    const opts = powerOptions(g, new Set(["Desc_Coal_C", "Desc_Water_C"]));
+    expect(opts).toHaveLength(1);
+    expect(opts[0].fuel).toBe("Desc_Coal_C");
+    expect(opts[0].fuelPer).toBeCloseTo(15); // 15/cycle × 60 ÷ 60s — water ignored
+  });
+
+  it("offers the coal+water burn even when water is NOT an assigned input", () => {
+    // The whole point: only the SOLID fuel must be available; water is sourced
+    // by pipe, so its membership in `available` is irrelevant. Coal alone offers.
+    const g = cat({ ingredients: [["Desc_Coal_C", 15], ["Desc_Water_C", 45]] });
+    expect(powerOptions(g, new Set(["Desc_Coal_C"]))).toHaveLength(1);
   });
 
   it("excludes multi-product burns (waste output not modeled)", () => {
