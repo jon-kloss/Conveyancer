@@ -109,6 +109,70 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
     );
   }
 
+  // A geyser opens the GEOTHERMAL drawer: place a Geothermal Generator whose
+  // output scales with the geyser's purity (100 / 200 / 400 MW).
+  if (node.nodeType === "geyser") {
+    const mw = 200 * (node.purity === "pure" ? 2 : node.purity === "impure" ? 0.5 : 1);
+    const regionName = world.regions.find((r) => r.id === node.region)?.name ?? node.region;
+    const claimedFactory = Object.values(plan.factories).find(
+      (f) =>
+        Math.abs(f.position.x - node.x) < 1 &&
+        Math.abs(f.position.y - node.y) < 1 &&
+        Object.values(plan.groups).some(
+          (g) => g.factory === f.id && g.machine === "Build_GeneratorGeoThermal_C",
+        ),
+    );
+    return (
+      <aside className="drawer summary-drawer" data-testid="node-drawer">
+        <header className="drawer-header">
+          <ItemIcon item={node.item} displayName="Geyser" size={40} />
+          <div className="drawer-title-block">
+            <div className="t-title">GEYSER</div>
+            <div className="mono drawer-sub">
+              {regionName.toUpperCase()} · {node.purity.toUpperCase()} · {mw} MW
+            </div>
+          </div>
+          <button className="drawer-close" onClick={() => setSelection(null)} aria-label="Close">
+            ×
+          </button>
+        </header>
+        <section className="drawer-section">
+          <h3 className="t-label">GEOTHERMAL</h3>
+          {claimedFactory ? (
+            <>
+              <p className="insp-note">
+                This geyser is already claimed as <b>{claimedFactory.name}</b>.
+              </p>
+              <button
+                className="btn"
+                style={{ width: "100%", marginTop: 8 }}
+                onClick={() => setSelection({ kind: "factory", id: claimedFactory.id })}
+                data-testid="btn-goto-geyser"
+              >
+                GO TO GENERATOR
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="insp-note">
+                Places a Geothermal Generator on this {node.purity} geyser, producing {mw} MW (no
+                fuel — output is fixed by purity).
+              </p>
+              <button
+                className="btn btn-primary"
+                style={{ width: "100%", marginTop: 8 }}
+                onClick={() => dispatch([{ type: "claim_geyser", geyser: node.id }], { select: true })}
+                data-testid="btn-claim-geyser"
+              >
+                PLACE GEOTHERMAL
+              </button>
+            </>
+          )}
+        </section>
+      </aside>
+    );
+  }
+
   // save-only nodes carry item:"" — degrade to a readable title, never blank.
   const item = itemLabel(gamedata.items, node.item) || "RESOURCE NODE";
   const region = world.regions.find((r) => r.id === node.region)?.name ?? node.region;

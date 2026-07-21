@@ -651,6 +651,81 @@ fn push_sat(s: &mut Session, id: &str, item: &str, purity: &str, x: f64, y: f64)
     });
 }
 
+fn push_geyser(s: &mut Session, id: &str, purity: &str, x: f64, y: f64) {
+    s.world.nodes.push(gamedata::worldnodes::WorldNode {
+        id: id.into(),
+        item: "Desc_Geyser_C".into(),
+        purity: purity.into(),
+        node_type: "geyser".into(),
+        well: None,
+        x,
+        y,
+        z: 0.0,
+        zone: "surface".into(),
+        entrance: None,
+        region: "grass-fields".into(),
+    });
+}
+
+/// PLANNED placement: `ClaimGeyser` stamps a factory with a single Geothermal
+/// Generator whose power scales with the geyser's purity (pure = 200 × 2 = 400
+/// MW). A second claim of the same geyser is refused; undo removes it.
+#[test]
+fn claim_geyser_places_a_purity_scaled_geothermal_generator() {
+    for (purity, mw) in [("impure", 100.0), ("normal", 200.0), ("pure", 400.0)] {
+        let mut s = Session::in_memory(None).unwrap();
+        push_geyser(&mut s, "gy", purity, 80_000.0, 80_000.0);
+        s.edit(vec![Command::ClaimGeyser {
+            geyser: "gy".into(),
+        }])
+        .unwrap();
+
+        let f = s
+            .state
+            .factories
+            .values()
+            .find(|f| f.name.contains("GEYSER"))
+            .expect("geyser factory");
+        assert_eq!(
+            s.state
+                .groups
+                .values()
+                .filter(|g| g.factory == f.id && g.machine == "Build_GeneratorGeoThermal_C")
+                .count(),
+            1,
+            "one geothermal generator"
+        );
+        let d = s.solve_all_readonly();
+        let gen = produced(
+            &s,
+            &d,
+            "Build_GeneratorGeoThermal_C",
+            gamedata::docs::POWER_ITEM,
+        );
+        assert!(
+            (gen - mw).abs() < 1e-3,
+            "{purity} geyser = {mw} MW, got {gen}"
+        );
+
+        // double-claim refused
+        assert!(
+            s.edit(vec![Command::ClaimGeyser {
+                geyser: "gy".into()
+            }])
+            .is_err(),
+            "second claim of the same geyser is refused"
+        );
+    }
+
+    // unknown geyser errors
+    let mut s = Session::in_memory(None).unwrap();
+    assert!(s
+        .edit(vec![Command::ClaimGeyser {
+            geyser: "nope".into()
+        }])
+        .is_err());
+}
+
 /// Sum the solved out-rate of `item` across every group of `machine`.
 fn produced(s: &Session, d: &app::session::Derived, machine: &str, item: &str) -> f64 {
     let ids: std::collections::BTreeSet<String> = s
