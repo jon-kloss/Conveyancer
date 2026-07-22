@@ -1095,6 +1095,7 @@ fn claim_well_stamps_a_planned_well_factory() {
     let before = s.state.factories.len();
     s.edit(vec![Command::ClaimWell {
         well: "well-n".into(),
+        factory: None,
     }])
     .unwrap();
 
@@ -1208,6 +1209,7 @@ fn claim_well_is_idempotent_and_undoes_atomically() {
     );
     let claim = || Command::ClaimWell {
         well: "well-u".into(),
+        factory: None,
     };
 
     s.edit(vec![claim()]).unwrap();
@@ -1274,7 +1276,8 @@ fn claim_well_all_purities_and_oil() {
     }
     assert!(
         s.edit(vec![Command::ClaimWell {
-            well: "nope".into()
+            well: "nope".into(),
+            factory: None
         }])
         .is_err(),
         "unknown well errors"
@@ -1282,6 +1285,7 @@ fn claim_well_all_purities_and_oil() {
 
     s.edit(vec![Command::ClaimWell {
         well: "well-a".into(),
+        factory: None,
     }])
     .unwrap();
     let na = s
@@ -1305,6 +1309,7 @@ fn claim_well_all_purities_and_oil() {
 
     s.edit(vec![Command::ClaimWell {
         well: "well-o".into(),
+        factory: None,
     }])
     .unwrap();
     let d = s.solve_all_readonly();
@@ -1322,7 +1327,14 @@ fn claim_well_dispatch_wiring_and_satellite_claim_guard() {
 
     // raw planner-core apply of ClaimWell → defensive session-layer-only error
     let mut st = PlanState::default();
-    let err = apply(&mut st, &Command::ClaimWell { well: "x".into() }).unwrap_err();
+    let err = apply(
+        &mut st,
+        &Command::ClaimWell {
+            well: "x".into(),
+            factory: None,
+        },
+    )
+    .unwrap_err();
     assert!(matches!(err, DomainError::Invalid { .. }));
 
     // a raw claim_node on a fracking satellite is rejected by edit()
@@ -1569,4 +1581,195 @@ fn reimporting_water_pump_does_not_duplicate() {
         1,
         "re-import re-matches the water group, no duplicate"
     );
+}
+
+/// Well claims are REAL claims (regression: the claimed state used to be
+/// inferred from the factory sitting on the well centroid, so MOVING the well
+/// factory "unclaimed" the well — the drawer re-offered CLAIM WELL and no
+/// tethers ever drew). Claims survive the move, back the double-claim guard,
+/// and cascade away with the factory. A well can also claim INTO an existing
+/// planned factory instead of stamping a new one.
+#[test]
+fn well_claims_are_real_claims_and_survive_a_factory_move() {
+    let mut s = Session::in_memory(None).unwrap();
+    push_sat(
+        &mut s,
+        "wm-1",
+        "Desc_LiquidOil_C",
+        "pure",
+        80_000.0,
+        80_000.0,
+    );
+    push_sat(
+        &mut s,
+        "wm-2",
+        "Desc_LiquidOil_C",
+        "normal",
+        80_020.0,
+        80_000.0,
+    );
+    for n in s.world.nodes.iter_mut().filter(|n| n.id.starts_with("wm-")) {
+        n.well = Some("well-m".into());
+    }
+
+    s.edit(vec![Command::ClaimWell {
+        well: "well-m".into(),
+        factory: None,
+    }])
+    .unwrap();
+    let fid = s
+        .state
+        .factories
+        .values()
+        .find(|f| f.name.contains("OIL"))
+        .expect("oil well factory")
+        .id
+        .clone();
+    // one real claim per satellite, registered on the factory
+    let claims: Vec<_> = s
+        .state
+        .node_claims
+        .values()
+        .filter(|c| c.factory == fid)
+        .collect();
+    assert_eq!(claims.len(), 2, "one claim per satellite");
+    assert!(claims.iter().any(|c| c.node == "wm-1"));
+    assert!(claims.iter().any(|c| c.node == "wm-2"));
+    assert_eq!(s.state.factories[&fid].node_claims.len(), 2);
+
+    // moving the factory does NOT unclaim the well: the claims persist and a
+    // re-claim is still refused
+    s.edit(vec![Command::MoveFactoryPin {
+        id: fid.clone(),
+        position: MapPos {
+            x: 70_000.0,
+            y: 70_000.0,
+            z: 0.0,
+        },
+    }])
+    .unwrap();
+    assert_eq!(
+        s.state
+            .node_claims
+            .values()
+            .filter(|c| c.factory == fid)
+            .count(),
+        2,
+        "claims survive the move"
+    );
+    let err = s
+        .edit(vec![Command::ClaimWell {
+            well: "well-m".into(),
+            factory: None,
+        }])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("already claimed"),
+        "moved factory still owns the well: {err}"
+    );
+    // the extractor groups are untouched by the move
+    assert_eq!(
+        s.state
+            .groups
+            .values()
+            .filter(|g| g.factory == fid && g.machine == "Build_FrackingExtractor_C")
+            .count(),
+        2
+    );
+
+    // deleting the factory cascades the claims → the well is claimable again,
+    // this time INTO an existing planned factory
+    s.edit(vec![Command::DeleteFactory { id: fid }]).unwrap();
+    assert_eq!(s.state.node_claims.len(), 0, "cascade freed the claims");
+    let host = s
+        .edit(vec![Command::CreateFactory {
+            name: "OIL HOST".into(),
+            position: MapPos {
+                x: 80_100.0,
+                y: 80_000.0,
+                z: 0.0,
+            },
+            region: "GRASS FIELDS".into(),
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let before = s.state.factories.len();
+    s.edit(vec![Command::ClaimWell {
+        well: "well-m".into(),
+        factory: Some(host.clone()),
+    }])
+    .unwrap();
+    assert_eq!(s.state.factories.len(), before, "no new factory stamped");
+    assert_eq!(
+        s.state
+            .groups
+            .values()
+            .filter(|g| g.factory == host && g.machine == "Build_FrackingExtractor_C")
+            .count(),
+        2,
+        "extractor groups landed in the host factory"
+    );
+    assert_eq!(
+        s.state
+            .groups
+            .values()
+            .filter(|g| g.factory == host && g.machine == "Build_FrackingSmasher_C")
+            .count(),
+        1,
+        "pressurizer landed in the host factory"
+    );
+    assert!(
+        s.state.ports.values().any(|p| p.factory == host
+            && p.item == "Desc_LiquidOil_C"
+            && p.direction == PortDirection::Out),
+        "routable oil OUT port on the host"
+    );
+    assert_eq!(
+        s.state
+            .node_claims
+            .values()
+            .filter(|c| c.factory == host)
+            .count(),
+        2,
+        "claims bound to the host factory"
+    );
+}
+
+/// Geyser claims get the same real-claim identity: the claim survives a
+/// factory move and keeps the double-claim guard honest.
+#[test]
+fn geyser_claim_is_a_real_claim_and_survives_a_factory_move() {
+    let mut s = Session::in_memory(None).unwrap();
+    let geyser = s
+        .world
+        .nodes
+        .iter()
+        .find(|n| n.node_type == "geyser")
+        .expect("catalog has a geyser")
+        .id
+        .clone();
+    s.edit(vec![Command::ClaimGeyser {
+        geyser: geyser.clone(),
+    }])
+    .unwrap();
+    let fid = s
+        .state
+        .node_claims
+        .values()
+        .find(|c| c.node == geyser)
+        .expect("geyser claim exists")
+        .factory
+        .clone();
+    s.edit(vec![Command::MoveFactoryPin {
+        id: fid.clone(),
+        position: MapPos {
+            x: 12_345.0,
+            y: 12_345.0,
+            z: 0.0,
+        },
+    }])
+    .unwrap();
+    let err = s.edit(vec![Command::ClaimGeyser { geyser }]).unwrap_err();
+    assert!(err.to_string().contains("already claimed"), "{err}");
 }

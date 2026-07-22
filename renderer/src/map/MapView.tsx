@@ -237,14 +237,17 @@ export default function MapView() {
       // empty ground, so it hides with it.
       if (nodeFilter?.active && !nodeFilter.visible.has(c.node)) continue;
       // The tether flows when the claim's extraction is actually drawn: the
-      // factory's matching IN port carries solved flow (mirrors route flow —
-      // MOTION = FLOW, speed = utilization vs the extraction ceiling).
+      // factory's matching port carries solved flow (mirrors route flow —
+      // MOTION = FLOW, speed = utilization vs the extraction ceiling). IN
+      // ports cover miner claims (ore arrives at the boundary); OUT ports
+      // cover well claims, whose extractor groups produce INSIDE the factory
+      // and export the fluid.
       let flow = 0;
       let ceiling = 0;
       for (const p of Object.values(plan.ports)) {
-        if (p.factory !== c.factory || p.direction !== "in" || p.item !== node.item) continue;
+        if (p.factory !== c.factory || p.item !== node.item) continue;
         flow = Math.max(flow, derived.factories[c.factory]?.ports[p.id] ?? 0);
-        ceiling = Math.max(ceiling, p.rateCeiling ?? 0);
+        if (p.direction === "in") ceiling = Math.max(ceiling, p.rateCeiling ?? 0);
       }
       links.push({
         node,

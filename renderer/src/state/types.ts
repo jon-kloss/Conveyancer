@@ -911,7 +911,7 @@ export type Command =
   | { type: "set_edge_tier"; id: Id; tier: number }
   | { type: "delete_edge"; id: Id }
   | { type: "claim_node"; factory: Id; node: string; extractor: string; clock: number }
-  | { type: "claim_well"; well: string }
+  | { type: "claim_well"; well: string; factory?: Id }
   | { type: "claim_geyser"; geyser: string }
   | { type: "release_node"; id: Id }
   | { type: "set_claim"; id: Id; extractor: string; clock: number }
