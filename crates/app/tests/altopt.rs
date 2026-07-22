@@ -77,6 +77,7 @@ fn planned_group(state: &mut PlanState, recipe_class: &str, count: u32, clock: f
             recipe: recipe_class.into(),
             count,
             clock,
+            clock_ceiling: None,
             somersloops: 0,
             planned_delta: None,
             graph_pos: GraphPos { x: 0.0, y: 0.0 },

@@ -521,6 +521,7 @@ pub fn expand_group(
             recipe: g.recipe.clone(),
             count: 1,
             clock,
+            clock_ceiling: g.clock_ceiling,
             somersloops: 0,
             planned_delta: None,
             graph_pos: GraphPos {
@@ -1029,6 +1030,10 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 recipe: recipe.clone(),
                 count: (*count).max(1),
                 clock: clamp_clock(*clock)?,
+                // A creation clock is a starting value the settle may re-size
+                // (see idle_settle_preserves_the_authored_clock); only an
+                // explicit SetGroupClock records a durable ceiling.
+                clock_ceiling: None,
                 somersloops: 0,
                 planned_delta: None,
                 graph_pos: *graph_pos,
@@ -1089,6 +1094,10 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 g.planned_delta = (!delta.is_empty()).then_some(delta);
             } else {
                 g.clock = clock;
+                // An explicit clock edit is authored intent: record it so later
+                // re-solves derive count from THIS clock instead of spreading
+                // back to ≤100% (the "250% reverts to 100%" bug).
+                g.clock_ceiling = Some(clock);
             }
             tx.record(state.upsert(Entity::Group(g)));
         }

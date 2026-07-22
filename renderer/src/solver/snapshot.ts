@@ -57,6 +57,9 @@ export function buildSnapshot(plan: Plan, gamedata: GameData, factoryId: Id): Fa
       },
       count: effCount(g),
       clock: effClock(g),
+      // Mirrors session.rs: a ◆ delta clock is authored the same way a planned
+      // group's clockCeiling is — the drag preview must honor it too.
+      clockCeiling: g.plannedDelta?.clock ?? g.clockCeiling ?? null,
       drivenCycles: isGenerator && !wiredToPower ? effCount(g) * effClock(g) : null,
     });
   }

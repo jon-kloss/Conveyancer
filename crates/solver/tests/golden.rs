@@ -28,6 +28,7 @@ fn group(id: &str, r: RecipeSpec) -> GroupSpec {
         recipe: r,
         count: 1,
         clock: 1.0,
+        clock_ceiling: None,
         driven_cycles: None,
     }
 }

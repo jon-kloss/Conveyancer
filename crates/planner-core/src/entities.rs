@@ -119,6 +119,12 @@ pub struct MachineGroup {
     pub count: u32,
     /// 0.01–2.50 (1.0 = 100%).
     pub clock: f64,
+    /// User-authored per-machine clock (0.01–2.50) from an explicit clock edit.
+    /// `None` = solver-owned: re-solves spread demand at ≤100% (count = ceil,
+    /// clock redistributed). `Some(c)` = re-solves keep the authored clock and
+    /// derive count from it, so an over/underclock survives later solves.
+    #[serde(default)]
+    pub clock_ceiling: Option<f64>,
     pub somersloops: u8,
     /// User-planned changes riding on a Built baseline. Baseline `count`/`clock`
     /// stay game ground truth (only import sync writes them); solvers read the

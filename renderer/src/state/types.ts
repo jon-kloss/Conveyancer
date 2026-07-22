@@ -40,6 +40,9 @@ export interface MachineGroup {
   recipe: string;
   count: number;
   clock: number;
+  /** User-authored clock (an explicit clock edit). null = solver-owned: solves
+   *  spread demand at ≤100%; set = solves keep this clock and derive count. */
+  clockCeiling?: number | null;
   somersloops: number;
   /** Baseline count/clock stay game ground truth; edits on ◆ land here. */
   plannedDelta: GroupDelta | null;

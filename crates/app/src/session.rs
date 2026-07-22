@@ -1966,6 +1966,9 @@ impl Session {
                 // overlaid by any planned delta) but never writes deltas back.
                 count: g.effective_count(),
                 clock: g.effective_clock(),
+                // A ◆ built group's planned clock delta is authored intent the
+                // same way a planned group's clock_ceiling is.
+                clock_ceiling: g.planned_delta.and_then(|d| d.clock).or(g.clock_ceiling),
                 driven_cycles: None, // set below for un-wired generators
             });
         }
@@ -2142,6 +2145,7 @@ impl Session {
                 recipe,
                 count: *count,
                 clock: 1.0,
+                clock_ceiling: None,
                 somersloops: 0,
                 planned_delta: None,
                 graph_pos: GraphPos { x: gx, y: 0.0 },
@@ -2168,6 +2172,7 @@ impl Session {
             recipe: String::new(),
             count: 1,
             clock: 1.0,
+            clock_ceiling: None,
             somersloops: 0,
             planned_delta: None,
             graph_pos: GraphPos { x: gx, y: 0.0 },
@@ -2286,6 +2291,7 @@ impl Session {
             recipe: String::new(),
             count: 1,
             clock: gamedata::docs::purity_factor(&purity),
+            clock_ceiling: None,
             somersloops: 0,
             planned_delta: None,
             graph_pos: GraphPos { x: 0.0, y: 0.0 },
