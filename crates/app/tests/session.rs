@@ -1839,6 +1839,252 @@ fn imported_generator_counts_nameplate_without_fuel() {
     assert_eq!(dg.power_mw, 0.0, "a generator draws no power");
 }
 
+/// An imported ◆ generator that carries its loaded FUEL (`mCurrentFuelClass`)
+/// infers its burn recipe on import, so the plant models fuel + supplemental
+/// water demand — no longer an opaque nameplate MW source (#58 → parity with a
+/// placed generator). The fuel/water IN ports fall out of the recipe for free.
+#[test]
+fn imported_generator_with_fuel_models_burn_recipe() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "FUELED-GEN".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorCoal_C".into(),
+            recipe: None,
+            fuel: Some("Desc_Coal_C".into()),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let gen = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group");
+    assert_eq!(
+        gen.recipe, "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C",
+        "burn recipe inferred from the loaded fuel"
+    );
+    let fid = gen.factory.clone();
+    let built_in = |item: &str| {
+        s.state.ports.values().any(|p| {
+            p.factory == fid
+                && p.direction == PortDirection::In
+                && p.item == item
+                && p.status == Status::Built
+        })
+    };
+    assert!(
+        built_in("Desc_Coal_C"),
+        "fuel demand is modeled as an IN port"
+    );
+    assert!(
+        built_in("Desc_Water_C"),
+        "supplemental water demand is modeled as an IN port"
+    );
+}
+
+/// An imported ◆ NUCLEAR plant ships its waste out a world port — the burn
+/// recipe's byproduct becomes a Built OUT port on import, so the plan is honest
+/// about the waste the reactor produces (parity with the wizard's nuclear plan).
+#[test]
+fn imported_nuclear_generator_models_waste_output() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "NUKE-GEN".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorNuclear_C".into(),
+            recipe: None,
+            fuel: Some("Desc_NuclearFuelRod_C".into()),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let gen = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorNuclear_C")
+        .expect("imported nuclear group");
+    assert_eq!(
+        gen.recipe, "Recipe_Power_Build_GeneratorNuclear_Desc_NuclearFuelRod_C",
+        "nuclear burn recipe inferred from the loaded rod"
+    );
+    let fid = gen.factory.clone();
+    let waste_id = s
+        .state
+        .ports
+        .values()
+        .find(|p| {
+            p.factory == fid
+                && p.direction == PortDirection::Out
+                && p.item == "Desc_NuclearWaste_C"
+                && p.status == Status::Built
+        })
+        .expect("nuclear waste is shipped out a Built world port")
+        .id
+        .clone();
+    // ...and at the RIGHT rate: 2500 MW ÷ 750 GJ/rod = 0.2 rods/min × 50 waste/rod
+    // = 10 waste/min. Existence alone would pass a 0-rate phantom disposal port.
+    let d = s.solve_all_readonly();
+    let waste_out = d
+        .factories
+        .get(&fid)
+        .and_then(|df| df.ports.get(&waste_id))
+        .copied()
+        .unwrap_or(0.0);
+    assert!(
+        (waste_out - 10.0).abs() < 1e-3,
+        "waste ships at 10/min (0.2 rods × 50): {waste_out}"
+    );
+}
+
+/// The inference path reaches REAL fuel-limited generation, not just a recipe
+/// string: an imported ◆ coal bank whose coal supply is capped runs BELOW
+/// nameplate at the fuel-limited figure — proving the inferred burn recipe
+/// actually drives the solve (the pre-existing starved-plant test proves this
+/// with a HAND-injected recipe; this proves it through `fuel → recipe`).
+#[test]
+fn imported_fueled_generator_solves_fuel_limited() {
+    let mut s = Session::in_memory(None).unwrap();
+    let gen_mach = |x: f64| app::import::ImportMachine {
+        class: "Build_GeneratorCoal_C".into(),
+        recipe: None,
+        fuel: Some("Desc_Coal_C".into()),
+        clock: 1.0,
+        x,
+        y: 0.0,
+        z: 0.0,
+        ..Default::default()
+    };
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "FUELED-BANK".into(),
+        machines: vec![
+            gen_mach(0.0),
+            gen_mach(40.0),
+            gen_mach(80.0),
+            gen_mach(120.0),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let gens = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group");
+    assert_eq!(gens.count, 4, "4 generators, one inferred-recipe group");
+    // Cap the auto-wired coal IN port to 30/min: 2 of the 4 × 75 MW generators'
+    // worth of fuel → 150 MW, half of the 300 MW nameplate.
+    let coal_in = s
+        .state
+        .ports
+        .values()
+        .find(|p| p.item == "Desc_Coal_C" && p.direction == PortDirection::In)
+        .expect("inferred recipe wired a coal IN port")
+        .id
+        .clone();
+    let resp = s
+        .edit(vec![Command::SetPortCeiling {
+            id: coal_in,
+            rate_ceiling: Some(30.0),
+        }])
+        .unwrap();
+    assert!(
+        (resp.derived.total_generation_mw - 150.0).abs() < 1e-4,
+        "inferred recipe drives fuel-limited generation (30 coal → 150 MW, not 300 nameplate): {}",
+        resp.derived.total_generation_mw
+    );
+}
+
+/// Re-importing the SAME fueled save reports IN SYNC — the inferred recipe is
+/// deterministic, so the built-layer signature is stable and a re-sync shows no
+/// phantom drift on every generator (the primary Auto-sync workflow, #70).
+#[test]
+fn reimporting_a_fueled_generator_save_is_in_sync() {
+    let mut s = Session::in_memory(None).unwrap();
+    let snap = || app::import::ImportSnapshot {
+        save_name: "FUELED-RESYNC".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorCoal_C".into(),
+            recipe: None,
+            fuel: Some("Desc_Coal_C".into()),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(
+        matches!(
+            s.import_save(snap()).unwrap(),
+            app::session::ImportOutcome::Imported { .. }
+        ),
+        "first import writes the built layer"
+    );
+    assert!(
+        matches!(
+            s.import_save(snap()).unwrap(),
+            app::session::ImportOutcome::InSync
+        ),
+        "re-importing the identical fueled save is in sync — the inferred recipe is stable"
+    );
+}
+
+/// An imported generator burning a fuel the catalog doesn't know (a mod) falls
+/// back to recipe-less nameplate — no panic, no bogus recipe key. Distinct code
+/// path from the idle (`fuel: None`) case: this is the `.then_some` false arm.
+#[test]
+fn imported_generator_with_unknown_fuel_falls_back_to_nameplate() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "MODDED-FUEL".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorCoal_C".into(),
+            recipe: None,
+            fuel: Some("Desc_SomeModdedFuel_C".into()),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let gen = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group");
+    assert_eq!(
+        gen.recipe, "",
+        "an unknown fuel has no synthesized recipe → recipe-less nameplate"
+    );
+    // ...and it still credits nameplate power (75 MW), not a starved 0.
+    let d = s.solve_all_readonly();
+    assert!(
+        (d.total_generation_mw - 75.0).abs() < 1e-4,
+        "unknown-fuel generator falls back to nameplate: {}",
+        d.total_generation_mw
+    );
+}
+
 #[test]
 fn water_pump_group_produces_water_from_nothing() {
     // A placeable water extractor has no world node (water is drawn from any

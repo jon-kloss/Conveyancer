@@ -980,6 +980,9 @@ export const POWER_ITEM = "__PowerMW";
 export interface ImportMachine {
   class: string;
   recipe?: string | null;
+  /** Generators only: the loaded fuel class (mCurrentFuelClass). Generators
+   *  carry no recipe; Rust infers the burn recipe from this. Null when idle. */
+  fuel?: string | null;
   clock?: number;
   x: number;
   y: number;

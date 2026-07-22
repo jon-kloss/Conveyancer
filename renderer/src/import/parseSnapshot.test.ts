@@ -94,3 +94,51 @@ describe("buildSnapshot — DC-H1 unrecognized-vanilla-producer backstop", () =>
     expect(s.quarantined ?? {}).toEqual({});
   });
 });
+
+describe("buildSnapshot — imported generators carry their loaded fuel", () => {
+  const coalGen = (fuelPath?: string) =>
+    obj(
+      "/Game/FactoryGame/Buildable/Factory/GeneratorCoal/Build_GeneratorCoal_C.Build_GeneratorCoal_C",
+      fuelPath ? { mCurrentFuelClass: { value: { pathName: fuelPath } } } : undefined,
+    );
+
+  it("reads mCurrentFuelClass so Rust can infer the burn recipe", () => {
+    const s = snap([coalGen("/Game/FactoryGame/Resource/RawResources/Coal/Desc_Coal_C.Desc_Coal_C")]);
+    expect(s.machines).toHaveLength(1);
+    // a generator carries fuel, never a recipe (mCurrentRecipe is absent)
+    expect(s.machines[0]).toMatchObject({ class: "Build_GeneratorCoal_C", fuel: "Desc_Coal_C", recipe: null });
+  });
+
+  it("an idle generator with no fuel loaded reports fuel: null (→ stays nameplate)", () => {
+    expect(snap([coalGen()]).machines[0].fuel).toBeNull();
+    // ...and the same for the malformed shapes a real save's empty fuel slot
+    // serializes as — the `!path` guard's actual job (not just prop-absent).
+    const emptyPath = obj(
+      "/Game/FactoryGame/Buildable/Factory/GeneratorCoal/Build_GeneratorCoal_C.Build_GeneratorCoal_C",
+      { mCurrentFuelClass: { value: { pathName: "" } } },
+    );
+    expect(snap([emptyPath]).machines[0].fuel).toBeNull();
+    const noPathName = obj(
+      "/Game/FactoryGame/Buildable/Factory/GeneratorCoal/Build_GeneratorCoal_C.Build_GeneratorCoal_C",
+      { mCurrentFuelClass: { value: {} } },
+    );
+    expect(snap([noPathName]).machines[0].fuel).toBeNull();
+  });
+
+  it("a manufacturer never reads a fuel class — even if one is present (the GENERATORS gate)", () => {
+    // The constructor carries a stray fuel-class ref AND a recipe. `fuel` must
+    // still be null: only generators read fuel. Without the GENERATORS.has(cls)
+    // gate this would leak a spurious fuel — so the fuel prop must be present to
+    // actually exercise the gate (not pass by coincidental absence).
+    const s = snap([
+      obj(
+        "/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1_C.Build_ConstructorMk1_C",
+        {
+          ...recipe("/Game/FactoryGame/Recipes/Recipe_IronRod_C.Recipe_IronRod_C"),
+          mCurrentFuelClass: { value: { pathName: "/Game/…/Desc_Coal_C.Desc_Coal_C" } },
+        },
+      ),
+    ]);
+    expect(s.machines[0]).toMatchObject({ class: "Build_ConstructorMk1_C", recipe: "Recipe_IronRod_C", fuel: null });
+  });
+});
