@@ -841,8 +841,13 @@ fn under_extracted(
         let Some(machine) = gd.machines.get(&c.extractor) else {
             continue;
         };
-        let gain = extraction_rate(machine, &node.purity, 1.0)
-            - extraction_rate(machine, &node.purity, c.clock);
+        let fluid = gd
+            .items
+            .get(&node.item)
+            .map(|i| i.is_fluid())
+            .unwrap_or(false);
+        let gain = extraction_rate(machine, &node.purity, 1.0, fluid)
+            - extraction_rate(machine, &node.purity, c.clock, fluid);
         if gain <= EPS {
             continue;
         }

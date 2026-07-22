@@ -1,7 +1,8 @@
 // World meters ↔ Leaflet CRS.Simple coordinates. 1 map unit = 50 m; north up.
 
 import L from "leaflet";
-import { purityFactor, type GameMachine, type MapPos } from "../state/types";
+import { type MapPos } from "../state/types";
+export { extractionRate } from "./extraction";
 
 export const METERS_PER_UNIT = 50;
 
@@ -13,13 +14,6 @@ export function fromLatLng(ll: L.LatLng): MapPos {
   return { x: ll.lng * METERS_PER_UNIT, y: -ll.lat * METERS_PER_UNIT };
 }
 
-/** Extraction ceiling in items/min (twin of gamedata::extraction_rate). */
-export function extractionRate(machine: GameMachine | undefined, purity: string, clock: number): number {
-  const m = machine as (GameMachine & { itemsPerCycle?: number; cycleTimeS?: number }) | undefined;
-  if (!m || m.kind !== "extractor" || !m.itemsPerCycle || !m.cycleTimeS) return 0;
-  const base = (m.itemsPerCycle / m.cycleTimeS) * 60;
-  return base * purityFactor(purity) * clock;
-}
 
 export const EXTRACTORS = ["Build_MinerMk1_C", "Build_MinerMk2_C", "Build_MinerMk3_C"];
 /** Fluid nodes take dedicated extractors, never miners: crude oil is pumped

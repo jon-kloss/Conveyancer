@@ -165,7 +165,10 @@ export default function GraphContextMenu({
         machine: g.machine,
         recipe: g.recipe,
         count: g.count,
-        clock: g.clock,
+        // Clamp into the game's 1%–250% range: a duplicate must never hard-fail
+        // on a source group whose clock drifted out of range (e.g. a fluid
+        // extractor sized to a tiny target) — AddGroup rejects an invalid clock.
+        clock: Math.min(2.5, Math.max(0.01, g.clock)),
         graphPos: { x: g.graphPos.x + 56, y: g.graphPos.y + 56 },
         floor: g.floor,
       };

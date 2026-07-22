@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { useStore } from "../state/store";
 import { extractionRate, extractorsFor } from "./maputil";
+import { isFluidItem } from "../state/types";
 import { pickReusePort } from "./claimPorts";
 import { fmtRate, itemLabel } from "../lib/format";
 import { purityFactor, type WorldNode } from "../state/types";
@@ -186,7 +187,10 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   const override = plan.nodeOverrides[node.id];
   const catalogNode = world.nodes.find((n) => n.id === node.id);
   const saveOnly = node.id.startsWith("save:");
-  const rate = extractionRate(gamedata.machines[extractor], node.purity, 1.0);
+  // A fluid node (oil/water) has raw mL-scale items_per_cycle — extractionRate
+  // ÷1000's to m³ for these (every claim below shares this node's item).
+  const nodeFluid = isFluidItem(gamedata, node.item);
+  const rate = extractionRate(gamedata.machines[extractor], node.purity, 1.0, nodeFluid);
   // Re-claiming a node the chosen factory already holds would stack a second
   // claim (double-book). Detect it so CLAIM FOR edits the existing claim's tier
   // in place instead — idempotent per factory.
@@ -224,7 +228,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
       })
       .map((c) => {
         const n = nodeOf(c.node);
-        return n ? extractionRate(gamedata.machines[c.extractor], n.purity, c.clock) : null;
+        return n ? extractionRate(gamedata.machines[c.extractor], n.purity, c.clock, nodeFluid) : null;
       });
     return pickReusePort(candidates, liveRates);
   };
@@ -260,7 +264,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   // — deleting it would cascade its belts — and the claim() orphan path
   // reattaches to it on the next claim.
   const releaseClaim = (c: (typeof claims)[number]) => {
-    const claimRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock);
+    const claimRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock, nodeFluid);
     const cmds: Parameters<typeof dispatch>[0] = [{ type: "release_node", id: c.id }];
     const port = Object.values(plan.ports).find(
       (p) =>
@@ -281,7 +285,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   // on the target — one undo step, ending exactly as a fresh claim there would.
   const moveClaim = (c: (typeof claims)[number], toFactory: string) => {
     if (!toFactory || toFactory === c.factory) return;
-    const claimRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock);
+    const claimRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock, nodeFluid);
     const cmds: Parameters<typeof dispatch>[0] = [];
     // A ◆ Built (imported) claim can't be released directly (§3.1.1 guard) —
     // but MOVING it is a plan decision the user owns. Convert first via
@@ -338,8 +342,8 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   // to it survive the change.
   const changeExtractor = (c: (typeof claims)[number], nextExtractor: string) => {
     if (!nextExtractor || nextExtractor === c.extractor) return;
-    const oldRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock);
-    const newRate = extractionRate(gamedata.machines[nextExtractor], node.purity, c.clock);
+    const oldRate = extractionRate(gamedata.machines[c.extractor], node.purity, c.clock, nodeFluid);
+    const newRate = extractionRate(gamedata.machines[nextExtractor], node.purity, c.clock, nodeFluid);
     const cmds: Parameters<typeof dispatch>[0] = [
       { type: "set_claim", id: c.id, extractor: nextExtractor, clock: c.clock },
     ];
@@ -429,7 +433,7 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
                 {!options.includes(c.extractor) && <option value={c.extractor}>{gamedata.machines[c.extractor]?.displayName ?? c.extractor}</option>}
               </select>
               <span className="t-data-12 projected">
-                {fmtRate(extractionRate(gamedata.machines[c.extractor], node.purity, c.clock))}
+                {fmtRate(extractionRate(gamedata.machines[c.extractor], node.purity, c.clock, nodeFluid))}
                 <span className="unit">/min</span>
               </span>
               {others.length > 0 && (
