@@ -1030,6 +1030,12 @@ pub fn purity_factor(purity: &str) -> f64 {
 /// gets (see the `is_fluid` pass in `parse_docs`). Without it an Oil Pump / Water
 /// Extractor reads 1000× its true rate (120000 vs 120 m³/min), which then
 /// underflows the group clock when it's sized to an m³ target.
+///
+/// The caller derives `fluid` from `Item::is_fluid()` on the node item, which
+/// keys on `mForm` — a core Docs.json field that is always present in practice.
+/// An absent/unknown form reads as NON-fluid (no ÷1000), i.e. it degrades toward
+/// OVER-reporting a fluid's capacity rather than under; acceptable only because
+/// `mForm` never actually goes missing on a real extractable resource.
 pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64, fluid: bool) -> f64 {
     let MachineKind::Extractor {
         items_per_cycle,
