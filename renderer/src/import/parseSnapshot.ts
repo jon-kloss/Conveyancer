@@ -83,6 +83,20 @@ export function recipeOf(obj: RawObject): string | null {
   return classOf(path);
 }
 
+// A generator's currently-loaded fuel (`mCurrentFuelClass`, an object reference
+// to e.g. Desc_Coal_C / Desc_NuclearFuelRod_C). Generators carry NO
+// `mCurrentRecipe`, so this is the signal Rust uses to infer the burn recipe and
+// model the ◆ plant's fuel/water/waste. `null` for an idle generator with no
+// fuel loaded (→ stays recipe-less nameplate, #58) or a shape we can't read.
+export function fuelClassOf(obj: RawObject): string | null {
+  const prop = obj.properties?.mCurrentFuelClass as
+    | { value?: { pathName?: string } }
+    | undefined;
+  const path = prop?.value?.pathName;
+  if (!path) return null;
+  return classOf(path);
+}
+
 function clockOf(obj: RawObject): number {
   const prop = obj.properties?.mCurrentPotential as
     | { value?: number | { value?: number } }
@@ -168,6 +182,9 @@ function toMachine(obj: RawObject, cls: string): ImportMachine | null {
   return {
     class: cls,
     recipe: recipeOf(obj),
+    // Generators carry their loaded fuel, not a recipe — Rust infers the burn
+    // recipe from it. Read only for generators (manufacturers key on recipe).
+    fuel: GENERATORS.has(cls) ? fuelClassOf(obj) : null,
     clock: clockOf(obj),
     x: t.x / 100,
     y: t.y / 100,

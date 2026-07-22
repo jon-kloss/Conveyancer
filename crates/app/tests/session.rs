@@ -1839,6 +1839,98 @@ fn imported_generator_counts_nameplate_without_fuel() {
     assert_eq!(dg.power_mw, 0.0, "a generator draws no power");
 }
 
+/// An imported ◆ generator that carries its loaded FUEL (`mCurrentFuelClass`)
+/// infers its burn recipe on import, so the plant models fuel + supplemental
+/// water demand — no longer an opaque nameplate MW source (#58 → parity with a
+/// placed generator). The fuel/water IN ports fall out of the recipe for free.
+#[test]
+fn imported_generator_with_fuel_models_burn_recipe() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "FUELED-GEN".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorCoal_C".into(),
+            recipe: None,
+            fuel: Some("Desc_Coal_C".into()),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let gen = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorCoal_C")
+        .expect("imported generator group");
+    assert_eq!(
+        gen.recipe, "Recipe_Power_Build_GeneratorCoal_Desc_Coal_C",
+        "burn recipe inferred from the loaded fuel"
+    );
+    let fid = gen.factory.clone();
+    let built_in = |item: &str| {
+        s.state.ports.values().any(|p| {
+            p.factory == fid
+                && p.direction == PortDirection::In
+                && p.item == item
+                && p.status == Status::Built
+        })
+    };
+    assert!(
+        built_in("Desc_Coal_C"),
+        "fuel demand is modeled as an IN port"
+    );
+    assert!(
+        built_in("Desc_Water_C"),
+        "supplemental water demand is modeled as an IN port"
+    );
+}
+
+/// An imported ◆ NUCLEAR plant ships its waste out a world port — the burn
+/// recipe's byproduct becomes a Built OUT port on import, so the plan is honest
+/// about the waste the reactor produces (parity with the wizard's nuclear plan).
+#[test]
+fn imported_nuclear_generator_models_waste_output() {
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(app::import::ImportSnapshot {
+        save_name: "NUKE-GEN".into(),
+        machines: vec![app::import::ImportMachine {
+            class: "Build_GeneratorNuclear_C".into(),
+            recipe: None,
+            fuel: Some("Desc_NuclearFuelRod_C".into()),
+            clock: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+    .unwrap();
+    let gen = s
+        .state
+        .groups
+        .values()
+        .find(|g| g.machine == "Build_GeneratorNuclear_C")
+        .expect("imported nuclear group");
+    assert_eq!(
+        gen.recipe, "Recipe_Power_Build_GeneratorNuclear_Desc_NuclearFuelRod_C",
+        "nuclear burn recipe inferred from the loaded rod"
+    );
+    let fid = gen.factory.clone();
+    assert!(
+        s.state.ports.values().any(|p| p.factory == fid
+            && p.direction == PortDirection::Out
+            && p.item == "Desc_NuclearWaste_C"
+            && p.status == Status::Built),
+        "nuclear waste is shipped out a Built world port"
+    );
+}
+
 #[test]
 fn water_pump_group_produces_water_from_nothing() {
     // A placeable water extractor has no world node (water is drawn from any

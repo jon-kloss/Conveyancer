@@ -20,6 +20,13 @@ pub struct ImportMachine {
     pub class: String,
     #[serde(default)]
     pub recipe: Option<String>,
+    /// Generators only: the fuel currently loaded (`mCurrentFuelClass`, e.g.
+    /// `Desc_Coal_C` / `Desc_NuclearFuelRod_C`). Real saves carry NO
+    /// `mCurrentRecipe` for generators, so this is what lets an imported ◆ plant
+    /// infer its burn recipe → fuel + supplemental water demand + waste output.
+    /// `None` for manufacturers, and for an idle generator with no fuel loaded.
+    #[serde(default)]
+    pub fuel: Option<String>,
     #[serde(default = "one")]
     pub clock: f64,
     pub x: f64,
@@ -206,6 +213,25 @@ fn fracking_classes(gd: &gamedata::docs::GameData) -> std::collections::BTreeSet
         .filter(|(_, recipes)| recipes.len() > 1)
         .map(|(class, _)| class)
         .collect()
+}
+
+/// Infer an imported generator's burn recipe from its machine class + the fuel
+/// currently loaded (`mCurrentFuelClass`). Real saves record no `mCurrentRecipe`
+/// for generators, so this is how a ◆ imported coal / fuel / nuclear plant gets
+/// its fuel + supplemental-water demand and byproduct (waste) output modeled:
+/// the key mirrors gamedata's `Recipe_Power_{gen}_{fuel}` synthesis, and once
+/// the group carries it, `write_built_layer` derives every port for free.
+/// `None` when no fuel is loaded (an idle generator stays recipe-less → honest
+/// nameplate power via `inject_generator_nameplates`, #58) or the pairing has no
+/// synthesized recipe (a modded fuel the catalog doesn't know).
+fn generator_burn_recipe(
+    gd: &gamedata::docs::GameData,
+    class: &str,
+    fuel: Option<&str>,
+) -> Option<String> {
+    let fuel = fuel?;
+    let key = format!("Recipe_Power_{}_{}", class.trim_end_matches("_C"), fuel);
+    gd.recipes.contains_key(&key).then_some(key)
 }
 
 /// Resolve an imported fracking extractor to its producing group. The satellite
@@ -485,11 +511,18 @@ pub fn cluster(
         let cx = members.iter().map(|m| m.x).sum::<f64>() / members.len() as f64;
         let cy = members.iter().map(|m| m.y).sum::<f64>() / members.len() as f64;
         let cz = members.iter().map(|m| m.z).sum::<f64>() / members.len() as f64;
-        // group by (machine class, recipe)
+        // group by (machine class, recipe). A generator carries no recipe from
+        // the save; infer its burn recipe from the loaded fuel so the ◆ plant
+        // models fuel/water/waste (else it folds into a recipe-less nameplate
+        // group). Generators on different fuels cluster into separate groups.
         let mut groups: BTreeMap<(String, String), (u32, f64)> = BTreeMap::new();
         for m in &members {
-            let key = (m.class.clone(), m.recipe.clone().unwrap_or_default());
-            let e = groups.entry(key).or_insert((0, 0.0));
+            let recipe = m
+                .recipe
+                .clone()
+                .or_else(|| generator_burn_recipe(gd, &m.class, m.fuel.as_deref()))
+                .unwrap_or_default();
+            let e = groups.entry((m.class.clone(), recipe)).or_insert((0, 0.0));
             e.0 += 1;
             e.1 += m.clock;
         }
