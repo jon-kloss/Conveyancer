@@ -18,8 +18,8 @@ importers:
         specifier: ^5.2.5
         version: 5.2.8
       '@fontsource/rajdhani':
-        specifier: ^5.2.5
-        version: 5.2.7
+        specifier: ^5.3.0
+        version: 5.3.0
       '@mlc-ai/web-llm':
         specifier: ^0.2.84
         version: 0.2.84
@@ -320,8 +320,8 @@ packages:
   '@fontsource/jetbrains-mono@5.2.8':
     resolution: {integrity: sha512-6w8/SG4kqvIMu7xd7wt6x3idn1Qux3p9N62s6G3rfldOUYHpWcc2FKrqf+Vo44jRvqWj2oAtTHrZXEP23oSKwQ==}
 
-  '@fontsource/rajdhani@5.2.7':
-    resolution: {integrity: sha512-7Gy10U688fCdeFfYKebUF2TZotdgH/ghKyMsseXPmB60lpaUHC8aoCSJl5/OpZ+KHKSU2TqBfKfteVkcIXxTAQ==}
+  '@fontsource/rajdhani@5.3.0':
+    resolution: {integrity: sha512-oBJgSIibWJvVBKseme1JczqPLoDHN97LHti4uh0LjfcJqQoVmnQQlRKIpEjTJV559rmVQ6qbVZZwKwk2wkBTtw==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1186,7 +1186,7 @@ snapshots:
 
   '@fontsource/jetbrains-mono@5.2.8': {}
 
-  '@fontsource/rajdhani@5.2.7': {}
+  '@fontsource/rajdhani@5.3.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
