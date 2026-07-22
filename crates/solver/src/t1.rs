@@ -445,6 +445,10 @@ pub fn solve(snapshot: &FactorySnapshot, edit: &T0Edit) -> Result<SolveResult, S
             _ => {
                 if machines_exact <= EPS {
                     (g.count.max(1), 0.0)
+                } else if let Some(cap) = g.clock_ceiling.filter(|c| *c > 0.0) {
+                    // Authored clock: keep it and derive count from it, so the
+                    // user's over/underclock survives re-solves.
+                    ((machines_exact / cap).ceil().max(1.0) as u32, cap)
                 } else {
                     // Integer counts: relax, round up, redistribute clock (SDD §5.2).
                     let count = machines_exact.ceil().max(1.0) as u32;

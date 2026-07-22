@@ -49,6 +49,12 @@ pub struct GroupSpec {
     pub recipe: RecipeSpec,
     pub count: u32,
     pub clock: f64,
+    /// User-authored per-machine clock. `None` = solver-owned: materialization
+    /// spreads demand at ≤100% (count = ceil(m), clock = m/count). `Some(c)` =
+    /// keep clock `c` and derive count = ceil(m/c), so an authored over- or
+    /// underclock survives every re-solve instead of reverting to ~100%.
+    #[serde(default)]
+    pub clock_ceiling: Option<f64>,
     /// Generators produce the POWER pseudo-item, which nothing belts or targets,
     /// so the demand-driven solve idles them at 0. When `Some(n)` the group is
     /// driven toward `n` machine-equivalents (its placed count×clock) via a
