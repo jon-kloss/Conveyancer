@@ -613,11 +613,12 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                     // Geothermal is fuel-less variable power: mPowerProduction
                     // is 0 and mVariablePowerProductionFactor carries the
                     // normal-purity AVERAGE (200 MW; the game cycles ±50% and
-                    // scales by geyser purity, which imports don't know) — an
-                    // honest nameplate, and it keeps the 20-generator geo farm
-                    // of a real save from reading 0 MW / "IMPORTED WORKS".
-                    // Purity-scaled truth needs geyser nodes in the world
-                    // snapshot — BACKLOG.
+                    // scales by geyser purity). This stays the BASE nameplate
+                    // here; purity-scaling happens DOWNSTREAM off the geyser the
+                    // generator sits on — `apply_claim_geyser` (session) for a
+                    // placed one, `geothermal_purity_clock` (app::import) for an
+                    // imported one — both riding the group clock (0.5/1/2), so
+                    // don't fold purity into this value or it double-applies.
                     let mw = match f(c, "mPowerProduction") {
                         p if p > 0.0 => p,
                         _ => f(c, "mVariablePowerProductionFactor"),

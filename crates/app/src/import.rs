@@ -280,6 +280,13 @@ fn fracking_group_for(
 /// the world catalog (mirroring `fracking_group_for`). No geyser in range →
 /// clock 1.0 (flat nameplate), the prior behavior. The `SetGroupClock` guard
 /// (session layer) then protects this clock just as it does a placed geyser's.
+///
+/// Caveat (inherited from the fracking match): nearest-wins can pick the WRONG
+/// geyser's purity when two geysers sit within the tens-of-meters save-vs-catalog
+/// position noise (the catalog has a genuine impure/normal pair only 33.5 m
+/// apart). Saves don't expose a per-generator node ref to disambiguate, so
+/// nearest is the best available signal; a mis-attribution just reports the
+/// neighbor's MW, never an error.
 fn geothermal_purity_clock(world: &gamedata::worldnodes::WorldSnapshot, x: f64, y: f64) -> f64 {
     world
         .nodes
@@ -538,10 +545,11 @@ pub fn cluster(
         // is the exception: it has no fuel/recipe, but its CLOCK encodes geyser
         // purity, so each unit contributes its purity-clock (0.5/1/2) instead of
         // the flat save clock. Units stay in ONE recipe-less group and average —
-        // avg-clock × count = Σ purity-clocks, so the empire total is exact even
-        // when a cluster spans mixed-purity geysers (rare), while keeping the
-        // group's `(machine, recipe="")` identity stable for re-import (a
-        // per-purity split would collide two `recipe=""` groups in the diff).
+        // avg-clock × count = Σ purity-clocks, so the empire total is correct (to
+        // a sub-0.1% 3-decimal clock rounding) even when a cluster spans
+        // mixed-purity geysers (rare), while keeping the group's `(machine,
+        // recipe="")` identity stable for re-import (a per-purity split would
+        // collide two `recipe=""` groups in the diff).
         let mut groups: BTreeMap<(String, String), (u32, f64)> = BTreeMap::new();
         for m in &members {
             let (recipe, member_clock) = if m.class == "Build_GeneratorGeoThermal_C" {

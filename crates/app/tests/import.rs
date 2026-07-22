@@ -1479,6 +1479,53 @@ fn reimporting_a_purity_scaled_geothermal_is_in_sync() {
     );
 }
 
+/// Two geothermal on DIFFERENT-purity geysers 33.5 m apart (one DBSCAN cluster):
+/// they stay in ONE recipe-less group and AVERAGE their purity-clocks — the
+/// empire total is still correct (100 + 200 = 300 MW) and the group identity
+/// stays stable for re-import. This is the mixed-purity case the averaging (vs a
+/// per-purity split) is designed for. Coords are the real impure+normal pair.
+#[test]
+fn imported_geothermal_mixed_purity_cluster_averages_correctly() {
+    let machines = || {
+        vec![
+            m("Build_GeneratorGeoThermal_C", "", 926.2, -315.7), // impure (0.5)
+            m("Build_GeneratorGeoThermal_C", "", 958.9, -308.5), // normal (1.0)
+        ]
+    };
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(snapshot(machines())).unwrap();
+
+    // one cluster → one factory → ONE recipe-less geothermal group of 2 at the
+    // averaged clock (0.5 + 1.0) / 2 = 0.75, NOT two per-purity groups.
+    let geo: Vec<_> = s
+        .state
+        .groups
+        .values()
+        .filter(|g| g.machine == "Build_GeneratorGeoThermal_C")
+        .collect();
+    assert_eq!(geo.len(), 1, "one recipe-less group, not split per purity");
+    assert_eq!(geo[0].count, 2);
+    assert!(
+        (geo[0].clock - 0.75).abs() < 1e-9,
+        "averaged purity-clock: {}",
+        geo[0].clock
+    );
+    let gen = s.solve_all_readonly().total_generation_mw;
+    assert!(
+        (gen - 300.0).abs() < 1e-4,
+        "empire total = 100 (impure) + 200 (normal) = 300 MW, got {gen}"
+    );
+
+    // the recipe-less identity stays stable — the mixed cluster re-imports in sync.
+    assert!(
+        matches!(
+            s.import_save(snapshot(machines())).unwrap(),
+            ImportOutcome::InSync
+        ),
+        "mixed-purity cluster re-imports in sync"
+    );
+}
+
 /// AUDIT #126 (1): a group demolished in game must cascade on drift accept
 /// like DeleteGroup — no orphaned belts referencing the removed group, no
 /// stale boundary port still exporting the item it made, and the surviving
