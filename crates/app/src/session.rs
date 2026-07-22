@@ -494,7 +494,9 @@ impl Session {
             // ClaimWell needs the world catalog + gamedata recipes, which
             // planner-core's pure apply can't see — resolve it here.
             let applied = match cmd {
-                Command::ClaimWell { well } => self.apply_claim_well(well),
+                Command::ClaimWell { well, factory } => {
+                    self.apply_claim_well(well, factory.as_deref())
+                }
                 Command::ClaimGeyser { geyser } => self.apply_claim_geyser(geyser),
                 // A geyser / fracking satellite is NOT a plain miner node — the UI
                 // routes them to the well claim, but the raw /edit API could send
@@ -2074,13 +2076,22 @@ impl Session {
         })
     }
 
-    /// Claim a whole Resource Well (planned placement): create a factory at the
-    /// well's centroid populated with the Pressurizer (recipe-less Activator) +
-    /// one Extractor group per satellite PURITY (its synthesized per-purity
-    /// recipe, count = satellites at that purity), plus a fluid OUT port sized to
-    /// total production so the well is routable by pipe. One transaction = one
-    /// undo step. Errors if the well id is unknown or the resource has no recipe.
-    fn apply_claim_well(&mut self, well: &str) -> Result<Transaction, DomainError> {
+    /// Claim a whole Resource Well (planned placement): populate a factory with
+    /// the Pressurizer (recipe-less Activator) + one Extractor group per
+    /// satellite PURITY (its synthesized per-purity recipe, count = satellites
+    /// at that purity), plus a fluid OUT port sized to total production so the
+    /// well is routable by pipe. `target` claims INTO that existing planned
+    /// factory; None stamps a new factory at the well centroid. Every satellite
+    /// gets a real NodeClaim bound to the claiming factory — the claim identity
+    /// (drawer state, map rings, tethers, double-claim guard) rides the claims,
+    /// NOT the factory's position, so moving the factory never "unclaims" the
+    /// well. One transaction = one undo step. Errors if the well id is unknown
+    /// or the resource has no recipe.
+    fn apply_claim_well(
+        &mut self,
+        well: &str,
+        target: Option<&str>,
+    ) -> Result<Transaction, DomainError> {
         let sats: Vec<&gamedata::worldnodes::WorldNode> = self
             .world
             .nodes
@@ -2096,26 +2107,50 @@ impl Session {
         let cx = sats.iter().map(|n| n.x).sum::<f64>() / sats.len() as f64;
         let cy = sats.iter().map(|n| n.y).sum::<f64>() / sats.len() as f64;
         let region = sats[0].region.clone();
-        // No double-claim: a well claimed twice would stamp a second identical
-        // factory extracting the same satellites. The centroid is deterministic
-        // from a well's satellites, so a Pressurizer factory already at this
-        // centroid means the well is claimed. (The drawer mirrors this test to
-        // show CLAIM WELL vs an already-claimed state.)
-        let already_claimed = self.state.factories.values().any(|f| {
-            (f.position.x - cx).abs() < 1.0
-                && (f.position.y - cy).abs() < 1.0
-                && f.groups.iter().any(|gid| {
-                    self.state
-                        .groups
-                        .get(gid)
-                        .is_some_and(|g| g.machine == "Build_FrackingSmasher_C")
-                })
-        });
+        // No double-claim: the well is claimed iff any of its satellites carries
+        // a NodeClaim (real claim identity — deleting the claiming factory
+        // cascades the claims away and frees the well again). The positional
+        // fallback (a Pressurizer factory still sitting on the centroid) guards
+        // plan files from before claims existed, whose wells have no claim rows.
+        let already_claimed = self
+            .state
+            .node_claims
+            .values()
+            .any(|c| sats.iter().any(|n| n.id == c.node))
+            || self.state.factories.values().any(|f| {
+                (f.position.x - cx).abs() < 1.0
+                    && (f.position.y - cy).abs() < 1.0
+                    && f.groups.iter().any(|gid| {
+                        self.state
+                            .groups
+                            .get(gid)
+                            .is_some_and(|g| g.machine == "Build_FrackingSmasher_C")
+                    })
+            });
         if already_claimed {
             return Err(DomainError::Invalid {
                 message: format!("resource well {well} is already claimed"),
             });
         }
+        // Claiming INTO an existing factory: it must exist and be ◇ planned (a
+        // ◆ built factory is game ground truth — only import sync writes it).
+        let existing = match target {
+            Some(t) => {
+                let f = self
+                    .state
+                    .factories
+                    .get(t)
+                    .cloned()
+                    .ok_or(DomainError::NotFound { id: t.to_string() })?;
+                if f.status == Status::Built {
+                    return Err(DomainError::Invalid {
+                        message: "a well can't be claimed into a ◆ built factory".into(),
+                    });
+                }
+                Some(f)
+            }
+            None => None,
+        };
         // Satellites aggregate by purity → one Extractor group per purity.
         let mut by_purity: BTreeMap<String, u32> = BTreeMap::new();
         for n in &sats {
@@ -2123,7 +2158,26 @@ impl Session {
         }
 
         let mut tx = Transaction::new("claim well");
-        let fid = new_id();
+        let fid = existing
+            .as_ref()
+            .map(|f| f.id.clone())
+            .unwrap_or_else(new_id);
+        // Cards land below whatever the target factory already holds.
+        let base_y = existing
+            .as_ref()
+            .map(|f| {
+                f.groups
+                    .iter()
+                    .filter_map(|g| self.state.groups.get(g).map(|g| g.graph_pos.y))
+                    .chain(
+                        f.ports
+                            .iter()
+                            .filter_map(|p| self.state.ports.get(p).map(|p| p.graph_pos.y)),
+                    )
+                    .fold(f64::NEG_INFINITY, f64::max)
+            })
+            .map(|y| if y.is_finite() { y + 260.0 } else { 0.0 })
+            .unwrap_or(0.0);
         let mut group_ids: Vec<Id> = Vec::new();
         let mut ext_ids: Vec<Id> = Vec::new();
         let mut total_rate = 0.0;
@@ -2148,7 +2202,7 @@ impl Session {
                 clock_ceiling: None,
                 somersloops: 0,
                 planned_delta: None,
-                graph_pos: GraphPos { x: gx, y: 0.0 },
+                graph_pos: GraphPos { x: gx, y: base_y },
                 floor: 0,
                 status: Status::Planned,
                 created_by: CreatedBy::Manual,
@@ -2175,7 +2229,7 @@ impl Session {
             clock_ceiling: None,
             somersloops: 0,
             planned_delta: None,
-            graph_pos: GraphPos { x: gx, y: 0.0 },
+            graph_pos: GraphPos { x: gx, y: base_y },
             floor: 0,
             status: Status::Planned,
             created_by: CreatedBy::Manual,
@@ -2196,7 +2250,7 @@ impl Session {
             bound_route: None,
             graph_pos: GraphPos {
                 x: gx + 220.0,
-                y: 0.0,
+                y: base_y,
             },
             status: Status::Planned,
             created_by: CreatedBy::Manual,
@@ -2215,34 +2269,64 @@ impl Session {
             })));
             tx.created.push(edge_id);
         }
+        // One real claim per satellite: the durable record that THIS factory
+        // owns the well (drawer state, map claim rings and node→factory
+        // tethers all read these, and remove_factory_cascading frees them).
+        let mut claim_ids: Vec<Id> = Vec::new();
+        for n in &sats {
+            let c = NodeClaim {
+                id: new_id(),
+                node: n.id.clone(),
+                factory: fid.clone(),
+                extractor: "Build_FrackingExtractor_C".into(),
+                clock: 1.0,
+                save_node_id: None,
+                status: Status::Planned,
+                created_by: CreatedBy::Manual,
+            };
+            claim_ids.push(c.id.clone());
+            tx.record(self.state.upsert(Entity::NodeClaim(c)));
+        }
         let name = self
             .gamedata
             .items
             .get(&item)
             .map(|i| format!("{} WELL", i.display_name.to_uppercase()))
             .unwrap_or_else(|| "RESOURCE WELL".into());
-        // Every created id (groups, port, edges, factory) goes in `tx.created`
-        // per the command contract — the renderer selects them.
+        // Every created id (groups, port, claims, edges, factory) goes in
+        // `tx.created` per the command contract — the renderer selects them.
         tx.created.extend(group_ids.iter().cloned());
         tx.created.push(pid.clone());
-        tx.created.push(fid.clone());
-        tx.record(self.state.upsert(Entity::Factory(Factory {
-            id: fid,
-            name,
-            position: MapPos {
-                x: cx,
-                y: cy,
-                z: 0.0,
-            },
-            region,
-            node_claims: vec![],
-            groups: group_ids,
-            ports: vec![pid],
-            style_guide: None,
-            replaces: None,
-            status: Status::Planned,
-            created_by: CreatedBy::Manual,
-        })));
+        tx.created.extend(claim_ids.iter().cloned());
+        match existing {
+            Some(mut f) => {
+                // claim INTO the target factory: extend it in place
+                f.groups.extend(group_ids);
+                f.ports.push(pid);
+                f.node_claims.extend(claim_ids);
+                tx.record(self.state.upsert(Entity::Factory(f)));
+            }
+            None => {
+                tx.created.push(fid.clone());
+                tx.record(self.state.upsert(Entity::Factory(Factory {
+                    id: fid,
+                    name,
+                    position: MapPos {
+                        x: cx,
+                        y: cy,
+                        z: 0.0,
+                    },
+                    region,
+                    node_claims: claim_ids,
+                    groups: group_ids,
+                    ports: vec![pid],
+                    style_guide: None,
+                    replaces: None,
+                    status: Status::Planned,
+                    created_by: CreatedBy::Manual,
+                })));
+            }
+        }
         Ok(tx)
     }
 
@@ -2265,17 +2349,21 @@ impl Session {
             });
         };
         let (gx, gy, purity, region) = (g.x, g.y, g.purity.clone(), g.region.clone());
-        // No double-claim: a Geothermal Generator factory already on this geyser.
-        let already = self.state.factories.values().any(|f| {
-            (f.position.x - gx).abs() < 1.0
-                && (f.position.y - gy).abs() < 1.0
-                && f.groups.iter().any(|gid| {
-                    self.state
-                        .groups
-                        .get(gid)
-                        .is_some_and(|g| g.machine == "Build_GeneratorGeoThermal_C")
-                })
-        });
+        // No double-claim: the geyser is claimed iff it carries a NodeClaim —
+        // real claim identity, like wells, so moving the generator factory
+        // never "unclaims" the geyser. The positional fallback guards plan
+        // files from before geyser claims existed.
+        let already = self.state.node_claims.values().any(|c| c.node == geyser)
+            || self.state.factories.values().any(|f| {
+                (f.position.x - gx).abs() < 1.0
+                    && (f.position.y - gy).abs() < 1.0
+                    && f.groups.iter().any(|gid| {
+                        self.state
+                            .groups
+                            .get(gid)
+                            .is_some_and(|g| g.machine == "Build_GeneratorGeoThermal_C")
+                    })
+            });
         if already {
             return Err(DomainError::Invalid {
                 message: format!("geyser {geyser} is already claimed"),
@@ -2302,6 +2390,21 @@ impl Session {
         let gen_id = gen.id.clone();
         tx.record(self.state.upsert(Entity::Group(gen)));
         tx.created.push(gen_id.clone());
+        // The durable claim record (drawer state + the geyser's map ring +
+        // node→factory tether read this, and factory delete cascades it).
+        let claim = NodeClaim {
+            id: new_id(),
+            node: geyser.to_string(),
+            factory: fid.clone(),
+            extractor: "Build_GeneratorGeoThermal_C".into(),
+            clock: gamedata::docs::purity_factor(&purity),
+            save_node_id: None,
+            status: Status::Planned,
+            created_by: CreatedBy::Manual,
+        };
+        let claim_id = claim.id.clone();
+        tx.record(self.state.upsert(Entity::NodeClaim(claim)));
+        tx.created.push(claim_id.clone());
         tx.created.push(fid.clone());
         tx.record(self.state.upsert(Entity::Factory(Factory {
             id: fid,
@@ -2315,7 +2418,7 @@ impl Session {
                 z: 0.0,
             },
             region,
-            node_claims: vec![],
+            node_claims: vec![claim_id],
             groups: vec![gen_id],
             ports: vec![],
             style_guide: None,

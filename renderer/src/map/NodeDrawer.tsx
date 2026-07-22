@@ -20,6 +20,8 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
 
   const factories = Object.values(plan.factories);
   const [factoryId, setFactoryId] = useState(factories[0]?.id ?? "");
+  // Well claim target: "" = stamp a new factory at the well centroid.
+  const [wellTarget, setWellTarget] = useState("");
   // Legal extractors follow the NODE's item: miners for solid ores, the Oil
   // Extractor for crude — a fluid node never offers a miner (and vice versa).
   const options = extractorsFor(node.item);
@@ -38,23 +40,39 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
     for (const sat of sats) byPurity[sat.purity] = (byPurity[sat.purity] ?? 0) + 1;
     const fluid = itemLabel(gamedata.items, node.item) || "FLUID";
     const regionName = world.regions.find((r) => r.id === node.region)?.name ?? node.region;
-    // Already claimed? Mirror the Rust guard: a Pressurizer factory sitting on
-    // this well's (deterministic) satellite centroid. Show GO TO WELL, not a
-    // second CLAIM (a re-claim is refused by the session anyway).
+    // Already claimed? Mirror the Rust guard: any satellite carrying a
+    // NodeClaim names the owning factory (real claim identity — survives the
+    // factory being moved). The positional fallback covers plan files from
+    // before well claims existed.
     const cx = sats.reduce((a, n) => a + n.x, 0) / sats.length;
     const cy = sats.reduce((a, n) => a + n.y, 0) / sats.length;
-    const claimedFactory = Object.values(plan.factories).find(
-      (f) =>
-        Math.abs(f.position.x - cx) < 1 &&
-        Math.abs(f.position.y - cy) < 1 &&
-        Object.values(plan.groups).some(
-          (g) => g.factory === f.id && g.machine === "Build_FrackingSmasher_C",
-        ),
-    );
+    const satIds = new Set(sats.map((n) => n.id));
+    const satClaim = Object.values(plan.nodeClaims).find((c) => satIds.has(c.node));
+    const claimedFactory =
+      (satClaim && plan.factories[satClaim.factory]) ||
+      Object.values(plan.factories).find(
+        (f) =>
+          Math.abs(f.position.x - cx) < 1 &&
+          Math.abs(f.position.y - cy) < 1 &&
+          Object.values(plan.groups).some(
+            (g) => g.factory === f.id && g.machine === "Build_FrackingSmasher_C",
+          ),
+      );
+    // Claim into a nearby factory, or stamp a new one at the centroid ("").
+    // ◆ built factories are excluded (the session refuses them).
+    const wellTargets = factories
+      .filter((f) => f.status !== "built")
+      .sort(
+        (a, b) =>
+          Math.hypot(a.position.x - cx, a.position.y - cy) -
+          Math.hypot(b.position.x - cx, b.position.y - cy),
+      );
     const claimWell = () => {
-      // { select: true } highlights + pans to the new well factory (its id is in
-      // the edit's `created`); without it the user gets no feedback.
-      void dispatch([{ type: "claim_well", well }], { select: true });
+      // { select: true } highlights + pans to the claiming factory (its ids are
+      // in the edit's `created`); without it the user gets no feedback.
+      void dispatch([{ type: "claim_well", well, factory: wellTarget || undefined }], {
+        select: true,
+      });
     };
     return (
       <aside className="drawer summary-drawer" data-testid="node-drawer">
@@ -93,8 +111,26 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
             <>
               <p className="insp-note" style={{ marginTop: 8 }}>
                 Claims the Resource Well Pressurizer (150 MW) plus one Resource Well Extractor per
-                satellite, as a new {fluid} well factory with a routable pipe output.
+                satellite, with a routable pipe output — into a nearby factory, or as a new{" "}
+                {fluid} well factory.
               </p>
+              <label className="t-label" style={{ display: "block", marginTop: 8 }}>
+                CLAIM FOR
+              </label>
+              <select
+                className="mono"
+                style={{ width: "100%", marginTop: 4 }}
+                value={wellTarget}
+                onChange={(e) => setWellTarget(e.target.value)}
+                data-testid="well-claim-for"
+              >
+                <option value="">NEW {fluid.toUpperCase()} WELL FACTORY</option>
+                {wellTargets.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
               <button
                 className="btn btn-primary"
                 style={{ width: "100%", marginTop: 8 }}
@@ -115,17 +151,22 @@ export default function NodeDrawer({ node }: { node: WorldNode }) {
   if (node.nodeType === "geyser") {
     const mw = 200 * purityFactor(node.purity);
     const regionName = world.regions.find((r) => r.id === node.region)?.name ?? node.region;
-    // Match against the RAW catalog position (apply_claim_geyser stamps the
-    // factory there), not `node` which may carry a plan-local drift override.
+    // Claimed iff the geyser carries a NodeClaim (survives the generator
+    // factory being moved). The positional fallback — a generator factory
+    // still sitting on the RAW catalog position — covers plan files from
+    // before geyser claims existed.
     const raw = world.nodes.find((n) => n.id === node.id) ?? node;
-    const claimedFactory = Object.values(plan.factories).find(
-      (f) =>
-        Math.abs(f.position.x - raw.x) < 1 &&
-        Math.abs(f.position.y - raw.y) < 1 &&
-        Object.values(plan.groups).some(
-          (g) => g.factory === f.id && g.machine === "Build_GeneratorGeoThermal_C",
-        ),
-    );
+    const geyserClaim = Object.values(plan.nodeClaims).find((c) => c.node === node.id);
+    const claimedFactory =
+      (geyserClaim && plan.factories[geyserClaim.factory]) ||
+      Object.values(plan.factories).find(
+        (f) =>
+          Math.abs(f.position.x - raw.x) < 1 &&
+          Math.abs(f.position.y - raw.y) < 1 &&
+          Object.values(plan.groups).some(
+            (g) => g.factory === f.id && g.machine === "Build_GeneratorGeoThermal_C",
+          ),
+      );
     return (
       <aside className="drawer summary-drawer" data-testid="node-drawer">
         <header className="drawer-header">

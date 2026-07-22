@@ -207,7 +207,12 @@ test("CREATE power impact agrees with the footer Δ POWER draw", async ({ page, 
   const createImpact = page.locator("section:has(.prop-group-head.create) .prop-row-impact").first();
   const N = mw((await createImpact.innerText()).trim());
 
+  // The footer value arrives on the ASYNC eval round-trip after the review
+  // mounts (it renders "—" until then) — wait for the real figure, or a slow
+  // serial run reads the placeholder window (the historical |N−M| = 9 flake
+  // was exactly this race, back when the pending cell fabricated "+0 MW").
   const powerCell = page.locator('[data-testid="proposal-review"] .prop-cell', { hasText: "Δ POWER" });
+  await expect(powerCell).toContainText("MW");
   const M = mw((await powerCell.innerText()).trim());
 
   // honest expectation: the two MW figures shown together are the same draw

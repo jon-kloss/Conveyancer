@@ -226,8 +226,8 @@ export default function MapView() {
   }, [mapFilter, resolvedNodes, gamedata.items]);
 
   const claimLinks = useMemo(() => {
-    const nodeById: Record<string, { x: number; y: number }> = {};
-    for (const n of resolvedNodes) nodeById[n.id] = { x: n.x, y: n.y };
+    const nodeById: Record<string, { x: number; y: number; item: string }> = {};
+    for (const n of resolvedNodes) nodeById[n.id] = { x: n.x, y: n.y, item: n.item };
     const links: CanvasLayerData["claimLinks"] = [];
     for (const c of Object.values(plan.nodeClaims)) {
       const node = nodeById[c.node];
@@ -236,6 +236,19 @@ export default function MapView() {
       // A search-hidden node draws no marker — its tether would point at
       // empty ground, so it hides with it.
       if (nodeFilter?.active && !nodeFilter.visible.has(c.node)) continue;
+      // The tether flows when the claim's extraction is actually drawn: the
+      // factory's matching port carries solved flow (mirrors route flow —
+      // MOTION = FLOW, speed = utilization vs the extraction ceiling). IN
+      // ports cover miner claims (ore arrives at the boundary); OUT ports
+      // cover well claims, whose extractor groups produce INSIDE the factory
+      // and export the fluid.
+      let flow = 0;
+      let ceiling = 0;
+      for (const p of Object.values(plan.ports)) {
+        if (p.factory !== c.factory || p.item !== node.item) continue;
+        flow = Math.max(flow, derived.factories[c.factory]?.ports[p.id] ?? 0);
+        if (p.direction === "in") ceiling = Math.max(ceiling, p.rateCeiling ?? 0);
+      }
       links.push({
         node,
         factory: f.position,
@@ -246,10 +259,12 @@ export default function MapView() {
           (selection?.kind === "factory" && selection.id === c.factory) ||
           (selection?.kind === "node" && selection.id === c.node) ||
           hoveredNode?.id === c.node,
+        flowing: flow > 1e-6,
+        saturation: ceiling > 0 ? Math.min(1, flow / ceiling) : 0.5,
       });
     }
     return links;
-  }, [plan.nodeClaims, plan.factories, resolvedNodes, derived.nodes, selection, hoveredNode, nodeFilter]);
+  }, [plan.nodeClaims, plan.factories, plan.ports, resolvedNodes, derived, selection, hoveredNode, nodeFilter]);
 
   // Refactor tethers (W2a): old ◆ → new ◇ links from every `replaces`. Highlight
   // when either endpoint is the selected factory ("orange is a verb").

@@ -42,7 +42,9 @@ test("a fracking satellite claims the whole well from its drawer", async ({ page
     await expect(page.getByTestId("btn-claim")).toHaveCount(0);
 
     // Baseline node-claim count — the serial suite's shared plan may already hold
-    // claims from earlier specs, so a well claim must add NONE (not "== 0").
+    // claims from earlier specs, so a well claim must add exactly ONE PER
+    // SATELLITE (the real claim identity that survives a factory move and
+    // draws the tethers), not reset the count.
     const claimsBefore = Object.keys((await hydrate(request)).plan.nodeClaims).length;
 
     // Await the /edit round-trip so hydrate reads the landed claim (the dispatch
@@ -53,7 +55,7 @@ test("a fracking satellite claims the whole well from its drawer", async ({ page
     ]);
 
     // The well stamped one factory: a Pressurizer + ≥1 fracking extractor group,
-    // and a routable nitrogen OUT port. NO new node claim.
+    // a routable nitrogen OUT port, and one node claim per satellite.
     const h = await hydrate(request);
     const wellFactory = Object.values<any>(h.plan.factories).find((f) => f.name.includes("NITROGEN"));
     expect(wellFactory, "a NITROGEN … WELL factory was created").toBeTruthy();
@@ -65,9 +67,20 @@ test("a fracking satellite claims the whole well from its drawer", async ({ page
         (p) => p.factory === wellFactory.id && p.item === "Desc_NitrogenGas_C" && p.direction === "out",
       ),
     ).toBe(true);
-    expect(Object.keys(h.plan.nodeClaims).length, "well claim adds no node claim").toBe(
-      claimsBefore,
+    const wellClaims = Object.values<any>(h.plan.nodeClaims).filter(
+      (c) => c.factory === wellFactory.id,
     );
+    expect(wellClaims.length, "one claim per satellite, bound to the well factory").toBeGreaterThan(0);
+    expect(Object.keys(h.plan.nodeClaims).length).toBe(claimsBefore + wellClaims.length);
+    // exactly the claimed WELL's satellites — resolve the well id from a
+    // claimed node, then compare against the catalog's satellite count for it
+    const claimedWell = Object.values<any>(h.world.nodes).find(
+      (n) => n.id === wellClaims[0].node,
+    )?.well;
+    const satCount = Object.values<any>(h.world.nodes).filter(
+      (n) => n.nodeType === "fracking-satellite" && n.well === claimedWell,
+    ).length;
+    expect(wellClaims.length).toBe(satCount);
   } finally {
     // Unconditional cleanup: delete ANY leaked well factory (this or a prior
     // failed run) by name so the serial suite's shared plan is restored.

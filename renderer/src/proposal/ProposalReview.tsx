@@ -263,16 +263,23 @@ export default function ProposalReview({ proposal }: { proposal: Proposal }) {
                 <span>—</span>
               )}
             </div>
+            {/* while the eval round-trip is in flight, show "—" like GOAL
+                CHECK does — a fabricated "+0 MW" reads as a real (wrong)
+                number, and a probe (or a fast reader) can catch it */}
             <div className="prop-cell">
               <span className="prop-cell-label">Δ POWER</span>
-              <span>
-                +{fmtPower(consequence?.deltaPowerMw ?? 0)} draw
-                {(consequence?.deltaGenerationMw ?? 0) > 0 && ` · +${fmtPower(consequence!.deltaGenerationMw)} gen`}
-              </span>
+              {consequence ? (
+                <span>
+                  +{fmtPower(consequence.deltaPowerMw)} draw
+                  {consequence.deltaGenerationMw > 0 && ` · +${fmtPower(consequence.deltaGenerationMw)} gen`}
+                </span>
+              ) : (
+                <span>—</span>
+              )}
             </div>
             <div className="prop-cell">
               <span className="prop-cell-label">MACHINES</span>
-              <span>+{consequence?.machines ?? 0}</span>
+              <span>{consequence ? `+${consequence.machines}` : "—"}</span>
             </div>
           </div>
           <div className="prop-actions">

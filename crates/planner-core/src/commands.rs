@@ -206,6 +206,11 @@ pub enum Command {
     /// defensive error.
     ClaimWell {
         well: String,
+        /// Claim INTO this existing planned factory (its groups/port/claims land
+        /// there) instead of stamping a new factory at the well centroid.
+        /// None = the original stamp-a-new-factory behavior.
+        #[serde(default)]
+        factory: Option<Id>,
     },
     /// Claim a geyser: stamp a new factory with a single Geothermal Generator
     /// whose output scales with the geyser's purity (100 / 200 / 400 MW for

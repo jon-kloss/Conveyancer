@@ -2685,3 +2685,143 @@ fn create_impact_mw_is_clock_scaled() {
         "impact must not read the unscaled nameplate total"
     );
 }
+
+/// A partial surplus take SPLITS at the output level (like teeing a splitter
+/// off the belt in-game): the tapped OUT port is resized to the take and a
+/// wired sibling OUT port keeps the remainder — unbound, so a LATER wizard
+/// build can still consume it instead of building fresh production.
+#[test]
+fn partial_surplus_take_splits_the_port_and_the_remainder_stays_consumable() {
+    let mut s = Session::in_memory(None).unwrap();
+    // 60/min of rods exported, nothing consuming them.
+    let rods = load_factory(&mut s, "ROD EXPORTER", 60.0);
+    let rod_ports = |s: &Session| -> Vec<Port> {
+        s.state
+            .ports
+            .values()
+            .filter(|p| {
+                p.factory == rods && p.direction == PortDirection::Out && p.item == "Desc_IronRod_C"
+            })
+            .cloned()
+            .collect()
+    };
+    assert_eq!(rod_ports(&s).len(), 1);
+
+    // ---- build #1: 80 screws/min needs 20 rods → partial take (20 of 60) ----
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![("Desc_IronScrew_C".into(), 80.0)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: Default::default(),
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    let route_item = proposal
+        .items
+        .iter()
+        .find(|i| i.impact == "REUSES SURPLUS")
+        .expect("surplus route item");
+    assert!(
+        route_item.detail.contains("20.0/min from surplus")
+            && route_item.detail.contains("40.0/min stays exported"),
+        "detail names the split: {}",
+        route_item.detail
+    );
+    let pid = s
+        .edit(vec![Command::CreateProposal { proposal }])
+        .unwrap()
+        .created[0]
+        .clone();
+    s.accept_proposal(&pid).expect("accept build #1");
+
+    // The tapped port shrank to the take and is bound; the wired sibling
+    // carries the remaining 40/min and stays unbound (consumable surplus).
+    let ports = rod_ports(&s);
+    assert_eq!(ports.len(), 2, "split minted a sibling OUT port");
+    let bound = ports.iter().find(|p| p.bound_route.is_some()).unwrap();
+    let free = ports.iter().find(|p| p.bound_route.is_none()).unwrap();
+    assert!(
+        (bound.rate - 20.0).abs() < 1e-6,
+        "tapped port resized: {}",
+        bound.rate
+    );
+    assert!(
+        (free.rate - 40.0).abs() < 1e-6,
+        "sibling keeps the rest: {}",
+        free.rate
+    );
+    assert!(
+        s.state
+            .edges
+            .values()
+            .any(|e| e.factory == rods && e.to == EdgeEnd::Port(free.id.clone())),
+        "the sibling is wired to the rod line"
+    );
+
+    // ---- build #2: 160 screws/min needs 40 rods → the sibling covers it ----
+    let outcome = solve(
+        &mut s,
+        WizardGoal {
+            items: vec![("Desc_IronScrew_C".into(), 160.0)],
+            constraints: Default::default(),
+            milestone: None,
+            pinned_recipes: Default::default(),
+        },
+    );
+    let WizardOutcome::Proposal { proposal } = outcome else {
+        panic!("expected a proposal, got {outcome:?}");
+    };
+    let route_item = proposal
+        .items
+        .iter()
+        .find(|i| i.impact == "REUSES SURPLUS")
+        .expect("build #2 still reuses surplus — the remainder was not stranded");
+    assert!(
+        route_item.detail.contains("40.0/min from surplus"),
+        "the sibling's full 40/min is taken: {}",
+        route_item.detail
+    );
+    // A FULL take must not split again.
+    assert!(
+        !route_item.detail.contains("stays exported"),
+        "full take → no second split: {}",
+        route_item.detail
+    );
+    // No rod production stage in the new site — surplus covered the demand.
+    let create = proposal
+        .items
+        .iter()
+        .find(|i| matches!(i.kind, ProposalItemKind::Create))
+        .unwrap();
+    assert!(
+        !create.commands.iter().any(|c| matches!(
+            c,
+            Command::AddGroup { recipe, .. } if recipe == "Recipe_IronRod_C"
+        )),
+        "no new rod stage — the freed surplus feeds the site"
+    );
+    let pid = s
+        .edit(vec![Command::CreateProposal { proposal }])
+        .unwrap()
+        .created[0]
+        .clone();
+    s.accept_proposal(&pid).expect("accept build #2");
+
+    // Both rod ports are now bound; total export is still the original 60/min.
+    let ports = rod_ports(&s);
+    assert_eq!(
+        ports.len(),
+        2,
+        "a full take binds the sibling without another split"
+    );
+    assert!(ports.iter().all(|p| p.bound_route.is_some()));
+    let total: f64 = ports.iter().map(|p| p.rate).sum();
+    assert!(
+        (total - 60.0).abs() < 1e-6,
+        "export total unchanged: {total}"
+    );
+}
