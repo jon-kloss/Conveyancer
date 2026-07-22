@@ -2328,7 +2328,13 @@ impl Session {
         let Some(machine) = self.gamedata.machines.get(&claim.extractor) else {
             return 0.0;
         };
-        gamedata::docs::extraction_rate(machine, &node.purity, claim.clock)
+        let fluid = self
+            .gamedata
+            .items
+            .get(&node.item)
+            .map(|i| i.is_fluid())
+            .unwrap_or(false);
+        gamedata::docs::extraction_rate(machine, &node.purity, claim.clock, fluid)
     }
 
     /// If the factory has a single output port, always solve as SetTarget on it

@@ -562,8 +562,9 @@ pub fn global_solve(
                 break;
             }
             let machine = gd.machines.get(extractor_for(item));
+            let fluid = gd.items.get(item).map(|i| i.is_fluid()).unwrap_or(false);
             let rate = machine
-                .map(|m| extraction_rate(m, &n.purity, 1.0))
+                .map(|m| extraction_rate(m, &n.purity, 1.0, fluid))
                 .unwrap_or(0.0);
             covered += rate;
             budget -= 1;

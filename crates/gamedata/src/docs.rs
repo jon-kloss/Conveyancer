@@ -910,7 +910,17 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                 display_name,
                 duration_s: cycle_time_s,
                 ingredients: Vec::new(),
-                products: vec![(WATER_ITEM.to_string(), items_per_cycle)],
+                // Water is a fluid: the game's mItemsPerCycle is raw mL-scale, so
+                // ÷1000 to m³ like every fluid recipe (this synth runs AFTER the
+                // is_fluid normalization pass, so it must normalize itself).
+                products: vec![(
+                    WATER_ITEM.to_string(),
+                    if is_fluid.contains(WATER_ITEM) {
+                        items_per_cycle / 1000.0
+                    } else {
+                        items_per_cycle
+                    },
+                )],
                 produced_in: vec![pump.clone()],
                 variable_power_mw: None,
             },
@@ -964,7 +974,16 @@ pub fn parse_docs(text: &str, build_version: &str) -> Result<GameData, DocsError
                         display_name,
                         duration_s: cycle_time_s,
                         ingredients: Vec::new(),
-                        products: vec![(item.clone(), items_per_cycle * purity_factor(purity))],
+                        // Fracking pulls fluids/gases (oil/nitrogen/water) — raw
+                        // mL-scale mItemsPerCycle → ÷1000 to m³ like water above.
+                        products: vec![(item.clone(), {
+                            let amt = items_per_cycle * purity_factor(purity);
+                            if is_fluid.contains(item) {
+                                amt / 1000.0
+                            } else {
+                                amt
+                            }
+                        })],
                         produced_in: vec![extractor.clone()],
                         variable_power_mw: None,
                     },
@@ -1004,7 +1023,14 @@ pub fn purity_factor(purity: &str) -> f64 {
     }
 }
 
-pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64) -> f64 {
+/// items/min a node-bound extractor pulls at `purity`×`clock`. `fluid` = the
+/// EXTRACTED item is a fluid (the caller knows it from the node): the game stores
+/// `mItemsPerCycle` in raw mL-scale units for fluids, so a fluid extractor's
+/// per-cycle amount is ÷1000 to m³ — the same normalization every fluid RECIPE
+/// gets (see the `is_fluid` pass in `parse_docs`). Without it an Oil Pump / Water
+/// Extractor reads 1000× its true rate (120000 vs 120 m³/min), which then
+/// underflows the group clock when it's sized to an m³ target.
+pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64, fluid: bool) -> f64 {
     let MachineKind::Extractor {
         items_per_cycle,
         cycle_time_s,
@@ -1012,8 +1038,12 @@ pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64) -> f64 {
     else {
         return 0.0;
     };
-    let base = items_per_cycle / cycle_time_s * 60.0;
-    base * purity_factor(purity) * clock
+    let per_cycle = if fluid {
+        items_per_cycle / 1000.0
+    } else {
+        *items_per_cycle
+    };
+    per_cycle / cycle_time_s * 60.0 * purity_factor(purity) * clock
 }
 
 #[cfg(test)]
@@ -1084,16 +1114,18 @@ mod tests {
         let miner = &gd.machines["Build_MinerMk1_C"];
         // Extractor arm wires footprint_m too: 600×1400 cm → 6×14 m.
         assert_eq!(miner.footprint_m, Some((6.0, 14.0)));
-        assert_eq!(extraction_rate(miner, "normal", 1.0), 60.0);
-        assert_eq!(extraction_rate(miner, "pure", 1.0), 120.0);
-        assert_eq!(extraction_rate(miner, "impure", 1.0), 30.0);
+        // Solids: no ÷1000. Mk1 miner = 1/cycle at 1s → 60/min normal.
+        assert_eq!(extraction_rate(miner, "normal", 1.0, false), 60.0);
+        assert_eq!(extraction_rate(miner, "pure", 1.0, false), 120.0);
+        assert_eq!(extraction_rate(miner, "impure", 1.0, false), 30.0);
         // Fluid extraction: the Oil Extractor parses off the same
         // FGBuildableResourceExtractor arm and purity-scales identically —
-        // 120/min normal (2/cycle at 1s), never a miner-tier concept.
+        // 120 m³/min normal (raw 2000/cycle at 1s → ÷1000 → 2 m³/cycle), never a
+        // miner-tier concept. `fluid: true` applies the mL→m³ normalization.
         let pump = &gd.machines["Build_OilPump_C"];
-        assert_eq!(extraction_rate(pump, "normal", 1.0), 120.0);
-        assert_eq!(extraction_rate(pump, "pure", 1.0), 240.0);
-        assert_eq!(extraction_rate(pump, "impure", 1.0), 60.0);
+        assert_eq!(extraction_rate(pump, "normal", 1.0, true), 120.0);
+        assert_eq!(extraction_rate(pump, "pure", 1.0, true), 240.0);
+        assert_eq!(extraction_rate(pump, "impure", 1.0, true), 60.0);
         // full buildable catalog: everything FGBuildable* is displayable
         assert_eq!(
             gd.buildables["Build_ConveyorAttachmentSplitter_C"].display_name,
@@ -1171,16 +1203,16 @@ mod tests {
     fn synthesizes_fracking_extraction_recipes_per_resource() {
         let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
         // The Resource Well Extractor parses as an Extractor machine, 0 power (the
-        // Pressurizer pays). NOTE: the fixture uses m³-scale mItemsPerCycle values
-        // (1.0 here, 2.0 for the water pump) rather than the real Docs.json's
-        // larger raw counts, so the solver's raw rate reads DIRECTLY in m³/min in
-        // tests (1/cycle ÷ 1 s = 60). The ÷1000 fluid scaling on real data happens
-        // at DISPLAY (renderer), not on items_per_cycle — do NOT "fix" the fixture
-        // to real values or every fluid test rate would be off by 1000×.
+        // Pressurizer pays). The fixture carries the game's REAL raw mL-scale
+        // mItemsPerCycle (1000 here, 2000 for the water pump) — the ÷1000 fluid
+        // normalization to m³ happens in the synthesis / `extraction_rate` (gated
+        // on the extracted item being a fluid), so 1000/cycle → 1 m³/cycle → 60
+        // m³/min normal. (Before, the fixture hand-authored m³-scale values, which
+        // masked a real-docs bug: fluid extractors read 1000× their true rate.)
         let fe = &gd.machines["Build_FrackingExtractor_C"];
         assert!(
             matches!(fe.kind, MachineKind::Extractor { items_per_cycle, cycle_time_s }
-                if items_per_cycle == 1.0 && cycle_time_s == 1.0)
+                if items_per_cycle == 1000.0 && cycle_time_s == 1.0)
         );
         assert_eq!(fe.power_mw, 0.0, "the Pressurizer pays the power");
         // Unlike the water pump (always Water), it gets a synthesized extraction

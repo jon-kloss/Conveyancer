@@ -354,7 +354,7 @@
     "ClassName": "Build_OilPump_C",
     "mDisplayName": "Oil Extractor",
     "mPowerConsumption": "40.000000",
-    "mItemsPerCycle": "2.000000",
+    "mItemsPerCycle": "2000.000000",
     "mExtractCycleTime": "1.000000"
    }
   ]
@@ -366,7 +366,7 @@
     "ClassName": "Build_WaterPump_C",
     "mDisplayName": "Water Extractor",
     "mPowerConsumption": "20.000000",
-    "mItemsPerCycle": "2.000000",
+    "mItemsPerCycle": "2000.000000",
     "mExtractCycleTime": "1.000000"
    }
   ]
@@ -378,7 +378,7 @@
     "ClassName": "Build_FrackingExtractor_C",
     "mDisplayName": "Resource Well Extractor",
     "mPowerConsumption": "0.000000",
-    "mItemsPerCycle": "1.000000",
+    "mItemsPerCycle": "1000.000000",
     "mExtractCycleTime": "1.000000",
     "mAllowedResources": "(\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/RawResources/CrudeOil/Desc_LiquidOil.Desc_LiquidOil_C'\",\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/RawResources/NitrogenGas/Desc_NitrogenGas.Desc_NitrogenGas_C'\",\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/RawResources/Water/Desc_Water.Desc_Water_C'\")"
    }
