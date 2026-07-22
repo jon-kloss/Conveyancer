@@ -1110,10 +1110,8 @@ pub fn global_solve(
     // the new IN port must also be belted to every stage that eats the item,
     // or the site graph solves to zero.
     for (port, item, take) in &surplus_taken {
-        let src = state
-            .ports
-            .get(port)
-            .and_then(|p| state.factories.get(&p.factory));
+        let src_port = state.ports.get(port);
+        let src = src_port.and_then(|p| state.factories.get(&p.factory));
         let src_name = src.map(|f| f.name.clone()).unwrap_or_default();
         let src_pos = src.map(|f| f.position).unwrap_or(MapPos {
             x: 0.0,
@@ -1121,7 +1119,54 @@ pub fn global_solve(
             z: 0.0,
         });
         let alias = format!("surplus.{item}");
-        let mut route_cmds = vec![
+        let mut route_cmds = Vec::new();
+        let mut route_aliases: Vec<Option<String>> = Vec::new();
+        // Split at the output level on a PARTIAL take (like teeing a splitter
+        // off the belt in-game): a route binds its whole port, so without the
+        // split the untaken remainder would be stranded — bound away from
+        // every future surplus scan. Resize the tapped port to the take and
+        // mint a wired sibling OUT port carrying the remainder, which stays
+        // unbound and therefore stays consumable surplus. ◆ Built ports are
+        // game ground truth (their rate is the observed export) — never
+        // resized, they keep the whole-port bind.
+        let remainder = src_port.map(|p| p.rate - take).unwrap_or(0.0);
+        let split = src_port.is_some_and(|p| p.status == Status::Planned) && remainder > 0.05;
+        if split {
+            let p = src_port.unwrap();
+            let keep_alias = format!("surplus_keep.{item}");
+            route_cmds.push(Command::AddPort {
+                factory: p.factory.clone(),
+                direction: PortDirection::Out,
+                item: item.clone(),
+                rate: remainder,
+                rate_ceiling: None,
+                graph_pos: GraphPos {
+                    x: p.graph_pos.x,
+                    y: p.graph_pos.y + 128.0,
+                },
+            });
+            route_aliases.push(Some(keep_alias.clone()));
+            // Wire the sibling from everything that feeds the tapped port so
+            // its share keeps flowing (an unwired OUT port solves to zero).
+            for e in state.edges.values() {
+                if e.factory == p.factory && e.to == EdgeEnd::Port(port.clone()) {
+                    route_cmds.push(Command::AddEdge {
+                        factory: p.factory.clone(),
+                        from: e.from.clone(),
+                        to: EdgeEnd::Port(format!("${keep_alias}")),
+                        item: item.clone(),
+                        tier: e.tier,
+                    });
+                    route_aliases.push(None);
+                }
+            }
+            route_cmds.push(Command::SetPortRate {
+                id: port.clone(),
+                rate: *take,
+            });
+            route_aliases.push(None);
+        }
+        route_cmds.extend([
             Command::AddPort {
                 factory: "$site".into(),
                 direction: PortDirection::In,
@@ -1145,8 +1190,8 @@ pub fn global_solve(
                 to: format!("${alias}"),
                 path: vec![src_pos, site_pos],
             },
-        ];
-        let mut route_aliases = vec![Some(alias.clone()), None];
+        ]);
+        route_aliases.extend([Some(alias.clone()), None]);
         for st in &stages {
             let consumes = gd
                 .recipes
@@ -1169,7 +1214,16 @@ pub fn global_solve(
             kind: ProposalItemKind::RouteAdd,
             included: true,
             label: format!("⟶ {} ⟶ {}", src_name.to_uppercase(), site_name),
-            detail: format!("{} {:.1}/min from surplus", item_name(item), take),
+            detail: if split {
+                format!(
+                    "{} {:.1}/min from surplus · {:.1}/min stays exported",
+                    item_name(item),
+                    take,
+                    remainder
+                )
+            } else {
+                format!("{} {:.1}/min from surplus", item_name(item), take)
+            },
             impact: "REUSES SURPLUS".into(),
             commands: route_cmds,
             aliases: route_aliases,
