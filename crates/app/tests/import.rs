@@ -1422,7 +1422,107 @@ fn geothermal_cluster_names_itself_and_counts_generation() {
     let gen = hydrated["derived"]["totalGenerationMw"].as_f64().unwrap();
     assert!(
         (gen - 400.0).abs() < 1e-6,
-        "2 geothermal x 200 MW average counts as generation, got {gen}"
+        "2 geothermal off any geyser fall back to flat 200 MW each, got {gen}"
+    );
+}
+
+/// An imported geothermal generator purity-scales its MW from the geyser it sits
+/// on — 100/200/400 for impure/normal/pure — matching a PLACED one, instead of a
+/// flat 200. Purity is resolved by nearest position in the world catalog (a
+/// generator carries no node ref), and rides the group clock (0.5/1/2) so
+/// `inject_generator_nameplates` credits 200 MW × clock. Coords + purities are
+/// real geysers from the bundled `world-nodes.json`.
+#[test]
+fn imported_geothermal_purity_scales_from_its_geyser() {
+    for (x, y, purity, mw) in [
+        (493.4, -546.7, "impure", 100.0),
+        (701.9, -141.0, "normal", 200.0),
+        (-497.9, -1624.2, "pure", 400.0),
+    ] {
+        let mut s = Session::in_memory(None).unwrap();
+        s.import_save(snapshot(vec![m("Build_GeneratorGeoThermal_C", "", x, y)]))
+            .unwrap();
+        let g = s
+            .state
+            .groups
+            .values()
+            .find(|g| g.machine == "Build_GeneratorGeoThermal_C")
+            .expect("imported geothermal group");
+        assert_eq!(
+            g.clock,
+            gamedata::docs::purity_factor(purity),
+            "clock encodes the {purity} geyser's purity"
+        );
+        let gen = s.solve_all_readonly().total_generation_mw;
+        assert!(
+            (gen - mw).abs() < 1e-4,
+            "{purity} geyser → {mw} MW (200 × {}), got {gen}",
+            gamedata::docs::purity_factor(purity)
+        );
+    }
+}
+
+/// A purity-scaled imported geothermal re-imports IN SYNC — the purity-clock is
+/// derived deterministically from the same geyser, so the recipe-less group's
+/// identity is stable and re-sync shows no phantom drift.
+#[test]
+fn reimporting_a_purity_scaled_geothermal_is_in_sync() {
+    let mut s = Session::in_memory(None).unwrap();
+    let snap = || snapshot(vec![m("Build_GeneratorGeoThermal_C", "", 493.4, -546.7)]);
+    assert!(matches!(
+        s.import_save(snap()).unwrap(),
+        ImportOutcome::Imported { .. }
+    ));
+    assert!(
+        matches!(s.import_save(snap()).unwrap(), ImportOutcome::InSync),
+        "a purity-scaled geothermal re-imports in sync"
+    );
+}
+
+/// Two geothermal on DIFFERENT-purity geysers 33.5 m apart (one DBSCAN cluster):
+/// they stay in ONE recipe-less group and AVERAGE their purity-clocks — the
+/// empire total is still correct (100 + 200 = 300 MW) and the group identity
+/// stays stable for re-import. This is the mixed-purity case the averaging (vs a
+/// per-purity split) is designed for. Coords are the real impure+normal pair.
+#[test]
+fn imported_geothermal_mixed_purity_cluster_averages_correctly() {
+    let machines = || {
+        vec![
+            m("Build_GeneratorGeoThermal_C", "", 926.2, -315.7), // impure (0.5)
+            m("Build_GeneratorGeoThermal_C", "", 958.9, -308.5), // normal (1.0)
+        ]
+    };
+    let mut s = Session::in_memory(None).unwrap();
+    s.import_save(snapshot(machines())).unwrap();
+
+    // one cluster → one factory → ONE recipe-less geothermal group of 2 at the
+    // averaged clock (0.5 + 1.0) / 2 = 0.75, NOT two per-purity groups.
+    let geo: Vec<_> = s
+        .state
+        .groups
+        .values()
+        .filter(|g| g.machine == "Build_GeneratorGeoThermal_C")
+        .collect();
+    assert_eq!(geo.len(), 1, "one recipe-less group, not split per purity");
+    assert_eq!(geo[0].count, 2);
+    assert!(
+        (geo[0].clock - 0.75).abs() < 1e-9,
+        "averaged purity-clock: {}",
+        geo[0].clock
+    );
+    let gen = s.solve_all_readonly().total_generation_mw;
+    assert!(
+        (gen - 300.0).abs() < 1e-4,
+        "empire total = 100 (impure) + 200 (normal) = 300 MW, got {gen}"
+    );
+
+    // the recipe-less identity stays stable — the mixed cluster re-imports in sync.
+    assert!(
+        matches!(
+            s.import_save(snapshot(machines())).unwrap(),
+            ImportOutcome::InSync
+        ),
+        "mixed-purity cluster re-imports in sync"
     );
 }
 
