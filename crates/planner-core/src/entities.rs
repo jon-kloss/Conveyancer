@@ -212,8 +212,9 @@ pub enum EdgeEnd {
     Junction(Id),
 }
 
-/// Belt-side logistics buildables. Junctions transform nothing — they only
-/// split/merge/buffer flows — so solvers treat them as conservation nodes.
+/// Logistics buildables. Junctions transform nothing — they only split/merge/
+/// buffer flows — so solvers treat them as conservation nodes. All but
+/// `PipeJunction` are belt-side (solids); `PipeJunction` is the fluid one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JunctionKind {
@@ -222,10 +223,17 @@ pub enum JunctionKind {
     ProgrammableSplitter,
     Merger,
     Storage,
+    /// The Pipeline Junction Cross — ONE 4-way fluid building that both merges
+    /// and splits (game-accurate: not separate pipe splitter/merger). Carries
+    /// fluids only; see [`JunctionKind::is_pipe`] and the session-layer guard.
+    PipeJunction,
 }
 
 impl JunctionKind {
-    /// Physical port budget (inputs, outputs) — game constraints, enforced on connect.
+    /// Physical port budget (inputs, outputs) — game constraints, enforced on
+    /// connect. The Pipeline Junction Cross has 4 ports usable in ANY in/out
+    /// mix, so each direction caps at 4 and a separate total-≤4 rule (see
+    /// AddEdge validation) is what actually bounds it.
     pub fn port_caps(&self) -> (usize, usize) {
         match self {
             JunctionKind::Splitter
@@ -233,7 +241,15 @@ impl JunctionKind {
             | JunctionKind::ProgrammableSplitter => (1, 3),
             JunctionKind::Merger => (3, 1),
             JunctionKind::Storage => (1, 1),
+            JunctionKind::PipeJunction => (4, 4),
         }
+    }
+
+    /// The Pipeline Junction Cross carries FLUIDS; every other kind is belt-side
+    /// (solids). Drives the session-layer fluid-vs-junction connect guard and
+    /// the graph's pipe styling.
+    pub fn is_pipe(&self) -> bool {
+        matches!(self, JunctionKind::PipeJunction)
     }
 
     /// Default buildable class for display/footprint lookup.
@@ -244,6 +260,7 @@ impl JunctionKind {
             JunctionKind::ProgrammableSplitter => "Build_ConveyorAttachmentSplitterProgrammable_C",
             JunctionKind::Merger => "Build_ConveyorAttachmentMerger_C",
             JunctionKind::Storage => "Build_StorageContainerMk1_C",
+            JunctionKind::PipeJunction => "Build_PipelineJunction_Cross_C",
         }
     }
 }

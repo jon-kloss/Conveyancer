@@ -567,6 +567,358 @@ fn junctions_split_and_enforce_port_caps() {
     );
 }
 
+/// The Pipeline Junction Cross carries FLUIDS only; a belt junction carries
+/// SOLIDS only. The medium follows the item (fluids ride pipes, solids ride
+/// belts), enforced on connect at the session layer.
+#[test]
+fn pipe_junction_carries_fluids_belt_junction_carries_solids() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "PIPE HALL", 0.0);
+
+    // a Pipeline Junction Cross — defaults to the real 4-way buildable.
+    let cross_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::PipeJunction,
+            graph_pos: gp(400.0, 200.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    assert_eq!(
+        s.state.junctions[&cross_id].buildable,
+        "Build_PipelineJunction_Cross_C"
+    );
+    let cross = EdgeEnd::Junction(cross_id);
+
+    // WATER (fluid) rides the cross — allowed.
+    let w_in = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", Some(600.0));
+    s.edit(vec![Command::AddEdge {
+        factory: f.clone(),
+        from: EdgeEnd::Port(w_in),
+        to: cross.clone(),
+        item: "Desc_Water_C".into(),
+        tier: 1,
+    }])
+    .expect("a fluid rides the pipe junction");
+
+    let edges_before = s.state.edges.len();
+
+    // COAL (solid) onto the cross — rejected with the fluid-only message (not
+    // some unrelated error), and the rejected edit leaves NO trace.
+    let c_in = mk_port(&mut s, &f, PortDirection::In, "Desc_Coal_C", Some(240.0));
+    let err = s
+        .edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(c_in),
+            to: cross.clone(),
+            item: "Desc_Coal_C".into(),
+            tier: 1,
+        }])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("carries fluids only"),
+        "solid rejection names the fluid rule: {err}"
+    );
+    assert_eq!(
+        s.state.edges.len(),
+        edges_before,
+        "a rejected edge rolls back cleanly — no phantom edge"
+    );
+
+    // a SECOND, DIFFERENT fluid (Liquid Fuel) onto the cross — rejected by the
+    // single-item rule (a cross carries one fluid, like a splitter/merger).
+    let fuel_in = mk_port(
+        &mut s,
+        &f,
+        PortDirection::In,
+        "Desc_LiquidFuel_C",
+        Some(600.0),
+    );
+    let err = s
+        .edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(fuel_in),
+            to: cross.clone(),
+            item: "Desc_LiquidFuel_C".into(),
+            tier: 1,
+        }])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("different item"),
+        "a cross carries a single fluid: {err}"
+    );
+
+    // conversely, WATER onto a belt SPLITTER — rejected with the "needs a pipe"
+    // message (fluids ride pipes, not belt junctions).
+    let belt_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::Splitter,
+            graph_pos: gp(400.0, 400.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let w_in2 = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", Some(600.0));
+    let err = s
+        .edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(w_in2),
+            to: EdgeEnd::Junction(belt_id),
+            item: "Desc_Water_C".into(),
+            tier: 1,
+        }])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Pipeline Junction"),
+        "fluid-on-belt rejection points at the pipe junction: {err}"
+    );
+
+    // an UNKNOWN item (not in the catalog) defaults to SOLID (the belt default,
+    // like transport_capacity) — so it's refused on the fluid cross. Guards the
+    // `unwrap_or(false)` fluid default against an accidental invert to fluid.
+    let x_in = mk_port(&mut s, &f, PortDirection::In, "Desc_Coal_C", Some(240.0));
+    let err = s
+        .edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from: EdgeEnd::Port(x_in),
+            to: cross.clone(),
+            item: "Desc_NotAnItem_C".into(),
+            tier: 1,
+        }])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("carries fluids only"),
+        "an unknown item defaults to solid and is refused on the cross: {err}"
+    );
+}
+
+/// A serde wire-format pin: the Pipeline Junction Cross serializes as
+/// `"pipe_junction"` — the EXACT string the TS `JunctionKind` union and the
+/// GraphView picker use. A rename on either side would silently corrupt saved
+/// plans (Rust writes one string, TS reads another), and nothing else guards it.
+#[test]
+fn pipe_junction_kind_serializes_as_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&JunctionKind::PipeJunction).unwrap(),
+        "\"pipe_junction\""
+    );
+    assert_eq!(
+        serde_json::from_str::<JunctionKind>("\"pipe_junction\"").unwrap(),
+        JunctionKind::PipeJunction
+    );
+}
+
+/// Fluid actually FLOWS and CONSERVES through the cross — the whole point of the
+/// feature. Water supplied through the junction and split to two sinks: each
+/// out-edge carries its sink's demand and the in-edge carries their sum (Σin =
+/// Σout at the conservation node). Mirrors the belt splitter's conservation
+/// assertion in `junctions_split_and_enforce_port_caps`.
+#[test]
+fn pipe_junction_conserves_fluid_flow() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "PIPE HALL", 0.0);
+    let cross_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::PipeJunction,
+            graph_pos: gp(400.0, 200.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let cross = EdgeEnd::Junction(cross_id.clone());
+
+    // water supply → cross → two demand sinks (a real split).
+    let src = mk_port(&mut s, &f, PortDirection::In, "Desc_Water_C", Some(600.0));
+    let out_a = mk_port(&mut s, &f, PortDirection::Out, "Desc_Water_C", None);
+    let out_b = mk_port(&mut s, &f, PortDirection::Out, "Desc_Water_C", None);
+    connect_ends(
+        &mut s,
+        &f,
+        EdgeEnd::Port(src.clone()),
+        cross.clone(),
+        "Desc_Water_C",
+        1,
+    );
+    connect_ends(
+        &mut s,
+        &f,
+        cross.clone(),
+        EdgeEnd::Port(out_a.clone()),
+        "Desc_Water_C",
+        1,
+    );
+    connect_ends(
+        &mut s,
+        &f,
+        cross.clone(),
+        EdgeEnd::Port(out_b.clone()),
+        "Desc_Water_C",
+        1,
+    );
+
+    // demand 200 + 100 at the two sinks pulls 300 through the cross.
+    s.edit(vec![Command::SetPortRate {
+        id: out_a.clone(),
+        rate: 200.0,
+    }])
+    .unwrap();
+    let r = s
+        .edit(vec![Command::SetPortRate {
+            id: out_b.clone(),
+            rate: 100.0,
+        }])
+        .unwrap();
+    let df = &r.derived.factories[&f];
+
+    let edge_flow = |from: EdgeEnd, to: EdgeEnd| -> f64 {
+        s.state
+            .edges
+            .values()
+            .find(|e| e.from == from && e.to == to)
+            .and_then(|e| df.edges.get(&e.id))
+            .map(|d| d.flow)
+            .unwrap_or(0.0)
+    };
+    let in_flow = edge_flow(EdgeEnd::Port(src), cross.clone());
+    let a_flow = edge_flow(cross.clone(), EdgeEnd::Port(out_a));
+    let b_flow = edge_flow(cross, EdgeEnd::Port(out_b));
+    assert!((a_flow - 200.0).abs() < 1e-4, "sink A pulls 200: {a_flow}");
+    assert!((b_flow - 100.0).abs() < 1e-4, "sink B pulls 100: {b_flow}");
+    assert!(
+        (in_flow - (a_flow + b_flow)).abs() < 1e-4,
+        "conservation through the cross: {in_flow} in == {a_flow} + {b_flow} out"
+    );
+}
+
+/// Expanding a FLUID bank fans through PIPE junctions, not belt splitters/mergers
+/// — the same "fluids ride pipes" invariant the AddEdge guard enforces, upheld on
+/// the expand path (which builds junctions directly, not via AddEdge). A refinery
+/// bank (oil in, liquid fuel out — both fluids) must produce only PipeJunctions.
+#[test]
+fn expanding_a_fluid_bank_fans_through_pipe_junctions() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "REFINERY ROW", 0.0);
+    let oil = mk_port(
+        &mut s,
+        &f,
+        PortDirection::In,
+        "Desc_LiquidOil_C",
+        Some(600.0),
+    );
+    let fuel = mk_port(&mut s, &f, PortDirection::Out, "Desc_LiquidFuel_C", None);
+    let bank = add_group(
+        &mut s,
+        &f,
+        "Build_OilRefinery_C",
+        "Recipe_LiquidFuel_C",
+        gp(320.0, 100.0),
+    );
+    // wire fluid in + fluid out to the bank (edges touch a GROUP, so the fluid
+    // guard doesn't apply — the fan trees are what must go pipe).
+    connect(
+        &mut s,
+        &f,
+        EdgeEnd::Port(oil),
+        EdgeEnd::Group(bank.clone()),
+        "Desc_LiquidOil_C",
+        1,
+    );
+    connect(
+        &mut s,
+        &f,
+        EdgeEnd::Group(bank.clone()),
+        EdgeEnd::Port(fuel),
+        "Desc_LiquidFuel_C",
+        1,
+    );
+    // make it a ×2 bank so expand actually fans.
+    s.edit(vec![Command::SetGroupCount {
+        id: bank.clone(),
+        count: 2,
+    }])
+    .unwrap();
+
+    let junctions_before = s.state.junctions.len();
+    s.edit(vec![Command::ExpandGroup { id: bank }]).unwrap();
+    let new_junctions: Vec<&planner_core::entities::Junction> =
+        s.state.junctions.values().collect();
+    assert!(
+        new_junctions.len() > junctions_before,
+        "expand fanned the bank into junctions"
+    );
+    // EVERY junction the expand created is a pipe junction — no belt splitter or
+    // merger carrying a fluid.
+    assert!(
+        new_junctions
+            .iter()
+            .all(|j| j.kind == JunctionKind::PipeJunction),
+        "a fluid bank fans through pipe junctions only, got: {:?}",
+        new_junctions.iter().map(|j| j.kind).collect::<Vec<_>>()
+    );
+}
+
+/// The Pipeline Junction Cross has 4 physical ports usable in ANY in/out mix —
+/// so the binding limit is the TOTAL (2 in + 2 out = 4), not per-direction, and
+/// a 5th connection of either direction is refused.
+#[test]
+fn pipe_junction_caps_at_four_total_ports() {
+    let mut s = Session::in_memory(None).unwrap();
+    let f = mk_factory(&mut s, "PIPE HALL", 0.0);
+    let cross_id = s
+        .edit(vec![Command::AddJunction {
+            factory: f.clone(),
+            kind: JunctionKind::PipeJunction,
+            graph_pos: gp(400.0, 200.0),
+            floor: 0,
+        }])
+        .unwrap()
+        .created[0]
+        .clone();
+    let cross = EdgeEnd::Junction(cross_id);
+
+    let water_edge = |s: &mut Session, end: EdgeEnd, into: bool| {
+        let dir = if into {
+            PortDirection::In
+        } else {
+            PortDirection::Out
+        };
+        let p = mk_port(s, &f, dir, "Desc_Water_C", Some(600.0));
+        let (from, to) = if into {
+            (EdgeEnd::Port(p), end)
+        } else {
+            (end, EdgeEnd::Port(p))
+        };
+        s.edit(vec![Command::AddEdge {
+            factory: f.clone(),
+            from,
+            to,
+            item: "Desc_Water_C".into(),
+            tier: 1,
+        }])
+    };
+
+    // 2 in + 2 out = the 4-way cross, all accepted.
+    water_edge(&mut s, cross.clone(), true).expect("in 1");
+    water_edge(&mut s, cross.clone(), true).expect("in 2");
+    water_edge(&mut s, cross.clone(), false).expect("out 1");
+    water_edge(&mut s, cross.clone(), false).expect("out 2");
+
+    // a 5th connection (an "in", well within the (4,4) per-direction cap — only
+    // 2 ins exist) is refused specifically by the total-of-4 rule, not the
+    // per-direction budget: the message names the 4-port total.
+    let err = water_edge(&mut s, cross.clone(), true).unwrap_err();
+    assert!(
+        err.to_string().contains("all 4 ports connected"),
+        "the 5th is refused by the total-of-4 rule: {err}"
+    );
+}
+
 fn connect_ends(s: &mut Session, fid: &str, from: EdgeEnd, to: EdgeEnd, item: &str, tier: u8) {
     s.edit(vec![Command::AddEdge {
         factory: fid.into(),

@@ -72,7 +72,13 @@ export interface Port {
 
 export type EdgeEnd = { kind: "group"; id: Id } | { kind: "port"; id: Id } | { kind: "junction"; id: Id };
 
-export type JunctionKind = "splitter" | "smart_splitter" | "programmable_splitter" | "merger" | "storage";
+export type JunctionKind =
+  | "splitter"
+  | "smart_splitter"
+  | "programmable_splitter"
+  | "merger"
+  | "storage"
+  | "pipe_junction";
 
 export interface Junction {
   id: Id;
@@ -92,7 +98,14 @@ export const JUNCTION_CAPS: Record<JunctionKind, [number, number]> = {
   programmable_splitter: [1, 3],
   merger: [3, 1],
   storage: [1, 1],
+  // The Pipeline Junction Cross has 4 ports usable in any in/out mix; the
+  // binding limit is a TOTAL of 4 (enforced server-side), so each side caps at 4.
+  pipe_junction: [4, 4],
 };
+
+/** The one FLUID junction — the Pipeline Junction Cross. Every other kind is
+ *  belt-side (solids). Mirrors Rust `JunctionKind::is_pipe`. */
+export const isPipeJunction = (kind: JunctionKind): boolean => kind === "pipe_junction";
 
 export interface BeltEdge {
   id: Id;
