@@ -60,7 +60,7 @@ jobs:
         run: cargo build -p web --target wasm32-unknown-unknown
       - name: web wasm pkg in sync # committed web-pkg must match crates/web (no compiler needed)
         run: ./scripts/regen-web-wasm.sh check
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - uses: jetli/wasm-pack-action@v0.4.0
@@ -100,7 +100,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.13.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -130,7 +130,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.13.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -186,7 +186,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.13.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
