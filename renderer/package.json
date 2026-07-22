@@ -27,7 +27,7 @@
     "@xyflow/react": "^12.8.4",
     "leaflet": "^1.9.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "react-dom": "^19.2.8",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
