@@ -736,3 +736,82 @@ test("22 DATA menu: start-new-empire needs a two-click confirm, then wipes the p
   await expect(page.getByTestId("onboarding")).toBeVisible();
   await shot(page, test.info(), "wiped", "Confirmed: the whole plan is gone and the empty-plan onboarding returns.");
 });
+
+// ---------------------------------------------------------------------------
+test("23 showcase: a full Modular Frame chain — multi-stage graph and close-up map", async ({ page, request }) => {
+  // Runs on the empty plan test 22 left behind, so the wizard must build the
+  // WHOLE chain (no surplus to route from): ore claim → smelters → rod / plate
+  // constructors → screws → reinforced-plate assemblers → frame assemblers.
+  await bootMap(page, request);
+
+  await page.keyboard.press("p");
+  await expect(page.getByTestId("wizard-modal")).toBeVisible();
+  await page.getByTestId("wizard-item").fill("modular frame");
+  await page.getByTestId("wizard-item-option").first().click();
+  await page.fill('[data-testid="wizard-rate"]', "10");
+  await page.click('[data-testid="wizard-solve"]');
+  const review = page.getByTestId("proposal-review");
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  await shot(page, test.info(), "frame-proposal", "The wizard's plan for 10/min Modular Frames — the whole six-recipe chain sized in one proposal.");
+  await page.getByTestId("btn-accept-proposal").click();
+  await expect(review).toBeHidden();
+
+  const h = await hydrate(request);
+  const works = Object.values<{ id: string; name: string }>(h.plan.factories).find((x) =>
+    x.name.includes("MODULAR"),
+  );
+  expect(works, "a MODULAR FRAME factory was created").toBeTruthy();
+  const groups = Object.values<{ factory: string; recipe: string }>(h.plan.groups).filter(
+    (x) => x.factory === works!.id,
+  );
+  // the full chain, not a stub: at least frames + reinforced + plates + rods +
+  // screws + ingots
+  expect(groups.length).toBeGreaterThanOrEqual(5);
+
+  await page.keyboard.press("f");
+  await page.waitForTimeout(500);
+  const pc = await pinCenter(page, works!.name);
+  await page.mouse.click(pc.x, pc.y);
+  await page.getByTestId("btn-open-factory").click();
+  const graph = page.getByTestId("graph-root");
+  await expect(graph).toBeVisible();
+  await expect(graph).toContainText("ASSEMBLER");
+  await expect(graph).toContainText("SMELTER");
+  await expect(graph).toContainText("Modular Frame");
+  await shot(page, test.info(), "frame-graph", "The materialized six-stage build: smelters through assemblers, every belt and clock solved.");
+
+  // Close-up: ctrl-wheel zooms React Flow in on the assembler end of the
+  // chain, so card anatomy (icon, count, clock chip, footprint, power) is
+  // readable in the shot.
+  const card = graph.locator(".group-card").last();
+  const box = (await card.boundingBox())!;
+  await page.evaluate(
+    ({ x, y }) => {
+      const pane = document.querySelector(".react-flow__pane") as HTMLElement;
+      for (let i = 0; i < 4; i++)
+        pane.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: -240, clientX: x, clientY: y, bubbles: true, cancelable: true, ctrlKey: true }),
+        );
+    },
+    { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+  );
+  await page.waitForTimeout(600);
+  await shot(page, test.info(), "frame-cards-closeup", "Card anatomy up close: machine icon + count, clock chip, per-item rates, footprint strip, IN/OUT and power draw.");
+
+  // Map close-up: frame the factory, then wheel in twice on the pin so the
+  // pin card, claim tethers and node labels are legible.
+  await page.getByRole("button", { name: "WORLD MAP" }).click();
+  await expect(page.getByTestId("map-root")).toBeVisible();
+  await page.keyboard.press("f");
+  await page.waitForTimeout(600);
+  const pc2 = await pinCenter(page, works!.name);
+  await page.evaluate(
+    ({ x, y }) => {
+      const el = document.querySelector(".leaflet-container") as HTMLElement;
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -720, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+    },
+    { x: pc2.x, y: pc2.y },
+  );
+  await page.waitForTimeout(900);
+  await shot(page, test.info(), "frame-map-closeup", "The same factory on the world map, zoomed in: pin card, claim tether to its iron node, purity-labelled nodes around it.");
+});

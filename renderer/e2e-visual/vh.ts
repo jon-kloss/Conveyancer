@@ -16,6 +16,19 @@ function append(entry: Record<string, unknown>): void {
   fs.appendFileSync(RESULTS, JSON.stringify({ ts: Date.now(), ...entry }) + "\n");
 }
 
+/** Wait until the compositor has actually PRESENTED the current DOM. A
+ *  DOM-ready assertion (toContainText) resolves before freshly-promoted
+ *  composited layers rasterize — React Flow's zoomed node layer in the
+ *  factory graph raced the capture and screenshotted as empty card frames
+ *  (DOM + computed styles verified healthy at shot time). Two rAFs guarantee
+ *  a produced frame; the settle covers raster/present of new layers. */
+async function settlePaint(page: Page): Promise<void> {
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null)))),
+  );
+  await page.waitForTimeout(400);
+}
+
 /** Screenshot the full page into out/shots and record it for the report. */
 export async function shot(page: Page, testInfo: TestInfo, slug: string, caption: string): Promise<void> {
   // order-stable name: test index + per-test sequence
@@ -24,6 +37,28 @@ export async function shot(page: Page, testInfo: TestInfo, slug: string, caption
   const test = testInfo.title;
   const nn = test.slice(0, 2); // tests are titled "01 …", "02 …"
   const file = `${nn}-${String(seq).padStart(2, "0")}-${slug}.png`;
+  await settlePaint(page);
+  if (process.env.SHOT_DEBUG) {
+    const dbg = await page.evaluate(() => {
+      const card = document.querySelector(".group-card");
+      if (!card) return "no .group-card";
+      const cs = getComputedStyle(card);
+      const head = card.querySelector(".group-card-head");
+      const hcs = head ? getComputedStyle(head) : null;
+      const rm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      return JSON.stringify({
+        rm,
+        opacity: cs.opacity,
+        anim: cs.animationName,
+        headOpacity: hcs?.opacity,
+        headAnim: hcs?.animationName,
+        cardCls: card.className,
+        text: (card.textContent || "").slice(0, 50),
+        rect: card.getBoundingClientRect(),
+      });
+    });
+    console.log(`SHOT_DEBUG ${file}: ${dbg}`);
+  }
   await page.screenshot({ path: path.join(SHOTS, file) });
   append({ kind: "shot", test, file, caption });
 }
