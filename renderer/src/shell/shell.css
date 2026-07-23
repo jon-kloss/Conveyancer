@@ -433,6 +433,16 @@
   inset: 0;
   z-index: 39;
 }
+/* Lift BOTH titlebar dropdown triggers above the open menu's fixed backdrop
+   (z39) so a click on the OTHER trigger switches menus in one click — the
+   lifted openMenu state closes the current menu and opens the clicked one —
+   instead of the click being swallowed by the backdrop. Clicks anywhere else
+   (map, rest of the titlebar) still hit the backdrop and close the menu. */
+.data-menu-wrap > .btn,
+.empire-chip {
+  position: relative;
+  z-index: 41;
+}
 .data-menu {
   position: absolute;
   top: 36px;

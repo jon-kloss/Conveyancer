@@ -133,16 +133,11 @@ test("empires UI: the EMPIRE menu lists, creates and switches empires", async ({
 // Mutual exclusion of the two titlebar dropdowns + the disarm-on-close safety
 // property of the destructive wipe. Both are new to the DATA-screen redesign
 // (the lifted openMenu state + the moved "start over" latch) and were untested.
+// The triggers sit above the open menu's backdrop, so clicking the OTHER trigger
+// switches menus in ONE click (openMenu closes the current, opens the clicked).
 // Runs inside a throwaway empire so the seeded factory / any wipe never touches
 // the shared `original` plan.
-//
-// Note on the backdrop: while a menu is open its fixed backdrop covers the whole
-// viewport (incl. the titlebar), so the OTHER menu's button is obscured — the
-// backdrop itself enforces "only one open" (a click on the other button lands on
-// the backdrop and closes the current menu first). So we test the invariant by
-// opening each menu while the other is closed, and exercise the close paths
-// (Escape + backdrop click) that a real user actually uses.
-test("empires UI: menus are mutually exclusive; the wipe latch disarms on close", async ({ page, request }) => {
+test("empires UI: one-click menu switching; the wipe latch disarms on close", async ({ page, request }) => {
   const original = (await empires(request)).active;
   try {
     await empireOp(request, "create", { name: "LATCH E2E" }); // creates + switches to it
@@ -160,6 +155,15 @@ test("empires UI: menus are mutually exclusive; the wipe latch disarms on close"
     await expect(page.getByTestId("empires-section")).toBeVisible();
     await expect(page.getByTestId("data-menu")).toHaveCount(0);
 
+    // One-click switch: clicking DATA while EMPIRE is open switches directly —
+    // EMPIRE closes, DATA opens, never both — and back the other way.
+    await page.getByTestId("btn-data-menu").click();
+    await expect(page.getByTestId("data-menu")).toBeVisible();
+    await expect(page.getByTestId("empires-section")).toHaveCount(0);
+    await page.getByTestId("btn-empire-menu").click();
+    await expect(page.getByTestId("empires-section")).toBeVisible();
+    await expect(page.getByTestId("data-menu")).toHaveCount(0);
+
     // Arm the wipe, then close by Escape → it must disarm, or a later stray
     // single click would wipe the plan.
     const reset = page.getByTestId("btn-new-empire");
@@ -171,21 +175,15 @@ test("empires UI: menus are mutually exclusive; the wipe latch disarms on close"
     await expect(page.getByTestId("btn-new-empire")).toContainText(/Start .* over/i);
     await expect(page.getByTestId("btn-new-empire")).not.toContainText(/Click again/i);
 
-    // Same guarantee when the close happens by clicking the backdrop (the click
-    // a user makes when they "click the other button" — it lands here first).
+    // Same guarantee when the close happens by switching straight to DATA in one
+    // click — the armed wipe must disarm, not survive into the reopened menu.
     await page.getByTestId("btn-new-empire").click();
     await expect(page.getByTestId("btn-new-empire")).toContainText(/Click again/i);
-    await page.locator(".data-menu-backdrop").click();
-    await expect(page.getByTestId("empires-section")).toHaveCount(0);
-    await page.getByTestId("btn-empire-menu").click(); // reopen
-    await expect(page.getByTestId("btn-new-empire")).toContainText(/Start .* over/i);
-
-    // With the empire menu closed, DATA opens on its own — and EMPIRE is not
-    // also present (only one titlebar dropdown at a time).
-    await page.keyboard.press("Escape");
-    await page.getByTestId("btn-data-menu").click();
+    await page.getByTestId("btn-data-menu").click(); // one-click switch away
     await expect(page.getByTestId("data-menu")).toBeVisible();
     await expect(page.getByTestId("empires-section")).toHaveCount(0);
+    await page.getByTestId("btn-empire-menu").click(); // back
+    await expect(page.getByTestId("btn-new-empire")).toContainText(/Start .* over/i);
 
     // Despite two arms, the wipe never fired — the seeded factory survives.
     expect(Object.keys((await hydrate(request)).plan.factories).length).toBeGreaterThan(0);
