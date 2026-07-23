@@ -927,6 +927,7 @@ export type Command =
   | { type: "delete_junction"; id: Id }
   | { type: "add_route"; kind: RouteKind; from: Id; to: Id; path: MapPos[] }
   | { type: "set_route_tier"; id: Id; tier: number }
+  | { type: "set_route_path"; id: Id; path: MapPos[] }
   | { type: "set_route_spec"; id: Id; kind: RouteKind }
   | { type: "delete_route"; id: Id }
   | { type: "set_edge_tier"; id: Id; tier: number }

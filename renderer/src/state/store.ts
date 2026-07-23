@@ -3,6 +3,8 @@
 import { create } from "zustand";
 import { backend } from "./backend";
 import { parseSaveFile } from "../import/parseSave";
+import { loadGeometry, saveGeometry } from "../import/geometryStore";
+import type { BuiltLogistics } from "../import/logisticsGeometry";
 import { driftConflictCount } from "../import/saveHandle";
 import { applyPatches } from "./patch";
 import { friendlyError } from "./errors";
@@ -248,7 +250,7 @@ export interface AppStore {
   undoLabel: string | null;
   view: ViewMode;
   selection: Selection;
-  overlays: { flows: boolean; nodes: boolean; power: boolean; terrain: boolean };
+  overlays: { flows: boolean; nodes: boolean; power: boolean; terrain: boolean; logistics: boolean };
   /** Live map node filter (search box). Empty = no filter (all nodes shown). */
   mapFilter: string;
   /** Live factory-graph filter (header search): matching machines/items stay
@@ -282,6 +284,10 @@ export interface AppStore {
   /** Raw purchased schematic classes from the save — with gamedata.milestones
       this yields the dashboard's per-tier HUB progression. */
   purchasedSchematics: Set<string>;
+  /** As-built logistics geometry from the imported save (belts/pipes/rails/
+      power as map polylines) — renderer-side ambient layer, cached in IDB by
+      save name and re-keyed on hydrate via lastImport.saveName. */
+  builtLogistics: BuiltLogistics | null;
   /** resume dashboard overlay — auto-presents once per plan (viewState.resumeSeen) */
   dashboardOpen: boolean;
   /** PR 10 (review M7): App's Escape-deference flag for the AI-settings
@@ -362,6 +368,9 @@ export interface AppStore {
       save is a quiet no-op (no toast). Resolves with the outcome, or null on a
       read/parse failure. */
   autoPull(file: File): Promise<ImportOutcome | null>;
+  /** Persist freshly-parsed as-built geometry (IDB) and make it the live
+      LOGISTICS underlay. Called by every successful parse path. */
+  adoptLogistics(logistics: BuiltLogistics): Promise<void>;
   /** Resolves with the created ids, or null when the backend refused the
       commands (the refusal is recorded in `cmdError` — never a rejection). */
   dispatch(cmds: Command[], opts?: { select?: boolean }): Promise<Id[] | null>;
@@ -379,7 +388,7 @@ export interface AppStore {
   redo(): Promise<void>;
   setSelection(sel: Selection): void;
   setView(view: ViewMode): void;
-  setOverlay(key: "flows" | "nodes" | "power" | "terrain", on: boolean): void;
+  setOverlay(key: "flows" | "nodes" | "power" | "terrain" | "logistics", on: boolean): void;
   setMapFilter(query: string): void;
   setGraphFilter(query: string): void;
   setImportFile(f: File | null): void;
@@ -609,7 +618,7 @@ export const useStore = create<AppStore>((set, get) => ({
   undoLabel: null,
   view: { mode: "map" },
   selection: null,
-  overlays: { flows: true, nodes: true, power: true, terrain: true },
+  overlays: { flows: true, nodes: true, power: true, terrain: true, logistics: true },
   mapFilter: "",
   graphFilter: "",
   importFile: null,
@@ -628,6 +637,7 @@ export const useStore = create<AppStore>((set, get) => ({
   lastImport: null,
   unlocked: new Set(),
   purchasedSchematics: new Set(),
+  builtLogistics: null,
   dashboardOpen: false,
   aiSettingsOpen: null,
   auditRequest: null,
@@ -708,6 +718,18 @@ export const useStore = create<AppStore>((set, get) => ({
             ? { mode: "factory", factoryId: openFactory }
             : { mode: "map" },
       });
+      // Re-key the as-built LOGISTICS underlay to this plan's imported save
+      // (empire switches land here too). Async + tolerant: no geometry cached
+      // for the save just means no layer.
+      const saveName = init.lastImport?.saveName;
+      if (saveName && get().builtLogistics?.saveName !== saveName) {
+        void loadGeometry(saveName).then((g) => {
+          if (g && useStore.getState().lastImport?.saveName === g.saveName)
+            set({ builtLogistics: g });
+        });
+      } else if (!saveName && get().builtLogistics) {
+        set({ builtLogistics: null });
+      }
     } catch (e) {
       // Fatal `error` (the full-screen BACKEND UNREACHABLE card) is for a
       // failed FIRST boot only. hydrate() is also the re-projection step for
@@ -990,8 +1012,9 @@ export const useStore = create<AppStore>((set, get) => ({
   async syncImport(file) {
     let outcome: ImportOutcome;
     try {
-      const snapshot = await parseSaveFile(file);
+      const { snapshot, logistics } = await parseSaveFile(file);
       outcome = await backend.importRun(snapshot);
+      void get().adoptLogistics(logistics);
     } catch (e) {
       // No dead ends: a bad read/parse is a toast, never a crash — the manual
       // Import save flow (with its preview) remains available as a fallback.
@@ -1011,6 +1034,15 @@ export const useStore = create<AppStore>((set, get) => ({
     return outcome;
   },
 
+  async adoptLogistics(logistics) {
+    set({ builtLogistics: logistics });
+    try {
+      await saveGeometry(logistics);
+    } catch {
+      // cache miss only costs a re-parse on next boot — never an error
+    }
+  },
+
   setAutoSync(enabled, intervalMin) {
     const next = { enabled, intervalMin: intervalMin ?? get().autoSync.intervalMin };
     persistAutoSync(next.enabled, next.intervalMin);
@@ -1020,8 +1052,9 @@ export const useStore = create<AppStore>((set, get) => ({
   async autoPull(file) {
     let outcome: ImportOutcome;
     try {
-      const snapshot = await parseSaveFile(file);
+      const { snapshot, logistics } = await parseSaveFile(file);
       outcome = await backend.importRun(snapshot);
+      void get().adoptLogistics(logistics);
     } catch (e) {
       get().pushToast(`Auto-sync couldn't read the save — ${errText(e)}`, "error");
       return null;

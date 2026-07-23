@@ -4,20 +4,31 @@
 // path so both spawn the exact same parser + reducer.
 
 import type { ImportSnapshot } from "../state/types";
+import type { BuiltLogistics } from "./logisticsGeometry";
+
+/** One worker pass yields both the Rust-bound snapshot AND the renderer-side
+ *  as-built geometry — the geometry never crosses into the core (it isn't
+ *  plan state), it rides back to be cached by geometryStore. */
+export interface ParsedSave {
+  snapshot: ImportSnapshot;
+  logistics: BuiltLogistics;
+}
 
 /** Parse raw `.sav` bytes off the main thread. The desktop save-sync path
  *  reads bytes natively (Rust `read_save`) and calls this directly; the browser
  *  import/sync paths go through `parseSaveFile`, which reads the File's bytes
  *  first. Both spawn the exact same worker + reducer. */
-export function parseSaveBytes(name: string, bytes: ArrayBuffer): Promise<ImportSnapshot> {
-  return new Promise<ImportSnapshot>((resolve, reject) => {
+export function parseSaveBytes(name: string, bytes: ArrayBuffer): Promise<ParsedSave> {
+  return new Promise<ParsedSave>((resolve, reject) => {
     const worker = new Worker(new URL("./parseWorker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (e: MessageEvent<{ snapshot?: ImportSnapshot; error?: string }>) => {
+    worker.onmessage = (
+      e: MessageEvent<{ snapshot?: ImportSnapshot; logistics?: BuiltLogistics; error?: string }>,
+    ) => {
       worker.terminate();
-      if (e.data.error || !e.data.snapshot) {
+      if (e.data.error || !e.data.snapshot || !e.data.logistics) {
         reject(new Error(e.data.error ?? "empty parse"));
       } else {
-        resolve(e.data.snapshot);
+        resolve({ snapshot: e.data.snapshot, logistics: e.data.logistics });
       }
     };
     worker.onerror = (e) => {
@@ -28,6 +39,6 @@ export function parseSaveBytes(name: string, bytes: ArrayBuffer): Promise<Import
   });
 }
 
-export function parseSaveFile(file: File): Promise<ImportSnapshot> {
+export function parseSaveFile(file: File): Promise<ParsedSave> {
   return file.arrayBuffer().then((bytes) => parseSaveBytes(file.name, bytes));
 }

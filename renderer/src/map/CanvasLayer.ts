@@ -9,6 +9,7 @@ import { flowBand } from "../lib/format";
 import { RESOURCE_POLYS, type ResourcePrim } from "../lib/resourcePolys";
 import { RESOURCE_ICON_BY_ITEM } from "../lib/resourceIcons";
 import { toLatLng } from "./maputil";
+import type { BuiltPolyline } from "../import/logisticsGeometry";
 import {
   CONVERGE_MS,
   ROUTE_DRAW_MS,
@@ -111,6 +112,16 @@ export interface CanvasLayerData {
   /** MANIFOLD motion (§5: 7a/7c/7e) — transient draw-in choreography. Null
    *  under prefers-reduced-motion (MapView never sets it there). */
   motion: MapMotion | null;
+  /** As-built logistics from the imported save (belts/pipes/rails/power as
+   *  world-meter polylines) — the LOGISTICS underlay. Null until a save with
+   *  geometry has been imported. */
+  builtLines: BuiltPolyline[] | null;
+  showLogistics: boolean;
+  /** Waypoint-edit affordance for the SELECTED planned route: handles at the
+   *  interior waypoints (drag to move, double-click to remove) plus midpoint
+   *  diamonds (drag to insert). MapView owns the interaction; this layer only
+   *  draws + hit-tests. */
+  waypointEdit: { routeId: string; path: { x: number; y: number }[] } | null;
 }
 
 const css = (name: string) =>
@@ -578,6 +589,7 @@ export class MapCanvasLayer extends L.Layer {
     this.drawRegionTints(ctx, map);
     this.drawGrid(ctx, map, size);
     this.drawRegionLabels(ctx, map);
+    if (this.data.showLogistics) this.drawBuiltLogistics(ctx, map, size);
     if (this.data.showPower) this.drawPower(ctx, map);
     if (this.data.showRoutes) this.drawRoutes(ctx, map);
     if (this.data.showNodes) {
@@ -586,6 +598,7 @@ export class MapCanvasLayer extends L.Layer {
     }
     this.drawReplacesLinks(ctx, map);
     this.drawGhost(ctx, map);
+    this.drawWaypointHandles(ctx, map);
     if (this.data.review) this.drawReview(ctx, map, size);
     // keep the animated dashes in lockstep with the base lines during
     // pan/zoom — an extra overlay stroke here is cheap, the lag isn't
@@ -686,6 +699,78 @@ export class MapCanvasLayer extends L.Layer {
       }
       carry = t - len;
     }
+  }
+
+  /** The as-built LOGISTICS underlay: every belt/pipe/rail/power line of the
+   *  imported save, drawn as muted physical infrastructure UNDER the plan
+   *  layer (planned routes/claims stay the loud, saturated lines on top).
+   *
+   *  Scale guards, because megabases ship tens of thousands of polylines:
+   *  - bbox cull per line against the padded viewport (bboxes are cached on
+   *    the data object at first use — setData clones nothing);
+   *  - LOD: belts/pipes only draw from ~230 % zoom (below that they are
+   *    sub-pixel noise); rails + power lines always draw (long spans read at
+   *    any zoom);
+   *  - one beginPath/stroke per kind, not per line — canvas state changes
+   *    dominate at this volume. */
+  private drawBuiltLogistics(ctx: CanvasRenderingContext2D, map: L.Map, size: L.Point) {
+    const lines = this.data.builtLines;
+    if (!lines || lines.length === 0) return;
+    const zoom = map.getZoom();
+    const detail = zoom >= 3.2; // ≈230 % — belts/pipes appear
+    // viewport in world meters, padded a line's worth so edges don't pop
+    const nw = map.containerPointToLatLng(L.point(0, 0));
+    const se = map.containerPointToLatLng(L.point(size.x, size.y));
+    const pad = 100; // m
+    const minX = nw.lng * 50 - pad;
+    const maxX = se.lng * 50 + pad;
+    const minY = -nw.lat * 50 - pad;
+    const maxY = -se.lat * 50 + pad;
+    const styles: Record<string, { color: string; width: number; alpha: number }> = {
+      belt: { color: css("--ink-500"), width: 1.5, alpha: 0.55 },
+      pipe: { color: css("--flow-warn"), width: 1.5, alpha: 0.45 },
+      rail: { color: css("--ink-300"), width: 2, alpha: 0.4 },
+      power: { color: css("--signal-500"), width: 1, alpha: 0.3 },
+    };
+    ctx.save();
+    for (const kind of ["rail", "belt", "pipe", "power"] as const) {
+      if (!detail && (kind === "belt" || kind === "pipe")) continue;
+      const st = styles[kind];
+      ctx.beginPath();
+      for (const line of lines) {
+        if (line.kind !== kind) continue;
+        const pts = line.pts;
+        // cached world-space bbox (lazily stamped onto the polyline object)
+        const cached = line as BuiltPolyline & { bb?: [number, number, number, number] };
+        if (!cached.bb) {
+          let x0 = Infinity,
+            y0 = Infinity,
+            x1 = -Infinity,
+            y1 = -Infinity;
+          for (let i = 0; i < pts.length; i += 2) {
+            if (pts[i] < x0) x0 = pts[i];
+            if (pts[i] > x1) x1 = pts[i];
+            if (pts[i + 1] < y0) y0 = pts[i + 1];
+            if (pts[i + 1] > y1) y1 = pts[i + 1];
+          }
+          cached.bb = [x0, y0, x1, y1];
+        }
+        const [bx0, by0, bx1, by1] = cached.bb;
+        if (bx1 < minX || bx0 > maxX || by1 < minY || by0 > maxY) continue;
+        for (let i = 0; i < pts.length; i += 2) {
+          const c = map.latLngToContainerPoint(toLatLng({ x: pts[i], y: pts[i + 1], z: 0 }));
+          if (i === 0) ctx.moveTo(c.x, c.y);
+          else ctx.lineTo(c.x, c.y);
+        }
+      }
+      ctx.globalAlpha = st.alpha;
+      ctx.strokeStyle = st.color;
+      ctx.lineWidth = st.width;
+      ctx.lineJoin = "round";
+      ctx.setLineDash([]);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   private drawRoutes(ctx: CanvasRenderingContext2D, map: L.Map) {
@@ -1065,6 +1150,59 @@ export class MapCanvasLayer extends L.Layer {
   }
 
   /** Nearest route within 8px of a container point. */
+  /** Handle centers projected during the last draw (container px):
+   *  wp = draggable interior waypoints, mid = insert points. */
+  private wpHandles: { type: "wp" | "mid"; index: number; x: number; y: number }[] = [];
+
+  private drawWaypointHandles(ctx: CanvasRenderingContext2D, map: L.Map) {
+    this.wpHandles = [];
+    const edit = this.data.waypointEdit;
+    if (!edit || edit.path.length < 2) return;
+    const pts = edit.path.map((p) => map.latLngToContainerPoint(toLatLng(p)));
+    ctx.save();
+    // midpoint diamonds — insert affordances, one per segment
+    for (let i = 0; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      this.wpHandles.push({ type: "mid", index: i, x: mx, y: my });
+      ctx.beginPath();
+      ctx.moveTo(mx, my - 4);
+      ctx.lineTo(mx + 4, my);
+      ctx.lineTo(mx, my + 4);
+      ctx.lineTo(mx - 4, my);
+      ctx.closePath();
+      ctx.fillStyle = css("--steel-800");
+      ctx.strokeStyle = css("--bp-400");
+      ctx.lineWidth = 1.25;
+      ctx.fill();
+      ctx.stroke();
+    }
+    // interior waypoints — endpoints excluded (they are the pins' anchors)
+    for (let i = 1; i < pts.length - 1; i++) {
+      this.wpHandles.push({ type: "wp", index: i, x: pts[i].x, y: pts[i].y });
+      ctx.beginPath();
+      ctx.arc(pts[i].x, pts[i].y, 5.5, 0, Math.PI * 2);
+      ctx.fillStyle = css("--steel-900");
+      ctx.strokeStyle = css("--signal-500");
+      ctx.lineWidth = 2;
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  hitTestWaypoint(point: L.Point): { type: "wp" | "mid"; index: number } | null {
+    // waypoints win over midpoints (they render on top and drag more often)
+    for (const type of ["wp", "mid"] as const) {
+      for (const h of this.wpHandles) {
+        if (h.type === type && Math.hypot(h.x - point.x, h.y - point.y) <= (type === "wp" ? 9 : 7)) {
+          return { type: h.type, index: h.index };
+        }
+      }
+    }
+    return null;
+  }
+
   hitTestRoute(point: L.Point): string | null {
     const map = this.mapRef;
     if (!map || !this.data.showRoutes) return null;

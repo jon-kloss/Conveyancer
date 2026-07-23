@@ -177,6 +177,13 @@ pub enum Command {
         id: Id,
         tier: u8,
     },
+    /// Replace a route's map polyline (waypoint authoring). The first/last
+    /// entries stay pinned to the endpoint anchors — MoveFactoryPin keeps
+    /// refreshing them — so only the interior waypoints are the caller's.
+    SetRoutePath {
+        id: Id,
+        path: Vec<MapPos>,
+    },
     /// Swap a cargo route's kind/spec (belt↔rail↔truck↔drone, or edit the
     /// consists/cars/dwell/headway of the current kind).
     SetRouteSpec {
@@ -348,6 +355,7 @@ impl Command {
             Command::DeleteJunction { .. } => "delete junction",
             Command::AddRoute { .. } => "draw route",
             Command::SetRouteTier { .. } => "set route tier",
+            Command::SetRoutePath { .. } => "edit route path",
             Command::SetRouteSpec { .. } => "set route spec",
             Command::DeleteRoute { .. } => "delete route",
             Command::SetEdgeTier { .. } => "set belt tier",
@@ -418,7 +426,7 @@ fn valid_pipe_tier(tier: u8) -> Result<u8, DomainError> {
 /// pin at the line's midpoint, A2.3). Shared by AddPrioritySwitch and
 /// MoveFactoryPin so placement and refresh can never disagree. Empty paths
 /// fall back to the origin, exactly as switch placement always has.
-fn line_midpoint(path: &[MapPos]) -> MapPos {
+pub(crate) fn line_midpoint(path: &[MapPos]) -> MapPos {
     let a = path.first().copied().unwrap_or(MapPos {
         x: 0.0,
         y: 0.0,
@@ -1646,6 +1654,47 @@ pub fn apply(state: &mut PlanState, cmd: &Command) -> Result<Transaction, Domain
                 .ok_or(DomainError::NotFound { id: id.clone() })?;
             require_planned(r.status, id, "delete")?;
             remove_route_cascading(state, &mut tx, id);
+        }
+        Command::SetRoutePath { id, path } => {
+            let mut r = state
+                .routes
+                .get(id)
+                .cloned()
+                .ok_or(DomainError::NotFound { id: id.clone() })?;
+            // Built routes are physical infrastructure, same as their tier.
+            require_planned(r.status, id, "edit path")?;
+            if path.len() < 2 {
+                return Err(DomainError::Invalid {
+                    message: "a route path needs at least its two endpoints".into(),
+                });
+            }
+            // Interior waypoints are the caller's; the endpoint anchors are
+            // NOT — re-pin them to the existing geometry so a stale client
+            // can't detach a line from its pins (MoveFactoryPin owns them).
+            let mut path = path.clone();
+            if let (Some(first), Some(last)) = (r.path.first().copied(), r.path.last().copied()) {
+                path[0] = first;
+                let e = path.len() - 1;
+                path[e] = last;
+            }
+            r.path = path;
+            // Priority switches sit at the line's midpoint (A2.3) — same
+            // refresh MoveFactoryPin does, or a re-path strands them.
+            let mid = line_midpoint(&r.path);
+            let rid = r.id.clone();
+            tx.record(state.upsert(Entity::Route(r)));
+            let switches: Vec<PrioritySwitch> = state
+                .switches
+                .values()
+                .filter(|s| s.route == rid)
+                .cloned()
+                .collect();
+            for mut sw in switches {
+                if sw.position != mid {
+                    sw.position = mid;
+                    tx.record(state.upsert(Entity::Switch(sw)));
+                }
+            }
         }
         Command::ClaimNode {
             factory,

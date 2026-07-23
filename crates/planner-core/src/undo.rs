@@ -502,6 +502,87 @@ mod tests {
     }
 
     #[test]
+    fn set_route_path_keeps_anchors_snaps_switches_and_undoes_as_one() {
+        let mut state = PlanState::default();
+        let mut log = UndoLog::new();
+        let a = create_factory_at(&mut state, &mut log, 0.0, 0.0);
+        let b = create_factory_at(&mut state, &mut log, 100.0, 0.0);
+        let (route, switch) = add_power_line_with_switch(&mut state, &mut log, &a, &b);
+        let straight = state.routes[&route].path.clone();
+
+        // Author two interior waypoints. The submitted endpoint entries are
+        // deliberately WRONG — the command re-pins them to the live anchors,
+        // so a stale client can never detach a line from its pins.
+        let wp1 = MapPos {
+            x: 30.0,
+            y: 60.0,
+            z: 0.0,
+        };
+        let wp2 = MapPos {
+            x: 70.0,
+            y: 60.0,
+            z: 0.0,
+        };
+        let bogus = MapPos {
+            x: -999.0,
+            y: -999.0,
+            z: 0.0,
+        };
+        let tx = apply(
+            &mut state,
+            &Command::SetRoutePath {
+                id: route.clone(),
+                path: vec![bogus, wp1, wp2, bogus],
+            },
+        )
+        .unwrap();
+        log.commit(tx);
+        let path = &state.routes[&route].path;
+        assert_eq!(path.len(), 4);
+        assert_eq!(path[0], straight[0], "start stays pinned to A");
+        assert_eq!(path[3], *straight.last().unwrap(), "end stays pinned to B");
+        assert_eq!(path[1], wp1);
+        assert_eq!(path[2], wp2);
+        // The priority switch snapped to the re-pathed line's midpoint.
+        assert_eq!(
+            state.switches[&switch].position,
+            crate::commands::line_midpoint(&state.routes[&route].path)
+        );
+
+        // A path shorter than its two endpoints is refused.
+        assert!(apply(
+            &mut state,
+            &Command::SetRoutePath {
+                id: route.clone(),
+                path: vec![wp1],
+            },
+        )
+        .is_err());
+
+        // Built routes are physical: the path is immutable.
+        state.routes.get_mut(&route).unwrap().status = Status::Built;
+        assert!(matches!(
+            apply(
+                &mut state,
+                &Command::SetRoutePath {
+                    id: route.clone(),
+                    path: vec![wp1, wp2],
+                },
+            ),
+            Err(crate::commands::DomainError::BuiltImmutable { .. })
+        ));
+        state.routes.get_mut(&route).unwrap().status = Status::Planned;
+
+        // One undo removes the waypoints and restores the switch midpoint.
+        log.undo(&mut state).unwrap().unwrap();
+        assert_eq!(state.routes[&route].path, straight);
+        assert_eq!(
+            state.switches[&switch].position,
+            crate::commands::line_midpoint(&straight)
+        );
+    }
+
+    #[test]
     fn add_edge_rejects_dangling_cross_factory_and_self_loop_ends() {
         let mut state = PlanState::default();
         let mut log = UndoLog::new();

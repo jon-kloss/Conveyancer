@@ -7,6 +7,7 @@ import { useCallback, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { backend } from "../state/backend";
 import { parseSaveFile } from "./parseSave";
+import type { BuiltLogistics } from "./logisticsGeometry";
 import type { ImportSnapshot } from "../state/types";
 
 type Phase =
@@ -19,6 +20,10 @@ type Phase =
 export default function ImportModal({ file, onClose }: { file: File; onClose: () => void }) {
   const hydrate = useStore((s) => s.hydrate);
   const setReviewing = useStore((s) => s.setReviewing);
+  const adoptLogistics = useStore((s) => s.adoptLogistics);
+  // As-built geometry from the same parse — adopted only when the user
+  // commits the import (a cancelled preview must not repaint the map).
+  const logisticsRef = useRef<BuiltLogistics | null>(null);
   const [phase, setPhase] = useState<Phase | null>(null);
   const started = useRef(false);
 
@@ -36,7 +41,8 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
   const start = useCallback(async () => {
     setPhase({ step: "parsing", name: file.name });
     try {
-      const snapshot = await parseSaveFile(file);
+      const { snapshot, logistics } = await parseSaveFile(file);
+      logisticsRef.current = logistics;
       setPhase({ step: "preview", snapshot });
     } catch (e) {
       // no dead ends: parse failure degrades to manual entry
@@ -54,6 +60,7 @@ export default function ImportModal({ file, onClose }: { file: File; onClose: ()
     setPhase({ step: "importing" });
     try {
       const outcome = await backend.importRun(snapshot);
+      if (logisticsRef.current) void adoptLogistics(logisticsRef.current);
       await hydrate(); // the built layer landed backend-side; re-project
       if (outcome.outcome === "imported") {
         setPhase({

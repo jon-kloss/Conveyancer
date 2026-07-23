@@ -16,7 +16,7 @@ import { CLUSTER_CAP, CLUSTER_STEP_MS, CONVERGE_MS, scatter, tetherKey, type Map
 import { useStore } from "../state/store";
 import Glyph from "../lib/glyphs";
 import { isEditableTarget } from "../lib/keys";
-import { isRenderableNode, type WorldNode } from "../state/types";
+import { isRenderableNode, type MapPos, type WorldNode } from "../state/types";
 import SummaryDrawer from "./SummaryDrawer";
 import NodeDrawer from "./NodeDrawer";
 import ResourceOverview from "./ResourceOverview";
@@ -119,6 +119,7 @@ export default function MapView() {
   const derived = useStore((s) => s.derived);
   const gamedata = useStore((s) => s.gamedata);
   const overlays = useStore((s) => s.overlays);
+  const builtLogistics = useStore((s) => s.builtLogistics);
   const mapFilter = useStore((s) => s.mapFilter);
   const selection = useStore((s) => s.selection);
   const placing = useStore((s) => s.placingFactory);
@@ -134,6 +135,19 @@ export default function MapView() {
   const [hoveredNode, setHoveredNode] = useState<WorldNode | null>(null);
   const [zoomPct, setZoomPct] = useState(100);
   const [routeDraft, setRouteDraft] = useState<{ from: string; cursor: { x: number; y: number } } | null>(null);
+  // Waypoint authoring on the SELECTED planned route: wpDraft is the live
+  // path while a handle drags (null = render the plan's committed path);
+  // wpDragRef marks the grabbed point index. Cleared whenever the selected
+  // route changes so a stale draft can't leak onto another line.
+  const [wpDraft, setWpDraft] = useState<MapPos[] | null>(null);
+  const wpDraftRef = useRef<MapPos[] | null>(null);
+  const wpDragRef = useRef<{ index: number } | null>(null);
+  const selectedRouteId = selection?.kind === "route" ? selection.id : null;
+  useEffect(() => {
+    setWpDraft(null);
+    wpDraftRef.current = null;
+    wpDragRef.current = null;
+  }, [selectedRouteId]);
   const [routePopover, setRoutePopover] = useState<{ from: string; to: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
@@ -336,6 +350,9 @@ export default function MapView() {
       hoveredNode: null,
       selectedNode: null,
       showNodes: true,
+      builtLines: null,
+      showLogistics: true,
+      waypointEdit: null,
       nodeFilter: null,
       showTerrain: useStore.getState().overlays.terrain,
       routes: [],
@@ -726,6 +743,14 @@ export default function MapView() {
       hoveredNode: hoveredNode?.id ?? null,
       selectedNode: selection?.kind === "node" ? selection.id : null,
       showNodes: overlays.nodes,
+      builtLines: builtLogistics?.lines ?? null,
+      showLogistics: overlays.logistics,
+      waypointEdit: (() => {
+        const r = selection?.kind === "route" ? plan.routes[selection.id] : undefined;
+        return r && r.status === "planned"
+          ? { routeId: r.id, path: (wpDraft ?? r.path).map((p) => ({ x: p.x, y: p.y })) }
+          : null;
+      })(),
       nodeFilter,
       showTerrain: overlays.terrain,
       routes,
@@ -738,7 +763,7 @@ export default function MapView() {
       review,
       motion: mapMotionRef.current && Date.now() < mapMotionRef.current.until ? mapMotionRef.current : null,
     });
-  }, [resolvedWorld, nodeStates, claimLinks, replacesLinks, hoveredNode, selection, overlays, nodeFilter, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal, motionTick]);
+  }, [resolvedWorld, nodeStates, claimLinks, replacesLinks, hoveredNode, selection, overlays, nodeFilter, plan, derived.routes, derived.circuits, gamedata.items, routeDraft, reviewingProposal, motionTick, builtLogistics, wpDraft]);
 
   // ---- pointer interactions (hover + click on canvas nodes, placement) ----
   useEffect(() => {
@@ -761,7 +786,44 @@ export default function MapView() {
         routeHit: nodeWins || switchHit ? null : routeHit,
       };
     };
+    const onDown = (e: L.LeafletMouseEvent) => {
+      if ((e.originalEvent as MouseEvent).button !== 0) return;
+      const st = useStore.getState();
+      const sel = st.selection;
+      if (!sel || sel.kind !== "route") return;
+      const route = st.plan.routes[sel.id];
+      if (!route || route.status !== "planned") return;
+      const hit = layerRef.current?.hitTestWaypoint(map.latLngToContainerPoint(e.latlng));
+      if (!hit) return;
+      // A grabbed handle owns the drag — the map must not pan under it.
+      e.originalEvent.preventDefault();
+      map.dragging.disable();
+      const path = (wpDraftRef.current ?? route.path).map((p) => ({ ...p }));
+      let index = hit.index;
+      if (hit.type === "mid") {
+        const a = path[hit.index];
+        const b = path[hit.index + 1];
+        path.splice(hit.index + 1, 0, {
+          x: (a.x + b.x) / 2,
+          y: (a.y + b.y) / 2,
+          z: ((a.z ?? 0) + (b.z ?? 0)) / 2,
+        });
+        index = hit.index + 1;
+      }
+      wpDragRef.current = { index };
+      wpDraftRef.current = path;
+      setWpDraft(path);
+    };
     const onMove = (e: L.LeafletMouseEvent) => {
+      if (wpDragRef.current && wpDraftRef.current) {
+        const path = wpDraftRef.current.map((p) => ({ ...p }));
+        const pos = fromLatLng(e.latlng);
+        const old = path[wpDragRef.current.index];
+        path[wpDragRef.current.index] = { x: pos.x, y: pos.y, z: old?.z ?? 0 };
+        wpDraftRef.current = path;
+        setWpDraft(path);
+        return;
+      }
       if (routeDraftRef.current) {
         setRouteDraft({ from: routeDraftRef.current.from, cursor: fromLatLng(e.latlng) });
         return;
@@ -798,6 +860,16 @@ export default function MapView() {
     // mouseup listens on window so releasing over a drawer or other chrome
     // still ends the drag instead of leaving a stuck ghost line.
     const onMouseUp = (e: MouseEvent) => {
+      if (wpDragRef.current && e.button === 0) {
+        wpDragRef.current = null;
+        map.dragging.enable();
+        const path = wpDraftRef.current;
+        const sel = useStore.getState().selection;
+        if (path && sel?.kind === "route") {
+          void dispatch([{ type: "set_route_path", id: sel.id, path }]);
+        }
+        return;
+      }
       const draft = routeDraftRef.current;
       if (!draft || e.button !== 2) return;
       // Chromium fires contextmenu after the right-button release; suppress
@@ -814,7 +886,25 @@ export default function MapView() {
       setRouteDraft(null);
       if (target) setRoutePopover({ from: draft.from, to: target });
     };
-    const onCtx = (e: Event) => e.preventDefault();
+    const onCtx = (e: Event) => {
+      e.preventDefault();
+      const me = e as MouseEvent;
+      const st = useStore.getState();
+      const sel = st.selection;
+      if (!sel || sel.kind !== "route") return;
+      const route = st.plan.routes[sel.id];
+      if (!route || route.status !== "planned") return;
+      const rect = map.getContainer().getBoundingClientRect();
+      const hit = layerRef.current?.hitTestWaypoint(
+        L.point(me.clientX - rect.left, me.clientY - rect.top),
+      );
+      if (!hit || hit.type !== "wp") return;
+      const path = (wpDraftRef.current ?? route.path).map((p) => ({ ...p }));
+      path.splice(hit.index, 1);
+      wpDraftRef.current = path;
+      setWpDraft(path);
+      void dispatch([{ type: "set_route_path", id: sel.id, path }]);
+    };
     const onWindowCtx = (e: Event) => {
       if (suppressCtxRef.current) {
         suppressCtxRef.current = false;
@@ -824,9 +914,11 @@ export default function MapView() {
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("contextmenu", onWindowCtx);
     map.getContainer().addEventListener("contextmenu", onCtx);
+    map.on("mousedown", onDown);
     map.on("mousemove", onMove);
     map.on("click", onClick);
     return () => {
+      map.off("mousedown", onDown);
       map.off("mousemove", onMove);
       map.off("click", onClick);
       window.removeEventListener("mouseup", onMouseUp);
@@ -1022,6 +1114,7 @@ export default function MapView() {
       else if (e.key === "2") setOverlay("power", !overlays.power);
       else if (e.key === "3") setOverlay("nodes", !overlays.nodes);
       else if (e.key === "4") setOverlay("terrain", !overlays.terrain);
+      else if (e.key === "5") setOverlay("logistics", !overlays.logistics);
       else if (e.key === "f" || e.key === "F") {
         const pts = Object.values(plan.factories).map((f) => toLatLng(f.position));
         if (pts.length && map) map.fitBounds(L.latLngBounds(pts as L.LatLngExpression[]).pad(0.4));
@@ -1134,6 +1227,16 @@ export default function MapView() {
           >
             TERRAIN <span className="key-hint">4</span>
           </button>
+          {builtLogistics && builtLogistics.lines.length > 0 && (
+            <button
+              className={`btn btn-ghost overlay-chip ${overlays.logistics ? "active" : ""}`}
+              onClick={() => setOverlay("logistics", !overlays.logistics)}
+              title={`As-built logistics from ${builtLogistics.saveName} — ${builtLogistics.counts.belt} belts · ${builtLogistics.counts.pipe} pipes · ${builtLogistics.counts.rail} rails · ${builtLogistics.counts.power} power lines (5)`}
+              data-testid="btn-overlay-logistics"
+            >
+              LOGISTICS <span className="key-hint">5</span>
+            </button>
+          )}
         </div>
         <div className="map-actions">
           <button

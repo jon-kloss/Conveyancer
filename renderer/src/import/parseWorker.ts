@@ -4,6 +4,7 @@
 // which carries the full recognition/quarantine contract and is unit-tested).
 
 import { Parser } from "@etothepii/satisfactory-file-parser";
+import { extractLogistics } from "./logisticsGeometry";
 import { buildSnapshot, type RawObject } from "./parseSnapshot";
 
 self.onmessage = (e: MessageEvent<{ name: string; bytes: ArrayBuffer }>) => {
@@ -12,8 +13,12 @@ self.onmessage = (e: MessageEvent<{ name: string; bytes: ArrayBuffer }>) => {
     const save = Parser.ParseSave(name, bytes);
     const buildVersion = String((save.header as { buildVersion?: number })?.buildVersion ?? "");
     const levels = save.levels as Record<string, { objects?: RawObject[] }>;
-    const snapshot = buildSnapshot(name.replace(/\.sav$/i, ""), buildVersion, levels);
-    self.postMessage({ snapshot });
+    const saveName = name.replace(/\.sav$/i, "");
+    const snapshot = buildSnapshot(saveName, buildVersion, levels);
+    // Same object soup, second reduction: as-built belt/pipe/rail/power
+    // polylines for the map's LOGISTICS underlay (renderer-side only).
+    const logistics = extractLogistics(saveName, levels);
+    self.postMessage({ snapshot, logistics });
   } catch (err) {
     // parse failure degrades to "skip — manual entry" upstream (no dead ends)
     self.postMessage({ error: String(err) });
