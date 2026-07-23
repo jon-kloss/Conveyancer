@@ -443,97 +443,377 @@
   z-index: 40;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
-/* Order banner (web, BOTH catalog states — the menu never reshuffles):
-   states the required upload sequence. */
-.data-menu-order {
-  padding: 8px 12px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--ink-300);
-  background: var(--bp-900, var(--steel-900));
+/* ── DATA pipeline panel (design handoff: DATA Screen Redesign) ──────────────
+   The load-data surface reframed as a 3-step status pipeline — a left rail of
+   step markers + connector lines beside a card body per step. Wider than the
+   old flat menu. */
+.data-menu.data-pipeline {
+  width: 480px;
+}
+.data-pipeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--steel-900);
   border-bottom: 1px solid var(--steel-600);
 }
-.data-menu-order b {
+.data-pipeline-title {
+  color: var(--ink-100);
+}
+.data-pipeline-summary {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ink-ghost);
+  white-space: nowrap;
+}
+.data-pipeline-summary.ok {
+  color: var(--flow-ok);
+}
+.pl-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--steel-700);
+}
+.pl-card.last {
+  border-bottom: none;
+}
+/* Locked step: the whole body dims; its lock reason stays legible in text. */
+.pl-card.locked .pl-body {
+  opacity: 0.45;
+}
+.pl-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: none;
+}
+.pl-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  border: 1px solid var(--steel-600);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--ink-500);
+}
+.pl-marker.done {
+  color: var(--flow-ok);
+  border-color: var(--flow-ok-dark);
+  font-size: 12px;
+}
+.pl-marker.current,
+.pl-marker.running {
+  color: var(--signal-500);
+  border-color: var(--signal-500);
+  background: var(--signal-selected-bg);
+}
+.pl-marker.running {
+  font-size: 10px;
+}
+.pl-connector {
+  flex: 1;
+  width: 1px;
+  min-height: 12px;
+  margin-top: 4px;
+  background: var(--steel-600);
+}
+.pl-connector.done {
+  background: var(--flow-ok-dark);
+}
+.pl-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+.pl-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pl-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink-100);
+}
+.pl-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--steel-600);
+  border-radius: 3px;
+  background: var(--steel-800);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-300);
+  white-space: nowrap;
+}
+.pl-chip.ok {
+  color: var(--flow-ok);
+  border-color: var(--flow-ok-dark);
+}
+.pl-chip.warn {
+  color: var(--flow-warn);
+  border-color: var(--flow-warn-dark);
+}
+.pl-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-500);
+}
+.pl-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+.pl-btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+.pl-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+.pl-microcopy {
+  font-size: 9.5px;
+  color: var(--ink-ghost);
+}
+.pl-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+.pl-hints > div {
+  font-size: 9.5px;
+  color: var(--ink-ghost);
+  word-break: break-all;
+}
+.pl-hint-key {
+  display: inline-block;
+  width: 46px;
+  color: var(--signal-500);
+}
+.pl-sync-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+/* ── EMPIRE switcher (design handoff) — its own titlebar chip + dropdown ───── */
+.empire-menu-wrap {
+  position: relative;
+}
+.empire-chip {
+  gap: 6px;
+}
+.empire-chip-dot {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--signal-500);
+}
+.btn-ghost.empire-chip.active .empire-chip-dot {
+  color: var(--on-signal);
+}
+.empire-chip-name {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empire-menu {
+  position: absolute;
+  top: calc(var(--titlebar-h) - 6px);
+  right: 0;
+  width: 300px;
+  background: var(--steel-800);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  overflow: hidden;
+  z-index: 40;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.empire-menu-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px 6px;
+  background: var(--steel-900);
+  border-bottom: 1px solid var(--steel-600);
+}
+.empire-menu-title {
+  color: var(--ink-100);
+}
+.empire-menu-note {
+  font-size: 9px;
+  color: var(--ink-ghost);
+  white-space: nowrap;
+}
+.empire-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--steel-700);
+}
+.empire-row:hover:not(.active) {
+  background: var(--steel-700);
+}
+.empire-row.active {
+  background: var(--signal-selected-bg);
+  border-left: 2px solid var(--signal-500);
+  padding-left: 12px;
+}
+.empire-row-dot {
+  flex: none;
+  font-size: 9px;
+  color: var(--signal-500);
+}
+.empire-row-dot.faint {
+  color: var(--ink-faint);
+}
+.empire-row-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--ink-100);
+}
+.empire-row-switch:hover {
   color: var(--signal-400);
+}
+.empire-row-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empire-row-name.is-active {
+  flex: 1;
+  min-width: 0;
   font-weight: 700;
 }
-/* The permanent step-① Docs.json row gets a left accent so it reads as the
-   starting point; once a catalog loads it doubles as the swap-version action. */
-.data-menu-step {
-  border-left: 2px solid var(--signal-500);
+.empire-row-tag {
+  flex: none;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--signal-400);
 }
-.data-menu-item {
+.empire-row-btn {
+  flex: none;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  color: var(--ink-300);
+  font-size: 11px;
+}
+.empire-row-btn:hover {
+  background: var(--steel-700);
+  color: var(--ink-100);
+}
+.empire-row-btn.danger:hover {
+  border-color: var(--flow-crit);
+  color: var(--flow-crit);
+}
+.empire-row-btn.danger.armed {
+  border-color: var(--flow-crit);
+  color: var(--flow-crit);
+  background: rgba(255, 93, 85, 0.12);
+}
+.empire-rename-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.empire-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--steel-700);
+}
+.empire-create-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--steel-900);
+  border: 1px solid var(--steel-600);
+  border-radius: var(--radius);
+  color: var(--ink-100);
+  font-size: 12px;
+}
+.empire-create-input:focus {
+  outline: none;
+  border-color: var(--signal-500);
+}
+.empire-create-btn {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+.empire-danger {
   display: flex;
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 10px 14px;
   text-align: left;
-  background: none;
-  border: none;
-  border-bottom: 1px solid var(--steel-700);
-  cursor: pointer;
+  border-left: 2px solid var(--flow-crit);
   color: var(--ink-100);
 }
-.data-menu-item:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--steel-700);
+.empire-danger:hover {
+  background: rgba(255, 93, 85, 0.08);
 }
-.data-menu-item:disabled,
-.data-menu-item[aria-disabled="true"] {
-  opacity: 0.5;
-  cursor: default;
+.empire-danger.armed {
+  background: rgba(255, 93, 85, 0.12);
 }
-.data-menu-item-label {
+.empire-danger.armed .empire-danger-label,
+.empire-danger.armed .empire-danger-sub {
+  color: var(--flow-crit);
+}
+.empire-danger-label {
   font-weight: 600;
   font-size: 13px;
 }
-.data-menu-item-sub {
+.empire-danger-sub {
   font-size: 11px;
   color: var(--ink-500);
 }
-/* Destructive "Start new empire": a red left accent, and once armed the whole
-   row goes red so the second (confirming) click reads as dangerous. */
-.data-menu-danger {
-  border-left: 2px solid var(--flow-crit);
-}
-.data-menu-danger:hover:not(:disabled) {
-  background: rgba(255, 93, 85, 0.08);
-}
-.data-menu-danger.armed {
-  background: rgba(255, 93, 85, 0.12);
-}
-.data-menu-danger.armed .data-menu-item-label,
-.data-menu-danger.armed .data-menu-item-sub {
-  color: var(--flow-crit);
-}
-/* Sync-from-save + Auto toggle: one row (main action + a switch), plus an
-   interval chip row when Auto is on. The block owns the bottom border so the
-   whole control reads as a single menu row. */
-.data-menu-block {
-  border-bottom: 1px solid var(--steel-700);
-}
-.data-menu-block .data-menu-item {
-  border-bottom: none;
-}
-.sync-row {
-  display: flex;
-  align-items: stretch;
-}
-.sync-main {
-  flex: 1;
-  min-width: 0;
-  width: auto;
-}
 /* The Auto switch: an AUTO label + a pill track/knob, orange when on. */
+/* Auto switch: an AUTO label + a pill track/knob. Inline in the sync action
+   row of step ③, so a horizontal layout with a small left gap from SYNC NOW. */
 .sync-auto {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 8px 12px;
+  gap: 6px;
+  padding: 0;
   border: none;
-  border-left: 1px solid var(--steel-700);
   background: none;
   cursor: pointer;
 }
@@ -577,13 +857,6 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 12px 10px 12px;
-}
-.autosync-label {
-  font-size: 10.5px;
-  color: var(--ink-500);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 .autosync-chip {
   font-family: var(--font-mono);
@@ -602,34 +875,4 @@
   border-color: var(--signal-orange, #ff7a1a);
   color: var(--signal-orange, #ff7a1a);
   background: color-mix(in srgb, var(--signal-orange, #ff7a1a) 14%, transparent);
-}
-.data-menu-hint {
-  padding: 10px 12px;
-  background: var(--steel-900);
-  font-family: var(--font-mono);
-}
-.data-menu-hint-head {
-  font-size: 11px;
-  color: var(--ink-300);
-  margin-bottom: 6px;
-}
-.data-menu-hint-row {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin-bottom: 6px;
-}
-.data-menu-hint-row:last-child {
-  margin-bottom: 0;
-}
-.data-menu-hint-key {
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  color: var(--signal-500);
-  text-transform: uppercase;
-}
-.data-menu-hint-row code {
-  font-size: 10px;
-  color: var(--ink-500);
-  word-break: break-all;
 }

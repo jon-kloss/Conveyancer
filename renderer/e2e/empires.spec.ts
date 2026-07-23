@@ -93,7 +93,7 @@ test("empires API: create/switch isolates plans; rename & delete are guarded", a
   }
 });
 
-test("empires UI: the DATA menu lists, creates and switches empires", async ({ page, request }) => {
+test("empires UI: the EMPIRE menu lists, creates and switches empires", async ({ page, request }) => {
   const original = (await empires(request)).active;
   try {
     await resetView(request);
@@ -102,8 +102,8 @@ test("empires UI: the DATA menu lists, creates and switches empires", async ({ p
     if (await skip.isVisible().catch(() => false)) await skip.click();
     await expect(page.getByTestId("map-root")).toBeVisible();
 
-    // open the DATA menu → the EMPIRES section lists the active empire
-    await page.getByTestId("btn-data-menu").click();
+    // open the EMPIRE switcher → the empires section lists the active empire
+    await page.getByTestId("btn-empire-menu").click();
     const section = page.getByTestId("empires-section");
     await expect(section).toBeVisible();
     await expect(section.getByTestId(`empire-row-${original}`)).toContainText(original);
@@ -118,7 +118,7 @@ test("empires UI: the DATA menu lists, creates and switches empires", async ({ p
     await expect.poll(async () => Object.keys((await hydrate(request)).plan.factories).length).toBe(0);
 
     // switch back from the menu row
-    await page.getByTestId("btn-data-menu").click();
+    await page.getByTestId("btn-empire-menu").click();
     await page.getByTestId(`empire-switch-${original}`).click();
     await expect
       .poll(async () => (await empires(request)).active, { timeout: 10_000 })
