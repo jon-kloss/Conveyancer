@@ -46,7 +46,13 @@ export default function Inspector({
   const setProjected = useStore((s) => s.setProjected);
 
   const factory = plan.factories[factoryId];
-  const outPort = factory?.ports.map((id) => plan.ports[id]).find((p) => p?.direction === "out");
+  // OUTPUT TARGET operates on the SELECTED out port when one is selected, so a
+  // factory with several outputs can target each independently (e.g. splitting a
+  // water extractor across two output routes). Otherwise it's the first out port
+  // — the factory-level overview shown when nothing (or a non-port) is selected.
+  const outPorts = factory?.ports.map((id) => plan.ports[id]).filter((p) => p?.direction === "out") ?? [];
+  const outPort =
+    (selection?.kind === "port" ? outPorts.find((p) => p?.id === selection.id) : undefined) ?? outPorts[0];
   const authoritative = derived.factories[factoryId];
   const ceiling = authoritative?.targetCeiling ?? null;
 
