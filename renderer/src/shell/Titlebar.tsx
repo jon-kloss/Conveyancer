@@ -1,7 +1,7 @@
 // Custom titlebar (36px): logo square, app name, breadcrumb, save-sync chip,
 // solver status, window controls. Frameless in Tauri; controls hidden in bridge mode.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore, solveChip } from "../state/store";
 import DataMenu from "./DataMenu";
 import EmpireMenu from "./EmpireMenu";
@@ -26,6 +26,12 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
 
   // Only one titlebar dropdown open at a time — opening one closes the other.
   const [openMenu, setOpenMenu] = useState<"empire" | "data" | null>(null);
+  // A proposal review unmounts both menus (below). Reset the lifted open state
+  // too, or a menu that was open when a background auto-pull opened the review
+  // would silently reopen (with its click-swallowing backdrop) on review close.
+  useEffect(() => {
+    if (reviewing) setOpenMenu(null);
+  }, [reviewing]);
 
   const factory = view.mode === "factory" ? plan.factories[view.factoryId] : null;
   const chip = solveChip(factory ? derived.factories[factory.id] : undefined);

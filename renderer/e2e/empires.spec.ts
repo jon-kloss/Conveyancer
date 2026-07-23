@@ -129,3 +129,119 @@ test("empires UI: the EMPIRE menu lists, creates and switches empires", async ({
     await resetView(request);
   }
 });
+
+// Mutual exclusion of the two titlebar dropdowns + the disarm-on-close safety
+// property of the destructive wipe. Both are new to the DATA-screen redesign
+// (the lifted openMenu state + the moved "start over" latch) and were untested.
+// Runs inside a throwaway empire so the seeded factory / any wipe never touches
+// the shared `original` plan.
+//
+// Note on the backdrop: while a menu is open its fixed backdrop covers the whole
+// viewport (incl. the titlebar), so the OTHER menu's button is obscured — the
+// backdrop itself enforces "only one open" (a click on the other button lands on
+// the backdrop and closes the current menu first). So we test the invariant by
+// opening each menu while the other is closed, and exercise the close paths
+// (Escape + backdrop click) that a real user actually uses.
+test("empires UI: menus are mutually exclusive; the wipe latch disarms on close", async ({ page, request }) => {
+  const original = (await empires(request)).active;
+  try {
+    await empireOp(request, "create", { name: "LATCH E2E" }); // creates + switches to it
+    await edit(request, [
+      { type: "create_factory", name: "SEED", position: { x: -2400, y: 2400 }, region: "GRASS FIELDS" },
+    ]);
+    await resetView(request);
+    await page.goto("/");
+    const skip = page.getByTestId("onboard-skip");
+    if (await skip.isVisible().catch(() => false)) await skip.click();
+    await expect(page.getByTestId("map-root")).toBeVisible();
+
+    // Opening EMPIRE → the DATA panel is not also present.
+    await page.getByTestId("btn-empire-menu").click();
+    await expect(page.getByTestId("empires-section")).toBeVisible();
+    await expect(page.getByTestId("data-menu")).toHaveCount(0);
+
+    // Arm the wipe, then close by Escape → it must disarm, or a later stray
+    // single click would wipe the plan.
+    const reset = page.getByTestId("btn-new-empire");
+    await reset.click();
+    await expect(reset).toContainText(/Click again/i);
+    await page.keyboard.press("Escape"); // close without confirming
+    await expect(page.getByTestId("empires-section")).toHaveCount(0);
+    await page.getByTestId("btn-empire-menu").click(); // reopen
+    await expect(page.getByTestId("btn-new-empire")).toContainText(/Start .* over/i);
+    await expect(page.getByTestId("btn-new-empire")).not.toContainText(/Click again/i);
+
+    // Same guarantee when the close happens by clicking the backdrop (the click
+    // a user makes when they "click the other button" — it lands here first).
+    await page.getByTestId("btn-new-empire").click();
+    await expect(page.getByTestId("btn-new-empire")).toContainText(/Click again/i);
+    await page.locator(".data-menu-backdrop").click();
+    await expect(page.getByTestId("empires-section")).toHaveCount(0);
+    await page.getByTestId("btn-empire-menu").click(); // reopen
+    await expect(page.getByTestId("btn-new-empire")).toContainText(/Start .* over/i);
+
+    // With the empire menu closed, DATA opens on its own — and EMPIRE is not
+    // also present (only one titlebar dropdown at a time).
+    await page.keyboard.press("Escape");
+    await page.getByTestId("btn-data-menu").click();
+    await expect(page.getByTestId("data-menu")).toBeVisible();
+    await expect(page.getByTestId("empires-section")).toHaveCount(0);
+
+    // Despite two arms, the wipe never fired — the seeded factory survives.
+    expect(Object.keys((await hydrate(request)).plan.factories).length).toBeGreaterThan(0);
+  } finally {
+    await empireOp(request, "switch", { name: original });
+    await empireOp(request, "delete", { name: "LATCH E2E" });
+    await resetView(request);
+  }
+});
+
+// Rename-in-place and the per-row delete latch — the EmpireMenu's two
+// interactive controls that had zero UI coverage (only their /api endpoints
+// were tested). Covers: rename submits; rename-Escape cancels the FORM but
+// keeps the menu open; the delete latch arms (✕→✕?), disarms on close, and
+// confirms on a second click.
+test("empires UI: rename in place, rename-Escape cancels the form, delete latch", async ({ page, request }) => {
+  const original = (await empires(request)).active;
+  try {
+    await empireOp(request, "create", { name: "REN SRC" }); // creates + switches to REN SRC
+    await empireOp(request, "switch", { name: original }); // back → REN SRC is now an "other" row
+    await resetView(request);
+    await page.goto("/");
+    const skip = page.getByTestId("onboard-skip");
+    if (await skip.isVisible().catch(() => false)) await skip.click();
+    await expect(page.getByTestId("map-root")).toBeVisible();
+
+    await page.getByTestId("btn-empire-menu").click();
+
+    // Escape inside a rename input cancels only the rename — the menu stays open.
+    await page.getByTestId("empire-rename-REN SRC").click();
+    await expect(page.getByTestId("empire-rename-input")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("empires-section")).toBeVisible(); // menu NOT closed
+    await expect(page.getByTestId("empire-row-REN SRC")).toBeVisible(); // row restored
+
+    // Rename for real.
+    await page.getByTestId("empire-rename-REN SRC").click();
+    await page.getByTestId("empire-rename-input").fill("REN DST");
+    await page.getByTestId("empire-rename-ok").click();
+    await expect.poll(async () => (await empires(request)).names).toContain("REN DST");
+    expect((await empires(request)).names, "old name is gone").not.toContain("REN SRC");
+
+    // Delete latch: arm (✕→✕?), close, reopen shows disarmed ✕, then confirm.
+    const del = () => page.getByTestId("empire-delete-REN DST");
+    await del().click();
+    await expect(del()).toHaveText("✕?");
+    await page.keyboard.press("Escape");
+    await page.getByTestId("btn-empire-menu").click();
+    await expect(del()).toHaveText("✕"); // disarmed on close
+    await del().click();
+    await del().click(); // confirm
+    await expect.poll(async () => (await empires(request)).names).not.toContain("REN DST");
+  } finally {
+    await empireOp(request, "switch", { name: original });
+    await empireOp(request, "delete", { name: "REN SRC" }).catch(() => {});
+    await empireOp(request, "delete", { name: "REN DST" }).catch(() => {});
+    await resetView(request);
+  }
+});

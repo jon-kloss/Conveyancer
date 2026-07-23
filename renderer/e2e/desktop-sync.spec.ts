@@ -85,6 +85,19 @@ async function runDesktopSync(page: Page) {
   await expect(auto).not.toHaveAttribute("aria-disabled", "true");
   await auto.click(); // turn on → one immediate pull + interval chips appear
   await expect(page.getByTestId("autosync-intervals")).toBeVisible();
-  await expect(page.getByTestId("autosync-10")).toBeVisible();
   await expect(auto).toHaveAttribute("aria-checked", "true");
+  // While auto owns the re-read, the manual SYNC NOW is aria-disabled (the timer
+  // owns it) — turning auto off is the only way to sync by hand.
+  await expect(page.getByTestId("btn-sync-save")).toHaveAttribute("aria-disabled", "true");
+  // Picking an interval makes exactly that chip active and the step ③ status
+  // chip report the running cadence (drive explicit values — the persisted
+  // default varies).
+  await page.getByTestId("autosync-10").click();
+  await expect(page.getByTestId("autosync-10")).toHaveClass(/active/);
+  await expect(page.getByTestId("autosync-5")).not.toHaveClass(/active/);
+  await expect(page.getByTestId("sync-status")).toHaveText("AUTO · EVERY 10 MIN");
+  await page.getByTestId("autosync-5").click();
+  await expect(page.getByTestId("autosync-5")).toHaveClass(/active/);
+  await expect(page.getByTestId("autosync-10")).not.toHaveClass(/active/);
+  await expect(page.getByTestId("sync-status")).toHaveText("AUTO · EVERY 5 MIN");
 }

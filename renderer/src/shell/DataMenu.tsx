@@ -205,10 +205,17 @@ export default function DataMenu({
   const platform = __WASM_BACKEND__ ? "WEB" : "DESKTOP";
   const summaryOk = doneCount === 3;
 
+  // "running" reflects a timer that is ACTUALLY ticking — autoSyncReady gates
+  // the interval effect, so `autoSync.enabled` alone can lie (it persists
+  // independently of plan contents; if the gate later drops, the toggle goes
+  // aria-disabled and the timer stops, yet enabled stays true). Guard both the
+  // marker state and the chip on autoSyncReady so the UI never claims auto-sync
+  // is running while it's stopped and un-turn-off-able.
+  const autoRunning = autoSync.enabled && autoSyncReady;
   type StepState = "done" | "current" | "locked" | "running";
   const step1: StepState = catalogDone ? "done" : "current";
   const step2: StepState = importDone ? "done" : catalogDone ? "current" : "locked";
-  const step3: StepState = autoSync.enabled
+  const step3: StepState = autoRunning
     ? "running"
     : syncedOnce
       ? "done"
@@ -221,7 +228,7 @@ export default function DataMenu({
     fileRef.current?.click();
   };
 
-  const syncStatus = autoSync.enabled
+  const syncStatus = autoRunning
     ? `AUTO · EVERY ${autoSync.intervalMin} MIN`
     : syncMeta
       ? `SYNCED ${relTime(syncMeta.lastSyncedAt).toUpperCase()}`
@@ -254,7 +261,13 @@ export default function DataMenu({
                 <span className="pl-title">Game catalog</span>
                 {step1 === "done" ? (
                   <span className="pl-chip ok">
-                    {__WASM_BACKEND__ ? "CATALOG LOADED" : `LOADED · BUILD ${buildVersion || "—"}`}
+                    {/* On desktop the catalog is host-provided; show its build
+                        only when it's a real one. "fixture"/empty is the same
+                        sentinel `catalogLoaded` treats as not-a-real-catalog —
+                        never surface it as a build label ("LOADED · BUILD FIXTURE"). */}
+                    {__WASM_BACKEND__ || !buildVersion || buildVersion === "fixture"
+                      ? "CATALOG LOADED"
+                      : `LOADED · BUILD ${buildVersion}`}
                   </span>
                 ) : (
                   <span className="pl-chip warn">NOT LOADED — START HERE</span>
@@ -297,12 +310,16 @@ export default function DataMenu({
                       </button>
                       <span className="pl-microcopy mono">or drop the file anywhere</span>
                     </div>
+                    {/* Full fixed path segments — the leading … stands only for
+                        the variable library/drive root; steamapps\common and
+                        Epic Games are real fixed dirs, so keep them (a help path
+                        that omits them sends the user to a folder that isn't there). */}
                     <div className="pl-hints mono">
                       <div>
-                        <span className="pl-hint-key">STEAM</span>…\Satisfactory\CommunityResources\Docs\en-US.json
+                        <span className="pl-hint-key">STEAM</span>…\steamapps\common\Satisfactory\CommunityResources\Docs\en-US.json
                       </div>
                       <div>
-                        <span className="pl-hint-key">EPIC</span>…\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json
+                        <span className="pl-hint-key">EPIC</span>…\Epic Games\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json
                       </div>
                     </div>
                   </>

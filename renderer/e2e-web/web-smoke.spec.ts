@@ -298,12 +298,18 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   // setInputFiles is programmatic — so we watch the same cards flip in place,
   // no click through the onboarding overlay.)
   await page.getByTestId("btn-data-menu").click();
-  await expect(page.getByTestId("sync-status")).toContainText("NEEDS");
+  // Assert the LOCKED structural state from the card itself (not merely "the
+  // sync button is absent" — that would also pass if a testid were renamed).
+  // Steps ② and ③ are both locked on the fixture; the pipeline connectors read
+  // the state machine, and the sync step names the exact reason inline.
+  await expect(page.locator(".pl-card").nth(1)).toHaveClass(/locked/); // ② Import save
+  await expect(page.locator(".pl-card").nth(2)).toHaveClass(/locked/); // ③ Keep in sync
+  await expect(page.getByTestId("sync-status")).toHaveText("NEEDS CATALOG");
   await expect(page.getByTestId("btn-sync-save")).toHaveCount(0);
   await expect(page.getByTestId("btn-auto-sync")).toHaveCount(0);
   // The load ORDER is enforced, not suggested: step ② (Import save) is LOCKED
-  // ("NEEDS CATALOG") while the app is still on the fixture catalog — the button
-  // stays present but aria-disabled, with the how-to still in its title.
+  // while the app is still on the fixture catalog — the button stays present but
+  // aria-disabled, with the how-to still in its title.
   const importBtn = page.getByTestId("btn-import");
   await expect(importBtn).toHaveAttribute("aria-disabled", "true");
   await expect(importBtn).toHaveAttribute("title", /Docs\.json/);
@@ -331,11 +337,17 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   // loaded state and its button becomes the swap-version action. Step ③ stays
   // gated on an IMPORTED SAVE ("Sync" re-reads a save you already imported), so
   // with no import in the plan it holds LOCKED — no action buttons, reason chip.
+  // Step ① is now DONE (its marker is the ✓), step ② is no longer locked, and
+  // step ③ stays locked with the reason now updated to "needs an imported save".
+  await expect(page.locator(".pl-card").nth(0)).not.toHaveClass(/locked/);
+  await expect(page.locator(".pl-card").nth(0).locator(".pl-marker.done")).toBeVisible();
+  await expect(page.locator(".pl-card").nth(1)).not.toHaveClass(/locked/);
+  await expect(page.locator(".pl-card").nth(2)).toHaveClass(/locked/);
   await expect(importBtn).not.toHaveAttribute("aria-disabled", "true");
   await expect(importBtn).toContainText("IMPORT");
   const stepOne = page.getByTestId("btn-upload-docs-first");
   await expect(stepOne).toContainText("SWAP GAME VERSION");
-  await expect(page.getByTestId("sync-status")).toContainText("NEEDS AN IMPORTED SAVE");
+  await expect(page.getByTestId("sync-status")).toHaveText("NEEDS AN IMPORTED SAVE");
   await expect(page.getByTestId("btn-sync-save")).toHaveCount(0);
   await expect(page.getByTestId("btn-auto-sync")).toHaveCount(0);
 

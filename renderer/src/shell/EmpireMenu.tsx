@@ -94,8 +94,10 @@ export default function EmpireMenu({
         setRenaming(null);
         return;
       }
-      await empireRename(from, to);
-      setRenaming(null);
+      // empireRename catches and returns false on a refused (duplicate/invalid)
+      // name — keep the form and the typed value open on failure so the user
+      // can fix it rather than retype from scratch (the error surfaces as a toast).
+      if (await empireRename(from, to)) setRenaming(null);
     },
     [renameVal, empireRename],
   );
@@ -111,9 +113,13 @@ export default function EmpireMenu({
   const doCreate = useCallback(async () => {
     const name = newName.trim();
     if (!name) return;
-    setNewName("");
-    onClose();
-    await empireCreate(name);
+    // Only clear the field and close on success. A refused name (duplicate /
+    // invalid → empireCreate returns false, surfaces a toast) leaves the menu
+    // open with the typed value intact so the user can correct it.
+    if (await empireCreate(name)) {
+      setNewName("");
+      onClose();
+    }
   }, [newName, empireCreate, onClose]);
 
   const doDelete = useCallback(
@@ -180,6 +186,7 @@ export default function EmpireMenu({
                     className="empire-row-btn"
                     onClick={() => startRename(active)}
                     title="Rename this empire"
+                    aria-label={`Rename ${active}`}
                     data-testid={`empire-rename-${active}`}
                   >
                     ✎
@@ -214,6 +221,7 @@ export default function EmpireMenu({
                       className="empire-row-btn"
                       onClick={() => startRename(name)}
                       title="Rename this empire"
+                      aria-label={`Rename ${name}`}
                       data-testid={`empire-rename-${name}`}
                     >
                       ✎
@@ -221,7 +229,8 @@ export default function EmpireMenu({
                     <button
                       className={`empire-row-btn danger ${confirmDelete === name ? "armed" : ""}`}
                       onClick={() => void doDelete(name)}
-                      title="Delete this empire"
+                      title={confirmDelete === name ? `Delete ${name} — click to confirm` : `Delete ${name}`}
+                      aria-label={confirmDelete === name ? `Confirm delete ${name}` : `Delete ${name}`}
                       data-testid={`empire-delete-${name}`}
                     >
                       {confirmDelete === name ? "✕?" : "✕"}
