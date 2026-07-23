@@ -278,6 +278,10 @@ export interface GamePipe { className: string; displayName: string; capacityPerM
 
 export interface GameBuildable { className: string; displayName: string; nativeClass: string }
 
+/** A HUB tier milestone (EST_Milestone schematic): tier + build cost.
+ *  cost pairs are [itemClass, quantity], solid parts only. */
+export interface GameMilestone { displayName: string; tier: number; cost: [string, number][] }
+
 /** Content-derived catalog provenance — Docs.json has no version field, so the
  *  Rust side fingerprints the parsed catalog (era markers, known-current recipe
  *  rates). `warnings` are user-ready staleness sentences shown verbatim. */
@@ -297,6 +301,8 @@ export interface GameData {
   buildables: Record<string, GameBuildable>;
   /** Schematic class → recipe classes it unlocks (W2b; empty on trimmed catalogs). */
   schematics?: Record<string, string[]>;
+  /** HUB tier milestones by schematic class (empty on trimmed catalogs). */
+  milestones?: Record<string, GameMilestone>;
   buildVersion: string;
   /** Absent until a hydrate from a core that computes it (tolerant default). */
   catalogHealth?: CatalogHealth;
@@ -868,6 +874,10 @@ export interface InitPayload {
       FGSchematic unlocks). Save-derived, outside the undo journal; [] until a
       save with schematics is imported. Gates alternate-recipe eligibility. */
   unlocked: string[];
+  /** Raw purchased schematic class names from the save (milestones + MAM +
+      shop, unresolved). With gamedata.milestones this yields per-tier HUB
+      progression; [] until a save with schematics is imported. */
+  purchasedSchematics?: string[];
 }
 
 /** Session fact: what the most recent save import did (W1c resume dashboard). */

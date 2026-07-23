@@ -10,6 +10,11 @@ map. Everything re-solves live as you drag — machine counts, clocks, belt
 saturation, power margins, train math — so the plan you draw is the factory
 you'll actually build.
 
+Save-map viewers show you what you already built; calculators size builds in
+a vacuum. MANIFOLD joins the halves: import your world, see what's connected
+to what, then design what comes next *on top of it* — with a solver checking
+every number as you go.
+
 **▶ Try it in your browser — nothing to install:**
 **https://manifold-app.up.railway.app/**
 
@@ -28,6 +33,8 @@ plans in local files and can re-read your save automatically.
   as the ◆ *built* layer — machines clustered into factories, clocks and counts
   as they really are. Plan expansions on top of it; re-import later and the
   differences arrive as a reviewable drift report, never a silent overwrite.
+  Your HUB tier progress and unlocked alternate recipes ride along into the
+  resume dashboard.
 - **Let the wizard do the chain math.** Press `P`, ask for "Iron Plate at
   25/min", and the global solver plans the whole supply chain — reusing any
   surplus your empire already exports before building anything new, claiming

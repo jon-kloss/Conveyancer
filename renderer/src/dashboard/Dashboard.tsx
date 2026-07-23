@@ -70,6 +70,30 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cutoverSig, cutoverPlan]);
 
+  const purchasedSchematics = useStore((s) => s.purchasedSchematics);
+  const unlocked = useStore((s) => s.unlocked);
+  // Empire progression (save-derived): per-tier HUB milestone counts from the
+  // catalog's milestone tree × the save's purchased set, plus how many
+  // alternate recipes are unlocked. Absent on the trimmed fixture (no
+  // milestones) or before a save import (nothing purchased) — the section
+  // hides rather than render empty scaffolding.
+  const progression = useMemo(() => {
+    const milestones = Object.entries(gamedata.milestones ?? {});
+    if (milestones.length === 0 || purchasedSchematics.size === 0) return null;
+    const tiers = new Map<number, { total: number; bought: number }>();
+    for (const [cls, m] of milestones) {
+      const t = tiers.get(m.tier) ?? { total: 0, bought: 0 };
+      t.total += 1;
+      if (purchasedSchematics.has(cls)) t.bought += 1;
+      tiers.set(m.tier, t);
+    }
+    const rows = [...tiers.entries()].sort(([a], [b]) => a - b);
+    // The frontier: the lowest tier with anything left to buy.
+    const frontier = rows.find(([, t]) => t.bought < t.total)?.[0] ?? rows[rows.length - 1][0];
+    const alternates = [...unlocked].filter((cls) => gamedata.recipes[cls]?.alternate).length;
+    return { rows, frontier, alternates };
+  }, [gamedata.milestones, gamedata.recipes, purchasedSchematics, unlocked]);
+
   const doneCount = useMemo(() => queue.filter((s) => s.done).length, [queue]);
   const partial = useMemo(() => queue.filter((s) => s.state === "partial"), [queue]);
   const nextStep = useMemo(() => queue.find((s) => !s.done), [queue]);
@@ -313,6 +337,29 @@ export default function Dashboard() {
               </div>
             )}
           </section>
+
+          {/* empire progression: HUB tiers from the save's purchased schematics
+              × the catalog milestone tree, plus unlocked alternates. Needs a
+              real catalog AND an imported save — hidden otherwise. */}
+          {progression && (
+            <section className="dash-section" data-testid="dash-progression">
+              <h3 className="t-label">PROGRESSION</h3>
+              <div className="dash-line mono">
+                TIER {progression.frontier} FRONTIER · {progression.alternates} ALTERNATE{" "}
+                {progression.alternates === 1 ? "RECIPE" : "RECIPES"} UNLOCKED
+              </div>
+              {progression.rows.map(([tier, t]) => (
+                <div className="dash-milestone" key={tier} data-testid={`dash-tier-${tier}`}>
+                  <div className="dash-line mono">
+                    TIER {tier} · {t.bought} / {t.total} milestones
+                  </div>
+                  <div className="dash-bar">
+                    <span style={{ width: `${Math.min(100, (t.bought / Math.max(1, t.total)) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </section>
+          )}
 
           {/* NEXT MOVES (PR 9/10/3): the shared feed, reading the single
               store-owned rank slice — the docked advisor NEXT tab renders the

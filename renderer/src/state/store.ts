@@ -279,6 +279,9 @@ export interface AppStore {
   /** W2b: recipe classes the imported save has unlocked — gates alternate-recipe
       eligibility in the wizard/recipe pickers. Empty until a save is imported. */
   unlocked: Set<string>;
+  /** Raw purchased schematic classes from the save — with gamedata.milestones
+      this yields the dashboard's per-tier HUB progression. */
+  purchasedSchematics: Set<string>;
   /** resume dashboard overlay — auto-presents once per plan (viewState.resumeSeen) */
   dashboardOpen: boolean;
   /** PR 10 (review M7): App's Escape-deference flag for the AI-settings
@@ -624,6 +627,7 @@ export const useStore = create<AppStore>((set, get) => ({
   advisorOpen: false,
   lastImport: null,
   unlocked: new Set(),
+  purchasedSchematics: new Set(),
   dashboardOpen: false,
   aiSettingsOpen: null,
   auditRequest: null,
@@ -697,6 +701,7 @@ export const useStore = create<AppStore>((set, get) => ({
         advisor: init.advisor,
         lastImport: init.lastImport ?? null,
         unlocked: new Set(init.unlocked ?? []),
+        purchasedSchematics: new Set(init.purchasedSchematics ?? []),
         viewState: init.viewState ?? {},
         view:
           openFactory && init.plan.factories[openFactory]

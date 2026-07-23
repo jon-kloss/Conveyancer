@@ -445,6 +445,10 @@ impl Session {
                 // Content-derived provenance (Docs.json has no version field):
                 // era fingerprint + staleness warnings the DATA menu surfaces.
                 "catalogHealth": gamedata::docs::catalog_health(&self.gamedata),
+                // HUB milestone tree (tier + cost + names) — with the
+                // purchased set below, the dashboard renders per-tier
+                // progression. Empty on the trimmed fixture.
+                "milestones": self.gamedata.milestones,
             },
             "world": self.world,
             "planHash": self.plan_hash(),

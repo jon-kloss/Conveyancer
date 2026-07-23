@@ -2092,3 +2092,50 @@ fn reimport_adopts_generator_recipe_in_place_preserving_planned_overclock() {
         "steady-state re-import is in sync"
     );
 }
+
+#[test]
+fn import_supplies_purchased_schematics_and_hydrate_ships_milestones() {
+    // The progression dashboard needs two wires: gamedata.milestones (the HUB
+    // tier tree, catalog-derived) and purchasedSchematics (save-derived).
+    // Pin both across import -> hydrate with a synthetic catalog carrying one
+    // EST_Milestone schematic.
+    let docs = r#"[
+      {
+        "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'",
+        "Classes": [
+          { "ClassName": "Desc_IronPlate_C", "mDisplayName": "Iron Plate", "mForm": "RF_SOLID", "mStackSize": "SS_MEDIUM" }
+        ]
+      },
+      {
+        "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGSchematic'",
+        "Classes": [
+          {
+            "ClassName": "Schematic_3-1_C",
+            "mDisplayName": "Coal Power",
+            "mType": "EST_Milestone",
+            "mTechTier": "3",
+            "mCost": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronPlate/Desc_IronPlate.Desc_IronPlate_C'\",Amount=20))"
+          }
+        ]
+      }
+    ]"#;
+    let mut s = Session::in_memory(Some(docs.as_bytes().to_vec())).unwrap();
+    s.import_save(ImportSnapshot {
+        save_name: "TEST-PROG".into(),
+        unlocked_schematics: vec!["Schematic_3-1_C".into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let h = s.hydrate();
+    let m = &h["gamedata"]["milestones"]["Schematic_3-1_C"];
+    assert_eq!(m["displayName"], "Coal Power");
+    assert_eq!(m["tier"], 3);
+    assert!(
+        h["purchasedSchematics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "Schematic_3-1_C"),
+        "the save's purchased set rides hydrate"
+    );
+}
