@@ -4,13 +4,16 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@etothepii/satisfactory-file-parser': 7d610cc223b6e7631c04c31c07ca7375ee247fda54d196ef4041f37ed1dce3ca
+
 importers:
 
   .:
     dependencies:
       '@etothepii/satisfactory-file-parser':
         specifier: ^4.1.1
-        version: 4.1.1
+        version: 4.1.1(patch_hash=7d610cc223b6e7631c04c31c07ca7375ee247fda54d196ef4041f37ed1dce3ca)
       '@fontsource/barlow':
         specifier: ^5.2.5
         version: 5.2.8
@@ -1178,7 +1181,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
-  '@etothepii/satisfactory-file-parser@4.1.1':
+  '@etothepii/satisfactory-file-parser@4.1.1(patch_hash=7d610cc223b6e7631c04c31c07ca7375ee247fda54d196ef4041f37ed1dce3ca)':
     dependencies:
       pako: 2.2.0
 

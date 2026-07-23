@@ -6,3 +6,5 @@
 # Approve esbuild's build so the install is deterministic in every environment.
 allowBuilds:
   esbuild: true
+patchedDependencies:
+  '@etothepii/satisfactory-file-parser': patches/@etothepii__satisfactory-file-parser.patch

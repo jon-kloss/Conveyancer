@@ -1,0 +1,24 @@
+diff --git a/build/parser/satisfactory/save/save-body-chunks.js b/build/parser/satisfactory/save/save-body-chunks.js
+index 6753c54cfe69e745e4f9dea17209352508da9c01..8b82d873a2a8acb3f640a632a5223035445277e5 100644
+--- a/build/parser/satisfactory/save/save-body-chunks.js
++++ b/build/parser/satisfactory/save/save-body-chunks.js
+@@ -39,12 +39,15 @@ var SaveBodyChunks;
+             currentByte += chunkHeaderSize;
+             try {
+                 let currentInflatedChunk = null;
+-                currentInflatedChunk = pako_1.default.inflate(new Uint8Array(fileBuffer.slice(currentByte, currentByte + chunkCompressedLength)));
++                // PATCHED (MANIFOLD): keep an absolute cursor instead of
++                // re-slicing the remaining ArrayBuffer once per chunk. The
++                // original `fileBuffer = fileBuffer.slice(currentByte)` copied
++                // the whole tail per ~64 KB chunk - O(n^2) in file size, the
++                // dominant cost on large saves. A Uint8Array view feeds pako
++                // without copying; nothing else observes fileBuffer/array.
++                currentInflatedChunk = pako_1.default.inflate(new Uint8Array(fileBuffer, currentByte, chunkCompressedLength));
+                 currentChunks.push(currentInflatedChunk);
+                 currentByte += chunkCompressedLength;
+-                fileBuffer = fileBuffer.slice(currentByte);
+-                array = new DataView(fileBuffer);
+-                currentByte = 0;
+             }
+             catch (err) {
+                 throw new parser_error_1.ParserError('ParserError', 'An error occurred while calling pako inflate.' + err);
