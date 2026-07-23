@@ -137,6 +137,46 @@ test("T0 drag preview of an independent out port ignores an infeasible sibling",
 });
 
 // ---------------------------------------------------------------------------
+// The OUTPUT TARGET control binds to the SELECTED out port, not just the first.
+// A factory with two output ports for the same item (e.g. one water extractor
+// split across two output routes) must let EACH port's target be set — the
+// slider used to mount only on the first out port, so a second port only ever
+// showed "VIEW ROUTE / Rate 0" with no way to set its rate.
+// ---------------------------------------------------------------------------
+test("OUTPUT TARGET binds to the selected out port, not just the first", async ({ page, request }) => {
+  await resetView(request);
+  const f = (await edit(request, [{ type: "create_factory", name: "SPLIT2", position: { x: -2600, y: 2600 }, region: "GRASS FIELDS" }])).created[0];
+  const inA = (await edit(request, [{ type: "add_port", factory: f, direction: "in", item: "Desc_IronIngot_C", rate: 0, rateCeiling: null, graphPos: { x: 0, y: 80 } }])).created[0];
+  const cons = (await edit(request, [{ type: "add_group", factory: f, machine: "Build_ConstructorMk1_C", recipe: "Recipe_IronRod_C", count: 2, clock: 1.0, graphPos: { x: 320, y: 80 }, floor: 0 }])).created[0];
+  // Two OUT ports for the SAME item: out-x added first, out-y second.
+  const outX = (await edit(request, [{ type: "add_port", factory: f, direction: "out", item: "Desc_IronRod_C", rate: 15, rateCeiling: null, graphPos: { x: 640, y: 80 } }])).created[0];
+  const outY = (await edit(request, [{ type: "add_port", factory: f, direction: "out", item: "Desc_IronRod_C", rate: 0, rateCeiling: null, graphPos: { x: 640, y: 260 } }])).created[0];
+  await edit(request, [{ type: "add_edge", factory: f, from: P(inA), to: G(cons), item: "Desc_IronIngot_C", tier: 3 }]);
+  await edit(request, [{ type: "add_edge", factory: f, from: G(cons), to: P(outX), item: "Desc_IronRod_C", tier: 3 }]);
+  await edit(request, [{ type: "add_edge", factory: f, from: G(cons), to: P(outY), item: "Desc_IronRod_C", tier: 3 }]);
+
+  try {
+    await openGraph(page, "SPLIT2");
+    // Select the SECOND out port → the OUTPUT TARGET control now mounts on IT.
+    await page.locator(`.react-flow__node[data-id="${outY}"]`).click();
+    await expect(page.getByText(/OUTPUT TARGET/)).toBeVisible();
+    await expect(page.getByTestId("target-slider")).toBeVisible();
+
+    // Setting a target here lands on out-y (not the first port out-x).
+    const input = page.getByTestId("target-input");
+    await input.fill("8");
+    await input.press("Enter");
+    await expect
+      .poll(async () => (await hydrate(request)).plan.ports[outY]?.rate, { timeout: 5000 })
+      .toBeCloseTo(8, 0);
+    const h = await hydrate(request);
+    expect(h.plan.ports[outX].rate, "the first out port's target is untouched").toBeCloseTo(15, 0);
+  } finally {
+    await edit(request, [{ type: "delete_factory", id: f }]).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
 // PROBE 2 — Output-target hard-stop clamps at the TRUE input ceiling and names
 // it (app derive level, off the edit response).
 //
