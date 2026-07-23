@@ -717,14 +717,14 @@ test("21 resource overview: aggregate table, drill-down, collapse to rail", asyn
 });
 
 // ---------------------------------------------------------------------------
-test("22 DATA menu: start-new-empire needs a two-click confirm, then wipes the plan", async ({ page, request }) => {
+test("22 EMPIRE menu: start-over needs a two-click confirm, then wipes the plan", async ({ page, request }) => {
   await bootMap(page, request);
   expect(Object.keys((await hydrate(request)).plan.factories).length).toBeGreaterThan(0);
 
-  await page.getByTestId("btn-data-menu").click();
+  await page.getByTestId("btn-empire-menu").click();
   const reset = page.getByTestId("btn-new-empire");
   await expect(reset).toBeVisible();
-  await shot(page, test.info(), "data-menu", "The DATA menu with Start-new-empire (plus import/docs entries).");
+  await shot(page, test.info(), "empire-menu", "The EMPIRE switcher with Start-over (plus switch/rename/create).");
 
   await reset.click();
   await expect(reset).toContainText(/Click again/i);

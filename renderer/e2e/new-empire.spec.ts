@@ -19,7 +19,7 @@ async function hydrate(request: APIRequestContext): Promise<any> {
   return (await request.get(`${API}/hydrate`)).json();
 }
 
-test("DATA menu → Start new empire wipes the whole plan", async ({ page, request }) => {
+test("EMPIRE menu → Start over wipes the whole plan", async ({ page, request }) => {
   await resetView(request);
   await edit(request, [{ type: "create_factory", name: "DOOMED WORKS", position: { x: -2400, y: 2400 }, region: "GRASS FIELDS" }]);
   await edit(request, [{ type: "create_factory", name: "ALSO DOOMED", position: { x: -2000, y: 2000 }, region: "GRASS FIELDS" }]);
@@ -33,7 +33,7 @@ test("DATA menu → Start new empire wipes the whole plan", async ({ page, reque
   if (await skip.isVisible().catch(() => false)) await skip.click();
   await expect(page.getByTestId("map-root")).toBeVisible();
 
-  await page.getByTestId("btn-data-menu").click();
+  await page.getByTestId("btn-empire-menu").click();
   const reset = page.getByTestId("btn-new-empire");
   await expect(reset).toBeVisible();
   await reset.click(); // arms the two-click confirm

@@ -17,12 +17,6 @@ export function syncAutoCapable(): boolean {
   return isDesktop || web.fsAccessSupported();
 }
 
-/** True when a manual sync retains the source (no re-pick next time) — desktop
- *  (native path) and FS-Access web. A non-FS-Access browser re-picks each time. */
-export function retainsSource(): boolean {
-  return isDesktop || web.fsAccessSupported();
-}
-
 /** Web-only: a non-FS-Access browser has no retained handle, so the manual sync
  *  falls back to the classic file input (re-pick each time). Never on desktop. */
 export function needsClassicPicker(): boolean {

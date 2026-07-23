@@ -237,7 +237,7 @@ test("PWR chip shows the generation segment only when generation > 0", async ({ 
     await dismissOnboarding(page);
     await expect(page.getByTestId("map-root")).toBeVisible();
 
-    await page.getByTestId("btn-data-menu").click();
+    await page.getByTestId("btn-empire-menu").click();
     const reset = page.getByTestId("btn-new-empire");
     await expect(reset).toBeVisible();
     await reset.click(); // arm

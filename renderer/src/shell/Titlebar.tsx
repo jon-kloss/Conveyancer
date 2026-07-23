@@ -1,8 +1,10 @@
 // Custom titlebar (36px): logo square, app name, breadcrumb, save-sync chip,
 // solver status, window controls. Frameless in Tauri; controls hidden in bridge mode.
 
+import { useEffect, useState } from "react";
 import { useStore, solveChip } from "../state/store";
 import DataMenu from "./DataMenu";
+import EmpireMenu from "./EmpireMenu";
 import "./shell.css";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -21,6 +23,15 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
   const derived = useStore((s) => s.derived);
   const setView = useStore((s) => s.setView);
   const reviewing = useStore((s) => s.reviewing);
+
+  // Only one titlebar dropdown open at a time — opening one closes the other.
+  const [openMenu, setOpenMenu] = useState<"empire" | "data" | null>(null);
+  // A proposal review unmounts both menus (below). Reset the lifted open state
+  // too, or a menu that was open when a background auto-pull opened the review
+  // would silently reopen (with its click-swallowing backdrop) on review close.
+  useEffect(() => {
+    if (reviewing) setOpenMenu(null);
+  }, [reviewing]);
 
   const factory = view.mode === "factory" ? plan.factories[view.factoryId] : null;
   const chip = solveChip(factory ? derived.factories[factory.id] : undefined);
@@ -64,11 +75,25 @@ export default function Titlebar({ overlayMode }: { overlayMode: boolean }) {
         )}
       </nav>
       <div className="titlebar-right">
-        {/* save/load corner: the DATA menu lives HERE (not portaled from a
-            view) so it exists on the map AND inside factories, and auto-sync's
-            timer keeps ticking everywhere. Hidden during proposal review —
-            loading more data mid-review would fight the open proposal. */}
-        {!reviewing && <DataMenu />}
+        {/* save/load corner: the EMPIRE switcher + DATA pipeline menus live
+            HERE (not portaled from a view) so they exist on the map AND inside
+            factories, and auto-sync's timer keeps ticking everywhere. Hidden
+            during proposal review — loading more data or switching empires
+            mid-review would fight the open proposal. */}
+        {!reviewing && (
+          <>
+            <EmpireMenu
+              open={openMenu === "empire"}
+              onOpen={() => setOpenMenu("empire")}
+              onClose={() => setOpenMenu(null)}
+            />
+            <DataMenu
+              open={openMenu === "data"}
+              onOpen={() => setOpenMenu("data")}
+              onClose={() => setOpenMenu(null)}
+            />
+          </>
+        )}
         <span className="chip" title="Every commit writes the plan file — there is no unsaved state.">
           SAVED ✓
         </span>

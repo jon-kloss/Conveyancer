@@ -1,20 +1,21 @@
-// #117: the save/load DATA menu, docked in the titlebar's top-right corner —
-// present on BOTH the map and the factory graph (it used to live in the map
-// toolbar and vanished inside factories; auto-sync's timer now keeps ticking
-// there too). Owns the whole load-data surface: import save (.sav → review
-// modal), Docs.json upload/update (web), sync-from-save + auto-sync, and the
-// two-click "start new empire" wipe. Escape (and invoking ⌘K search) closes
-// the dropdown — its fixed backdrop would otherwise swallow clicks while the
-// menu quietly stayed open.
+// The DATA pipeline panel, docked in the titlebar's right corner (design handoff:
+// "DATA Screen Redesign"). Present on BOTH the map and the factory graph so
+// auto-sync's timer keeps ticking everywhere. Reframed from a flat list into a
+// 3-step status pipeline — ① Game catalog → ② Import save → ③ Keep in sync — each
+// step a card with a status chip, its action(s), and its path hints inline; a
+// locked step states WHY in visible text, not a hover tooltip. Empire switching
+// and the destructive wipe moved out to EmpireMenu. Controlled open state lives
+// in Titlebar so only one titlebar menu is open at once. Escape (and invoking
+// ⌘K search) closes the dropdown — its fixed backdrop would otherwise swallow
+// clicks while the menu quietly stayed open.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../state/store";
 import Glyph from "../lib/glyphs";
 import ImportModal from "../import/ImportModal";
 import {
   syncAutoCapable,
-  retainsSource,
   needsClassicPicker,
   pickSaveForSync,
   readStoredSilently,
@@ -25,15 +26,23 @@ import {
 } from "../import/syncSource";
 import "./shell.css";
 
-export default function DataMenu() {
+export default function DataMenu({
+  open,
+  onOpen,
+  onClose,
+}: {
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
   const importFile = useStore((s) => s.importFile);
   const setImportFile = useStore((s) => s.setImportFile);
   const uploadingDocs = useStore((s) => s.uploadingDocs);
   const uploadDocs = useStore((s) => s.uploadDocs);
-  const newEmpire = useStore((s) => s.newEmpire);
-  const factoryCount = useStore((s) => Object.keys(s.plan.factories).length);
   const syncImport = useStore((s) => s.syncImport);
   const pushToast = useStore((s) => s.pushToast);
+  const lastImport = useStore((s) => s.lastImport);
+  const buildVersion = useStore((s) => s.gamedata.buildVersion);
   const catalogLoaded = useStore((s) => {
     const bv = s.gamedata.buildVersion;
     return !!bv && bv !== "fixture";
@@ -49,62 +58,28 @@ export default function DataMenu() {
   const setAutoSync = useStore((s) => s.setAutoSync);
   const autoPull = useStore((s) => s.autoPull);
 
-  const empireList = useStore((s) => s.empireList);
-  const refreshEmpires = useStore((s) => s.refreshEmpires);
-  const empireSwitch = useStore((s) => s.empireSwitch);
-  const empireCreate = useStore((s) => s.empireCreate);
-  const empireRename = useStore((s) => s.empireRename);
-  const empireDelete = useStore((s) => s.empireDelete);
-
   const fileRef = useRef<HTMLInputElement>(null);
   const docsRef = useRef<HTMLInputElement>(null);
-  const [dataMenu, setDataMenu] = useState(false);
-  // Multi-empire section state: the pending new-empire name, an in-flight
-  // rename (of the active empire), and the per-name two-click delete latch.
-  const [newName, setNewName] = useState("");
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  // "Start new empire": a two-click destructive latch — the first click arms
-  // the confirm, the second wipes the plan (keeping the Docs.json).
-  const [confirmReset, setConfirmReset] = useState(false);
-  const closeDataMenu = useCallback(() => {
-    setDataMenu(false);
-    setConfirmReset(false);
-  }, []);
-  // Disarm the destructive confirm whenever the menu closes by ANY path — an
-  // armed confirm surviving the close would wipe the plan on a single click.
-  useEffect(() => {
-    if (!dataMenu) {
-      setConfirmReset(false);
-      setConfirmDelete(null);
-      setRenaming(null);
-    }
-  }, [dataMenu]);
-  // The empire listing is fetched when the menu opens (it lists FILES/slots,
-  // not store state, so it can change outside the app).
-  useEffect(() => {
-    if (dataMenu) void refreshEmpires();
-  }, [dataMenu, refreshEmpires]);
 
   // Escape closes the dropdown (top layer first — capture, so it works even
   // while focus sits in the header search input), and invoking the ⌘K search
   // closes it too: the menu's fixed backdrop sits above the search results'
   // stacking context, so the two must never be open at once.
   useEffect(() => {
-    if (!dataMenu) return;
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         // consumed: closing the menu must not ALSO clear the map selection
         // (this capture listener runs before the views' bubble handlers)
         e.stopPropagation();
-        closeDataMenu();
+        onClose();
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        closeDataMenu(); // NOT consumed — ⌘K continues on to focus the search
+        onClose(); // NOT consumed — ⌘K continues on to focus the search
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dataMenu, closeDataMenu]);
+  }, [open, onClose]);
 
   const loadDocsFile = useCallback(
     async (f: File) => {
@@ -116,9 +91,8 @@ export default function DataMenu() {
 
   // Sync Phase 2: "Sync from save" re-reads the retained save handle and
   // reconciles in one click. Gated on a real Docs.json (a fixture catalog would
-  // quarantine most recipes → junk diffs); grayed with a how-to-enable tooltip
-  // otherwise. Chrome/Edge get the no-re-pick handle path; elsewhere it falls
-  // back to the classic file input (re-pick each time, no retention).
+  // quarantine most recipes → junk diffs). Chrome/Edge get the no-re-pick handle
+  // path; elsewhere it falls back to the classic file input (re-pick each time).
   const [syncMeta, setSyncMetaState] = useState<SyncMeta | undefined>();
   const [syncing, setSyncing] = useState(false);
   useEffect(() => {
@@ -221,341 +195,274 @@ export default function DataMenu() {
     };
   }, [autoSync.enabled, autoSync.intervalMin, autoSyncReady, autoPull, recordSync]);
 
+  // ── Pipeline state ───────────────────────────────────────────────────────
+  // Web must load the catalog BEFORE a save so classes resolve; desktop's
+  // catalog is host-provided, so step ① is always done there.
+  const catalogDone = catalogReady; // !__WASM_BACKEND__ || catalogLoaded
+  const importDone = hasImportedSave;
+  const syncedOnce = !!syncMeta;
+  const doneCount = [catalogDone, importDone, syncedOnce].filter(Boolean).length;
+  const platform = __WASM_BACKEND__ ? "WEB" : "DESKTOP";
+  const summaryOk = doneCount === 3;
+
+  // "running" reflects a timer that is ACTUALLY ticking — autoSyncReady gates
+  // the interval effect, so `autoSync.enabled` alone can lie (it persists
+  // independently of plan contents; if the gate later drops, the toggle goes
+  // aria-disabled and the timer stops, yet enabled stays true). Guard both the
+  // marker state and the chip on autoSyncReady so the UI never claims auto-sync
+  // is running while it's stopped and un-turn-off-able.
+  const autoRunning = autoSync.enabled && autoSyncReady;
+  type StepState = "done" | "current" | "locked" | "running";
+  const step1: StepState = catalogDone ? "done" : "current";
+  const step2: StepState = importDone ? "done" : catalogDone ? "current" : "locked";
+  const step3: StepState = autoRunning
+    ? "running"
+    : syncedOnce
+      ? "done"
+      : syncReady
+        ? "current"
+        : "locked";
+
+  const importFromInput = () => {
+    onClose();
+    fileRef.current?.click();
+  };
+
+  const syncStatus = autoRunning
+    ? `AUTO · EVERY ${autoSync.intervalMin} MIN`
+    : syncMeta
+      ? `SYNCED ${relTime(syncMeta.lastSyncedAt).toUpperCase()}`
+      : "NEVER SYNCED";
+
   return (
     <div className="data-menu-wrap">
       <button
-        className={`btn btn-ghost ${dataMenu ? "active" : ""}`}
-        onClick={() => (dataMenu ? closeDataMenu() : setDataMenu(true))}
+        className={`btn btn-ghost ${open ? "active" : ""}`}
+        onClick={() => (open ? onClose() : onOpen())}
         data-testid="btn-data-menu"
-        title="Import a save or load your game's Docs.json"
+        title="Load your game's Docs.json, import a save, and keep it in sync"
       >
         {uploadingDocs ? "LOADING CATALOG…" : "DATA ▾"}
       </button>
-      {dataMenu && (
+      {open && (
         <>
-          <div className="data-menu-backdrop" onClick={closeDataMenu} />
-          <div className="data-menu" data-testid="data-menu">
-            {/* Web: the catalog must load BEFORE a save so classes resolve.
-                ONE menu layout, always — the ordered one. It never reshuffles
-                after step ① lands (a menu that rearranges itself mid-flow
-                reads as broken); the step-① row just flips to its loaded ✓
-                state and keeps working as the swap-game-version action. */}
-            {__WASM_BACKEND__ && (
-              <div className="data-menu-order" data-testid="data-menu-order">
-                Load in order: <b>① Upload Docs.json</b> → <b>② Import save</b>
-              </div>
-            )}
-            {__WASM_BACKEND__ && (
-              <button
-                className="data-menu-item data-menu-step"
-                onClick={() => {
-                  setDataMenu(false);
-                  docsRef.current?.click();
-                }}
-                disabled={uploadingDocs}
-                data-testid="btn-upload-docs-first"
-              >
-                <span className="data-menu-item-label">
-                  ① Upload Docs.json{catalogLoaded ? " ✓" : ""}
-                </span>
-                <span className="data-menu-item-sub">
-                  {catalogLoaded
-                    ? "loaded — upload again to swap game versions"
-                    : "start here — the recipe catalog for your game version"}
-                </span>
-              </button>
-            )}
-            {/* The order is ENFORCED on web, not suggested: without a real
-                catalog most save classes can't resolve, so step ② stays
-                disabled (aria-disabled keeps the how-to tooltip on hover)
-                until step ① lands. Desktop is unaffected. */}
-            <button
-              className="data-menu-item"
-              onClick={() => {
-                if (__WASM_BACKEND__ && !catalogLoaded) return;
-                setDataMenu(false);
-                fileRef.current?.click();
-              }}
-              aria-disabled={__WASM_BACKEND__ && !catalogLoaded}
-              title={
-                __WASM_BACKEND__ && !catalogLoaded
-                  ? "Upload your Docs.json first (step ① above) — then import your save"
-                  : undefined
-              }
-              data-testid="btn-import"
-            >
-              <span className="data-menu-item-label">
-                <Glyph name="import" size={14} />{" "}
-                {__WASM_BACKEND__ ? `② Import save${hasImportedSave ? " ✓" : ""}` : "Import save"}
+          <div className="data-menu-backdrop" onClick={onClose} />
+          <div className="data-menu data-pipeline" data-testid="data-menu">
+            <div className="data-pipeline-head">
+              <span className="t-panel-header data-pipeline-title">Game data</span>
+              <span className={`data-pipeline-summary mono ${summaryOk ? "ok" : ""}`}>
+                {summaryOk ? "ALL SYSTEMS FED" : `${doneCount} OF 3 STEPS DONE`} · {platform}
               </span>
-              <span className="data-menu-item-sub">
-                {__WASM_BACKEND__ && !catalogLoaded
-                  ? "unlocks after step ① — your Docs.json resolves the save's recipes"
-                  : ".sav — your factories as a Built layer"}
-              </span>
-            </button>
-            {(
-              // One "Sync from save" control with an Auto toggle, on BOTH builds
-              // (desktop re-reads a native path; web a retained handle).
-              // aria-disabled (not the native attribute) keeps the how-to-enable
-              // tooltip on hover — browsers suppress title on a natively-disabled
-              // button. Turning Auto on disables the manual click (the timer owns it).
-              <div className="data-menu-block sync-block">
-                <div className="sync-row">
-                  <button
-                    className="data-menu-item sync-main"
-                    onClick={() => {
-                      if (!syncReady || syncing || autoSync.enabled) return;
-                      setDataMenu(false);
-                      void onSync();
-                    }}
-                    aria-disabled={!syncReady || syncing || autoSync.enabled}
-                    title={
-                      !catalogReady
-                        ? "Upload your Docs.json first (step ① above) to enable save sync"
-                        : !syncReady
-                          ? "Import your save first — sync re-reads it to reconcile changes"
-                          : autoSync.enabled
-                            ? "Auto-sync is on — turn it off to sync manually"
-                            : undefined
-                    }
-                    data-testid="btn-sync-save"
-                  >
-                    <span className="data-menu-item-label">
-                      {autoSync.enabled ? "Auto-syncing" : syncing ? "Syncing…" : "Sync from save"}
-                    </span>
-                    <span className="data-menu-item-sub">
-                      {!catalogReady
-                        ? "needs your Docs.json — upload it above to enable"
-                        : !syncReady
-                          ? "needs an imported save — import yours above to enable"
-                          : autoSync.enabled
-                            ? `every ${autoSync.intervalMin} min · applies safe changes, asks on conflicts`
-                            : syncMeta
-                              ? `re-read ${syncMeta.name} · synced ${relTime(syncMeta.lastSyncedAt)}`
-                              : retainsSource()
-                                ? "re-read your save & reconcile — no re-pick next time"
-                                : "re-read your save & reconcile"}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={autoSync.enabled}
-                    aria-disabled={!autoSyncReady}
-                    className={`sync-auto ${autoSync.enabled ? "on" : ""}`}
-                    onClick={() => void onToggleAutoSync()}
-                    title={
-                      autoSyncReady
-                        ? autoSync.enabled
-                          ? "Auto-sync on — click to turn off"
-                          : __WASM_BACKEND__
-                            ? "Auto-sync: re-read on a timer (Chrome/Edge, this tab open)"
-                            : "Auto-sync: re-read your save on a timer while the app is open"
-                        : !catalogReady
-                          ? "Upload your Docs.json first (step ① above) to enable save sync"
-                          : !syncReady
-                            ? "Import your save first — sync re-reads it to reconcile changes"
-                            : "Auto-sync needs the File System Access API — use Chrome or Edge"
-                    }
-                    data-testid="btn-auto-sync"
-                  >
-                    <span className="sync-auto-text mono">AUTO</span>
-                    <span className="sync-auto-track" aria-hidden>
-                      <span className="sync-auto-knob" />
-                    </span>
-                  </button>
-                </div>
-                {autoSync.enabled && autoSyncReady && (
-                  <div className="autosync-intervals" data-testid="autosync-intervals">
-                    <span className="autosync-label mono">every</span>
-                    {[5, 10, 15].map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        className={`autosync-chip ${n === autoSync.intervalMin ? "active" : ""}`}
-                        onClick={() => setAutoSync(true, n)}
-                        data-testid={`autosync-${n}`}
-                      >
-                        {n}m
-                      </button>
-                    ))}
-                  </div>
+            </div>
+
+            {/* ── Step ① Game catalog ─────────────────────────────────────── */}
+            <StepCard n={1} state={step1} connectDone={step1 === "done" && step2 === "done"}>
+              <div className="pl-title-row">
+                <span className="pl-title">Game catalog</span>
+                {step1 === "done" ? (
+                  <span className="pl-chip ok">
+                    {/* On desktop the catalog is host-provided; show its build
+                        only when it's a real one. "fixture"/empty is the same
+                        sentinel `catalogLoaded` treats as not-a-real-catalog —
+                        never surface it as a build label ("LOADED · BUILD FIXTURE"). */}
+                    {__WASM_BACKEND__ || !buildVersion || buildVersion === "fixture"
+                      ? "CATALOG LOADED"
+                      : `LOADED · BUILD ${buildVersion}`}
+                  </span>
+                ) : (
+                  <span className="pl-chip warn">NOT LOADED — START HERE</span>
                 )}
               </div>
-            )}
-            {/* Multi-empire switcher (1.0): every empire is its own plan
-                (a .ficsit file beside the active one on desktop/bridge; an
-                IndexedDB slot on web). Switching swaps the live session and
-                re-hydrates; delete is a per-row two-click latch and refuses
-                the active empire (switch away first). */}
-            {empireList && (
-              <div className="data-menu-empires" data-testid="empires-section">
-                <div className="data-menu-hint-head" style={{ padding: "6px 12px 2px" }}>
-                  EMPIRES
-                </div>
-                {empireList.names.map((n) =>
-                  renaming === n ? (
-                    <form
-                      key={n}
-                      className="data-menu-item"
-                      style={{ display: "flex", gap: 6 }}
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        const next = new FormData(e.currentTarget).get("to");
-                        setRenaming(null);
-                        if (typeof next === "string" && next.trim() && next.trim() !== n)
-                          void empireRename(n, next.trim());
-                      }}
-                    >
-                      <input
-                        name="to"
-                        autoFocus
-                        defaultValue={n}
-                        maxLength={64}
-                        className="mono"
-                        style={{ flex: 1 }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") setRenaming(null);
-                        }}
-                        data-testid="empire-rename-input"
-                      />
-                      <button className="btn btn-ghost" type="submit">
-                        OK
-                      </button>
-                    </form>
-                  ) : (
-                    <div
-                      key={n}
-                      className="data-menu-item data-menu-empire-row"
-                      style={{ display: "flex", alignItems: "center", gap: 6 }}
-                      data-testid={`empire-row-${n}`}
-                    >
+              {__WASM_BACKEND__ ? (
+                catalogLoaded ? (
+                  <>
+                    <span className="pl-sub">Uploaded catalog is live — swap it if you change game versions.</span>
+                    <div className="pl-action">
                       <button
-                        className="data-menu-item-label"
-                        style={{
-                          all: "unset",
-                          cursor: n === empireList.active ? "default" : "pointer",
-                          flex: 1,
-                          fontWeight: n === empireList.active ? 700 : 400,
-                        }}
-                        title={n === empireList.active ? "the active empire" : `switch to ${n}`}
+                        className="btn btn-ghost pl-btn"
                         onClick={() => {
-                          if (n === empireList.active) return;
-                          closeDataMenu();
-                          void empireSwitch(n);
+                          onClose();
+                          docsRef.current?.click();
                         }}
-                        data-testid={`empire-switch-${n}`}
+                        disabled={uploadingDocs}
+                        data-testid="btn-upload-docs-first"
                       >
-                        {n === empireList.active ? `● ${n}` : n}
+                        SWAP GAME VERSION
                       </button>
-                      <button
-                        className="btn btn-ghost"
-                        style={{ height: 22, padding: "0 6px" }}
-                        title="Rename"
-                        onClick={() => setRenaming(n)}
-                        data-testid={`empire-rename-${n}`}
-                      >
-                        ✎
-                      </button>
-                      {n !== empireList.active && (
-                        <button
-                          className={`btn btn-ghost ${confirmDelete === n ? "active" : ""}`}
-                          style={{ height: 22, padding: "0 6px" }}
-                          title={confirmDelete === n ? "Click again to delete" : "Delete"}
-                          onClick={() => {
-                            if (confirmDelete !== n) {
-                              setConfirmDelete(n);
-                              return;
-                            }
-                            setConfirmDelete(null);
-                            void empireDelete(n);
-                          }}
-                          data-testid={`empire-delete-${n}`}
-                        >
-                          {confirmDelete === n ? "✕?" : "✕"}
-                        </button>
-                      )}
                     </div>
-                  ),
+                  </>
+                ) : (
+                  <>
+                    <span className="pl-sub">
+                      Docs.json from your game install — resolves every recipe before a save can import.
+                    </span>
+                    <div className="pl-action">
+                      <button
+                        className="btn btn-primary pl-btn"
+                        onClick={() => {
+                          onClose();
+                          docsRef.current?.click();
+                        }}
+                        disabled={uploadingDocs}
+                        data-testid="btn-upload-docs-first"
+                      >
+                        UPLOAD DOCS.JSON
+                      </button>
+                      <span className="pl-microcopy mono">or drop the file anywhere</span>
+                    </div>
+                    {/* Full fixed path segments — the leading … stands only for
+                        the variable library/drive root; steamapps\common and
+                        Epic Games are real fixed dirs, so keep them (a help path
+                        that omits them sends the user to a folder that isn't there). */}
+                    <div className="pl-hints mono">
+                      <div>
+                        <span className="pl-hint-key">STEAM</span>…\steamapps\common\Satisfactory\CommunityResources\Docs\en-US.json
+                      </div>
+                      <div>
+                        <span className="pl-hint-key">EPIC</span>…\Epic Games\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json
+                      </div>
+                    </div>
+                  </>
+                )
+              ) : (
+                <span className="pl-sub">host-provided via FICSIT_DOCS_JSON — resolves your save's recipes.</span>
+              )}
+            </StepCard>
+
+            {/* ── Step ② Import save ───────────────────────────────────────── */}
+            <StepCard n={2} state={step2} connectDone={step2 === "done" && step3 !== "locked"}>
+              <div className="pl-title-row">
+                <span className="pl-title">
+                  <Glyph name="import" size={14} /> Import save
+                </span>
+                {step2 === "locked" ? (
+                  <span className="pl-chip">NEEDS CATALOG</span>
+                ) : importDone ? (
+                  <span className="pl-chip">{(lastImport?.saveName ?? "SAVE IMPORTED").toUpperCase()}</span>
+                ) : (
+                  <span className="pl-chip">NO SAVE YET</span>
                 )}
-                <form
-                  className="data-menu-item"
-                  style={{ display: "flex", gap: 6 }}
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const name = newName.trim();
-                    if (!name) return;
-                    setNewName("");
-                    closeDataMenu();
-                    void empireCreate(name);
-                  }}
-                >
-                  <input
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    placeholder="New empire name…"
-                    maxLength={64}
-                    className="mono"
-                    style={{ flex: 1 }}
-                    data-testid="empire-new-name"
-                  />
-                  <button className="btn btn-ghost" type="submit" disabled={!newName.trim()} data-testid="empire-create">
-                    + CREATE
-                  </button>
-                </form>
               </div>
-            )}
-            {/* Start over: a cross-platform Session::new_empire (SQLite
-                wipe on desktop, store reset → IndexedDB on web), shown only
-                when there's something to clear. Two-click confirm guards the
-                destructive wipe; the gamedata catalog is kept. */}
-            {factoryCount > 0 && (
-              <button
-                className={`data-menu-item data-menu-danger ${confirmReset ? "armed" : ""}`}
-                onClick={() => {
-                  if (!confirmReset) {
-                    setConfirmReset(true);
-                    return;
-                  }
-                  closeDataMenu();
-                  void newEmpire();
-                }}
-                data-testid="btn-new-empire"
-              >
-                <span className="data-menu-item-label">
-                  {confirmReset ? "Click again to delete everything" : "Start new empire"}
-                </span>
-                <span className="data-menu-item-sub">
-                  {confirmReset
-                    ? `deletes all ${factoryCount} ${factoryCount === 1 ? "factory" : "factories"} & routes — keeps your Docs.json`
-                    : "wipe the current plan to import a fresh save"}
-                </span>
-              </button>
-            )}
-            {/* Path hints mirror the enforced load order on web: Docs.json
-                rows lead, the save row follows (desktop shows save only) —
-                numbered the SAME whether or not a catalog is loaded, so the
-                menu never reshuffles mid-flow. */}
-            <div className="data-menu-hint">
-              <div className="data-menu-hint-head">Or drag &amp; drop a file anywhere</div>
-              {__WASM_BACKEND__ && (
+              {step2 === "locked" ? (
                 <>
-                  <div className="data-menu-hint-row">
-                    <span className="data-menu-hint-key">① Docs (Steam)</span>
-                    <code>…\steamapps\common\Satisfactory\CommunityResources\Docs\en-US.json</code>
+                  <span className="pl-sub">
+                    .sav — your factories land as the ◆ built layer. Unlocks after step ①.
+                    <br />
+                    %LOCALAPPDATA%\FactoryGame\Saved\SaveGames\
+                  </span>
+                  {/* The button stays present (aria-disabled) so it's reachable,
+                      but the VISIBLE lock reason is the text above — not a
+                      hover-only tooltip. */}
+                  <div className="pl-action">
+                    <button
+                      className="btn btn-ghost pl-btn"
+                      aria-disabled
+                      title="Upload your Docs.json first (step ① above) — then import your save"
+                      data-testid="btn-import"
+                    >
+                      IMPORT .SAV
+                    </button>
                   </div>
-                  <div className="data-menu-hint-row">
-                    <span className="data-menu-hint-key">① Docs (Epic)</span>
-                    <code>…\Epic Games\SatisfactoryEarlyAccess\CommunityResources\Docs\en-US.json</code>
+                </>
+              ) : importDone ? (
+                <>
+                  <span className="pl-sub">
+                    {lastImport
+                      ? `${lastImport.factoriesAdded} ${lastImport.factoriesAdded === 1 ? "factory" : "factories"} as ◆ built · imported ${relTime(new Date(lastImport.at).getTime())}`
+                      : "your factories are live as the ◆ built layer"}
+                  </span>
+                  <div className="pl-action">
+                    <button className="btn btn-ghost pl-btn" onClick={importFromInput} data-testid="btn-import">
+                      IMPORT ANOTHER SAVE
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="pl-sub">
+                    .sav — your factories land as the ◆ built layer ·
+                    %LOCALAPPDATA%\FactoryGame\Saved\SaveGames\
+                  </span>
+                  <div className="pl-action">
+                    <button className="btn btn-primary pl-btn" onClick={importFromInput} data-testid="btn-import">
+                      IMPORT .SAV
+                    </button>
                   </div>
                 </>
               )}
-              <div className="data-menu-hint-row">
-                <span className="data-menu-hint-key">{__WASM_BACKEND__ ? "② Save" : "Save"}</span>
-                <code>%LOCALAPPDATA%\FactoryGame\Saved\SaveGames\</code>
+            </StepCard>
+
+            {/* ── Step ③ Keep in sync ──────────────────────────────────────── */}
+            <StepCard n={3} state={step3} connectDone={false} last>
+              <div className="pl-title-row">
+                <span className="pl-title">Keep in sync</span>
+                <span className="pl-chip" data-testid="sync-status">
+                  {step3 === "locked" ? (catalogReady ? "NEEDS AN IMPORTED SAVE" : "NEEDS CATALOG") : syncStatus}
+                </span>
               </div>
-            </div>
+              {step3 === "locked" ? (
+                <span className="pl-sub">re-reads your save & reconciles — manually or on a timer.</span>
+              ) : (
+                <>
+                  <span className="pl-sub">
+                    applies safe changes silently, asks on conflicts — one undo step either way.
+                  </span>
+                  <div className="pl-sync-row">
+                    <button
+                      className="btn btn-ghost pl-btn"
+                      onClick={() => {
+                        if (!syncReady || syncing || autoSync.enabled) return;
+                        onClose();
+                        void onSync();
+                      }}
+                      aria-disabled={!syncReady || syncing || autoSync.enabled}
+                      title={autoSync.enabled ? "Auto-sync is on — turn it off to sync manually" : undefined}
+                      data-testid="btn-sync-save"
+                    >
+                      {syncing ? "SYNCING…" : "SYNC NOW"}
+                    </button>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={autoSync.enabled}
+                      aria-disabled={!autoSyncReady}
+                      className={`sync-auto ${autoSync.enabled ? "on" : ""}`}
+                      onClick={() => void onToggleAutoSync()}
+                      title={
+                        autoSyncReady
+                          ? autoSync.enabled
+                            ? "Auto-sync on — click to turn off"
+                            : __WASM_BACKEND__
+                              ? "Auto-sync: re-read on a timer (Chrome/Edge, this tab open)"
+                              : "Auto-sync: re-read your save on a timer while the app is open"
+                          : "Auto-sync needs the File System Access API — use Chrome or Edge"
+                      }
+                      data-testid="btn-auto-sync"
+                    >
+                      <span className="sync-auto-text mono">AUTO</span>
+                      <span className="sync-auto-track" aria-hidden>
+                        <span className="sync-auto-knob" />
+                      </span>
+                    </button>
+                    {autoSync.enabled && autoSyncReady && (
+                      <div className="autosync-intervals" data-testid="autosync-intervals">
+                        {[5, 10, 15].map((n) => (
+                          <button
+                            key={n}
+                            type="button"
+                            className={`autosync-chip ${n === autoSync.intervalMin ? "active" : ""}`}
+                            onClick={() => setAutoSync(true, n)}
+                            data-testid={`autosync-${n}`}
+                          >
+                            {n}m
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </StepCard>
           </div>
         </>
       )}
@@ -589,6 +496,33 @@ export default function DataMenu() {
           viewport, not this titlebar-corner wrapper (position: relative). */}
       {importFile &&
         createPortal(<ImportModal file={importFile} onClose={() => setImportFile(null)} />, document.body)}
+    </div>
+  );
+}
+
+// One pipeline step: a left rail (marker + connector line) beside the card body.
+function StepCard({
+  n,
+  state,
+  connectDone,
+  last,
+  children,
+}: {
+  n: number;
+  state: "done" | "current" | "locked" | "running";
+  connectDone: boolean;
+  last?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`pl-card ${state === "locked" ? "locked" : ""} ${last ? "last" : ""}`}>
+      <div className="pl-rail">
+        <span className={`pl-marker ${state}`} aria-hidden>
+          {state === "done" ? "✓" : state === "running" ? "◇" : n}
+        </span>
+        {!last && <span className={`pl-connector ${connectDone ? "done" : ""}`} aria-hidden />}
+      </div>
+      <div className="pl-body">{children}</div>
     </div>
   );
 }

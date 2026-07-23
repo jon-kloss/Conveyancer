@@ -291,24 +291,28 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   await waitReady(page);
   expect(await buildVersion(page), "boots on the bundled fixture catalog").toBe("fixture");
 
-  // Sync Phase 2: "Sync from save" is gated on a real catalog — syncing against
-  // the fixture would quarantine most recipes into junk diffs. On the fixture it
-  // is aria-disabled and its title says how to enable it. (The menu stays open
-  // across the upload below — setInputFiles is programmatic — so we watch the
-  // same button's gate flip in place, no click through the onboarding overlay.)
+  // DATA pipeline on the fixture: step ③ "Keep in sync" is LOCKED behind the
+  // catalog gate (syncing against the fixture would quarantine most recipes
+  // into junk diffs) — so it renders no action buttons, only a status chip that
+  // states the reason inline. (The menu stays open across the upload below —
+  // setInputFiles is programmatic — so we watch the same cards flip in place,
+  // no click through the onboarding overlay.)
   await page.getByTestId("btn-data-menu").click();
-  const syncBtn = page.getByTestId("btn-sync-save");
-  await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
-  await expect(syncBtn).toHaveAttribute("title", /Docs\.json/);
-  // Phase 3: the auto-sync toggle shares the same Docs.json gate.
-  const autoBtn = page.getByTestId("btn-auto-sync");
-  await expect(autoBtn).toHaveAttribute("aria-disabled", "true");
-  await expect(autoBtn).toHaveAttribute("title", /Docs\.json/);
-  // The load ORDER is enforced, not suggested: step ② (Import save) is
-  // disabled while the app is still on the fixture catalog.
+  // Assert the LOCKED structural state from the card itself (not merely "the
+  // sync button is absent" — that would also pass if a testid were renamed).
+  // Steps ② and ③ are both locked on the fixture; the pipeline connectors read
+  // the state machine, and the sync step names the exact reason inline.
+  await expect(page.locator(".pl-card").nth(1)).toHaveClass(/locked/); // ② Import save
+  await expect(page.locator(".pl-card").nth(2)).toHaveClass(/locked/); // ③ Keep in sync
+  await expect(page.getByTestId("sync-status")).toHaveText("NEEDS CATALOG");
+  await expect(page.getByTestId("btn-sync-save")).toHaveCount(0);
+  await expect(page.getByTestId("btn-auto-sync")).toHaveCount(0);
+  // The load ORDER is enforced, not suggested: step ② (Import save) is LOCKED
+  // while the app is still on the fixture catalog — the button stays present but
+  // aria-disabled, with the how-to still in its title.
   const importBtn = page.getByTestId("btn-import");
   await expect(importBtn).toHaveAttribute("aria-disabled", "true");
-  await expect(importBtn).toContainText("② Import save");
+  await expect(importBtn).toHaveAttribute("title", /Docs\.json/);
 
   // Upload through the real input the button drives (setInputFiles fires its
   // onChange → store.uploadDocs → worker rebuild → hydrate). The button is
@@ -328,47 +332,24 @@ test("Phase 4a: uploading a Docs.json swaps the catalog and persists across relo
   );
   expect(recipeCount, "the uploaded catalog has recipes").toBeGreaterThan(0);
 
-  // The DOCS gate lifts — step ② unlocks — but the menu keeps its ONE
-  // ordered layout: the label stays "② Import save" (the menu never
-  // reshuffles after step ① lands) and step ① flips to its loaded ✓ state.
-  // Sync stays gated on an IMPORTED SAVE: "Sync from save" re-reads a save
-  // you already imported, so with no import in the plan its gate holds with
-  // the how-to title. (The first-time flow is ② Import save, never sync.)
-  await expect(importBtn).toHaveAttribute("aria-disabled", "false");
-  await expect(importBtn).toContainText("② Import save");
+  // The DOCS gate lifts — step ② unlocks (button enabled) — while the cards
+  // keep their positions (the pipeline never reshuffles): step ① flips to its
+  // loaded state and its button becomes the swap-version action. Step ③ stays
+  // gated on an IMPORTED SAVE ("Sync" re-reads a save you already imported), so
+  // with no import in the plan it holds LOCKED — no action buttons, reason chip.
+  // Step ① is now DONE (its marker is the ✓), step ② is no longer locked, and
+  // step ③ stays locked with the reason now updated to "needs an imported save".
+  await expect(page.locator(".pl-card").nth(0)).not.toHaveClass(/locked/);
+  await expect(page.locator(".pl-card").nth(0).locator(".pl-marker.done")).toBeVisible();
+  await expect(page.locator(".pl-card").nth(1)).not.toHaveClass(/locked/);
+  await expect(page.locator(".pl-card").nth(2)).toHaveClass(/locked/);
+  await expect(importBtn).not.toHaveAttribute("aria-disabled", "true");
+  await expect(importBtn).toContainText("IMPORT");
   const stepOne = page.getByTestId("btn-upload-docs-first");
-  await expect(stepOne).toContainText("① Upload Docs.json ✓");
-  await expect(stepOne).toContainText("upload again to swap game versions");
-  // The order banner survives the upload — the single ordered layout is the
-  // point; a re-gate on !catalogLoaded would hide it here.
-  await expect(page.getByTestId("data-menu-order")).toBeVisible();
-  // ...as do the numbered drag-drop hints, and the old separate "Update
-  // Docs.json" entry stays gone (step ① owns the swap action now).
-  await expect(page.locator(".data-menu-hint-key").first()).toContainText("① Docs (Steam)");
-  await expect(page.locator(".data-menu-hint-key").last()).toContainText("② Save");
-  await expect(page.getByTestId("btn-upload-docs")).toHaveCount(0);
-  await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
-  await expect(syncBtn).toHaveAttribute("title", /[Ii]mport your save/);
-  await expect(autoBtn).toHaveAttribute("title", /[Ii]mport your save/);
-
-  // Auto-sync owns the manual sync label: forcing it ON via the store swaps
-  // the label to Auto-syncing (the timer owns re-reads); OFF returns it to
-  // the save-gated idle state. Drive the toggle through the store (the real
-  // toggle needs an OS file picker we can't script).
-  const setAuto = (on: boolean) =>
-    page.evaluate(
-      (v) =>
-        (
-          window as unknown as { __ficsitStore: { getState(): { setAutoSync(e: boolean): void } } }
-        ).__ficsitStore.getState().setAutoSync(v),
-      on,
-    );
-  await setAuto(true);
-  await expect(syncBtn).toHaveAttribute("aria-disabled", "true");
-  await expect(syncBtn).toContainText("Auto-syncing");
-  await setAuto(false);
-  await expect(syncBtn).toContainText("Sync from save");
-  await expect(syncBtn).toHaveAttribute("aria-disabled", "true"); // still save-gated
+  await expect(stepOne).toContainText("SWAP GAME VERSION");
+  await expect(page.getByTestId("sync-status")).toHaveText("NEEDS AN IMPORTED SAVE");
+  await expect(page.getByTestId("btn-sync-save")).toHaveCount(0);
+  await expect(page.getByTestId("btn-auto-sync")).toHaveCount(0);
 
   // RELOAD + PERSIST — the worker reads the docs bytes back out of IndexedDB and
   // reconstructs the session on the real catalog. If docs were not persisted,
@@ -439,9 +420,10 @@ test("Phase 4a: a corrupt plan with uploaded docs keeps the catalog, drops only 
   expect(await hasKey(page, DOCS_KEY), "the uploaded docs were NOT discarded").toBe(true);
 });
 
-// "Start new empire" (DATA ▾): the web reset. It must WIPE the plan, KEEP the
-// uploaded Docs.json, and have both survive a reload (the IndexedDB snapshot is
-// overwritten with the fresh empty session — the old empire never comes back).
+// "Start over" (EMPIRE ▾): the web reset, moved to the empire switcher. It must
+// WIPE the plan, KEEP the uploaded Docs.json, and have both survive a reload (the
+// IndexedDB snapshot is overwritten with the fresh empty session — the old empire
+// never comes back).
 test("start a new empire wipes the plan but keeps the uploaded catalog", async ({ page }) => {
   await page.goto("/");
   await waitReady(page);
@@ -458,8 +440,8 @@ test("start a new empire wipes the plan but keeps the uploaded catalog", async (
   });
   expect(await factoryCount(page)).toBe(1);
 
-  // DATA ▾ → Start new empire — a two-click destructive confirm.
-  await page.getByTestId("btn-data-menu").click();
+  // EMPIRE ▾ → Start over — a two-click destructive confirm.
+  await page.getByTestId("btn-empire-menu").click();
   const reset = page.getByTestId("btn-new-empire");
   await expect(reset).toBeVisible();
   await reset.click(); // arms the confirm
