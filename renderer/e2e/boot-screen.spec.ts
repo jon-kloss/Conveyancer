@@ -24,6 +24,12 @@ test("fast boot: overlay shows a real stage then reveals an interactive map", as
   // Interactive: the DATA menu opens (clicks are not intercepted).
   await page.getByTestId("btn-data-menu").click();
   await expect(page.getByTestId("data-menu")).toBeVisible();
+  // Catalog provenance strip: the bridge runs the trimmed fixture, so the
+  // strip says so, with a real recipe count and NO staleness warning (the
+  // content fingerprint stays silent on small catalogs — see catalog_health).
+  await expect(page.getByTestId("catalog-status")).toContainText("BUNDLED SAMPLE DATA");
+  await expect(page.getByTestId("catalog-status")).toContainText(/\d+ RECIPES/);
+  await expect(page.getByTestId("catalog-warning")).toHaveCount(0);
   await page.keyboard.press("Escape");
 });
 

@@ -892,8 +892,12 @@ export const useStore = create<AppStore>((set, get) => ({
       set({ uploadingDocs: false });
     }
     await get().hydrate();
-    const recipes = Object.keys(get().gamedata.recipes).length;
-    get().pushToast(`Catalog loaded — ${recipes.toLocaleString()} recipes`, "success");
+    const { recipes, catalogHealth } = get().gamedata;
+    const count = Object.keys(recipes).length;
+    get().pushToast(`Catalog loaded — ${count.toLocaleString()} recipes`, "success");
+    // Staleness is called out the moment the file lands, not left for the user
+    // to discover recipe-by-recipe (a stale Docs.json reads as an app bug).
+    for (const w of catalogHealth?.warnings ?? []) get().pushToast(w, "error");
     return true;
   },
 

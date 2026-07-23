@@ -457,6 +457,27 @@
   color: var(--signal-400);
   font-weight: 700;
 }
+/* Catalog provenance strip: a non-interactive status line (which game data is
+   live) + amber staleness warnings from the core's content fingerprint. */
+.data-menu-catalog {
+  padding: 6px 12px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-500);
+  background: var(--bp-900, var(--steel-900));
+  border-bottom: 1px solid var(--steel-700);
+}
+.data-menu-catalog-warn {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  color: var(--flow-warn);
+  background: color-mix(in srgb, var(--flow-warn) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--flow-warn) 35%, transparent);
+  border-radius: var(--radius);
+}
 /* The permanent step-① Docs.json row gets a left accent so it reads as the
    starting point; once a catalog loads it doubles as the swap-version action. */
 .data-menu-step {

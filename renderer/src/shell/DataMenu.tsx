@@ -38,6 +38,8 @@ export default function DataMenu() {
     const bv = s.gamedata.buildVersion;
     return !!bv && bv !== "fixture";
   });
+  const catalogHealth = useStore((s) => s.gamedata.catalogHealth);
+  const recipeCount = useStore((s) => Object.keys(s.gamedata.recipes).length);
   // "Sync from save" re-reads a previously imported save to reconcile — with
   // no imported save in the plan there is nothing to sync against, so the
   // control stays disabled until an import has landed (import-provenance
@@ -245,6 +247,29 @@ export default function DataMenu() {
                 Load in order: <b>① Upload Docs.json</b> → <b>② Import save</b>
               </div>
             )}
+            {/* Catalog provenance strip: which game data is live right now.
+                Docs.json has no version field, so the era label/warnings are
+                content-derived by the Rust core (catalog_health) — born from a
+                user running a pre-current Docs.json and reading the outdated
+                recipes as an app bug. Non-interactive; sits above step ① as
+                context for the upload row. */}
+            <div className="data-menu-catalog" data-testid="catalog-status">
+              <span className="mono">
+                CATALOG: {recipeCount.toLocaleString()} RECIPES ·{" "}
+                {catalogHealth?.fullCatalog
+                  ? catalogHealth.era
+                    ? `GAME DATA ${catalogHealth.era.toUpperCase()}`
+                    : "FULL GAME CATALOG"
+                  : catalogLoaded
+                    ? "YOUR DOCS.JSON"
+                    : "BUNDLED SAMPLE DATA"}
+              </span>
+              {catalogHealth?.warnings.map((w) => (
+                <div key={w} className="data-menu-catalog-warn" data-testid="catalog-warning">
+                  ⚠ {w}
+                </div>
+              ))}
+            </div>
             {__WASM_BACKEND__ && (
               <button
                 className="data-menu-item data-menu-step"

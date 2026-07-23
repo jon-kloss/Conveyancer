@@ -278,6 +278,15 @@ export interface GamePipe { className: string; displayName: string; capacityPerM
 
 export interface GameBuildable { className: string; displayName: string; nativeClass: string }
 
+/** Content-derived catalog provenance — Docs.json has no version field, so the
+ *  Rust side fingerprints the parsed catalog (era markers, known-current recipe
+ *  rates). `warnings` are user-ready staleness sentences shown verbatim. */
+export interface CatalogHealth {
+  fullCatalog: boolean;
+  era: string | null;
+  warnings: string[];
+}
+
 export interface GameData {
   items: Record<string, GameItem>;
   recipes: Record<string, GameRecipe>;
@@ -289,6 +298,8 @@ export interface GameData {
   /** Schematic class → recipe classes it unlocks (W2b; empty on trimmed catalogs). */
   schematics?: Record<string, string[]>;
   buildVersion: string;
+  /** Absent until a hydrate from a core that computes it (tolerant default). */
+  catalogHealth?: CatalogHealth;
 }
 
 // ---- world snapshot ----

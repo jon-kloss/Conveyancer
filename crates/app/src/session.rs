@@ -442,6 +442,9 @@ impl Session {
                 "belts": self.gamedata.belts,
                 "buildables": self.gamedata.buildables,
                 "buildVersion": self.gamedata.build_version,
+                // Content-derived provenance (Docs.json has no version field):
+                // era fingerprint + staleness warnings the DATA menu surfaces.
+                "catalogHealth": gamedata::docs::catalog_health(&self.gamedata),
             },
             "world": self.world,
             "planHash": self.plan_hash(),

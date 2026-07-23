@@ -1052,6 +1052,75 @@ pub fn extraction_rate(machine: &Machine, purity: &str, clock: f64, fluid: bool)
     per_cycle / cycle_time_s * 60.0 * purity_factor(purity) * clock
 }
 
+/// Content-derived catalog provenance. Docs.json carries NO version field, so
+/// "which game version is this data from?" can only be answered by
+/// fingerprinting what's inside. Born from a real user report: a stale
+/// Docs.json showed the pre-current 20/min Packaged Water recipe and read as
+/// an app bug — the app renders exactly what the catalog says, so staleness
+/// must be called out at the source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogHealth {
+    /// True when the catalog is big enough to be a real game export. The
+    /// bundled fixture is a hand-trimmed ~15-recipe sample; a real Docs.json
+    /// carries hundreds — marker-ABSENCE checks are only meaningful on the
+    /// latter, so trimmed catalogs get no era and no absence warnings.
+    pub full_catalog: bool,
+    /// Best-effort era label ("1.0 or newer" / "pre-1.0 (Update 8 or older)"),
+    /// None on trimmed catalogs where absence proves nothing.
+    pub era: Option<String>,
+    /// Human-readable staleness findings, surfaced verbatim by the UI.
+    /// Empty = the catalog looks current.
+    pub warnings: Vec<String>,
+}
+
+/// The remedy line every staleness warning ends with — one place to keep the
+/// path current with the README's install instructions.
+const FRESH_DOCS_HINT: &str = "Copy a fresh en-US.json from your game install's \
+     CommunityResources\\Docs folder and load it here.";
+
+pub fn catalog_health(gd: &GameData) -> CatalogHealth {
+    let full_catalog = gd.recipes.len() >= 100;
+    // Ficsonium shipped with 1.0 — on a full export its absence dates the file.
+    let era = full_catalog.then(|| {
+        if gd.items.contains_key("Desc_Ficsonium_C") {
+            "1.0 or newer".to_string()
+        } else {
+            "pre-1.0 (Update 8 or older)".to_string()
+        }
+    });
+    let mut warnings = Vec::new();
+    if era.as_deref().is_some_and(|e| e.starts_with("pre-1.0")) {
+        warnings.push(format!(
+            "This Docs.json predates Satisfactory 1.0 — recipes and rates won't \
+             match the current game. {FRESH_DOCS_HINT}"
+        ));
+    }
+    // Recipe-change canary: current Packaged Water runs at 60/min. An older
+    // rate here means the whole file predates the current recipe set, even
+    // when the era marker above says 1.0+ — this is the exact recipe a user
+    // caught in the wild, so it doubles as the tightest known staleness probe.
+    if let Some(r) = gd.recipes.get("Recipe_PackagedWater_C") {
+        if let Some((_, amount)) = r.products.first() {
+            if r.duration_s > 0.0 {
+                let per_min = amount * 60.0 / r.duration_s;
+                if (per_min - 60.0).abs() > 0.5 {
+                    warnings.push(format!(
+                        "This catalog carries an outdated Packaged Water recipe \
+                         ({per_min:.0}/min instead of the current 60/min) — the \
+                         Docs.json is from an older game version. {FRESH_DOCS_HINT}"
+                    ));
+                }
+            }
+        }
+    }
+    CatalogHealth {
+        full_catalog,
+        era,
+        warnings,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1743,6 +1812,106 @@ mod tests {
         assert_eq!(r.products[0].1 * per_min, 60.0);
         assert_eq!(r.ingredients[0].1 * per_min, 60.0, "60 m³ water/min");
         assert_eq!(r.ingredients[1].1 * per_min, 60.0, "60 canisters/min");
+        // ...and the staleness canary stays silent on the current shape.
+        assert!(catalog_health(&gd).warnings.is_empty());
+    }
+
+    #[test]
+    fn catalog_health_is_silent_on_the_trimmed_fixture() {
+        // The bundled sample is small on purpose — marker absence proves
+        // nothing there, so it gets no era and no warnings (a false "pre-1.0"
+        // banner on first launch would train users to ignore the real one).
+        let gd = parse_docs(include_str!("../assets/docs-fixture.json"), "test").unwrap();
+        let h = catalog_health(&gd);
+        assert!(!h.full_catalog);
+        assert_eq!(h.era, None);
+        assert!(h.warnings.is_empty());
+    }
+
+    #[test]
+    fn catalog_health_flags_old_packaged_water_even_on_a_small_catalog() {
+        // The recipe-change canary keys on the recipe's PRESENCE, not catalog
+        // size: old shape 1 water + 1 canister → 1 packaged over 3 s = 20/min.
+        let text = r#"[
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGResourceDescriptor'",
+            "Classes": [
+              { "ClassName": "Desc_Water_C", "mDisplayName": "Water", "mForm": "RF_LIQUID", "mStackSize": "SS_FLUID" }
+            ]
+          },
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'",
+            "Classes": [
+              { "ClassName": "Desc_FluidCanister_C", "mDisplayName": "Empty Canister", "mForm": "RF_SOLID", "mStackSize": "SS_MEDIUM" },
+              { "ClassName": "Desc_PackagedWater_C", "mDisplayName": "Packaged Water", "mForm": "RF_SOLID", "mStackSize": "SS_MEDIUM" }
+            ]
+          },
+          {
+            "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGRecipe'",
+            "Classes": [
+              {
+                "ClassName": "Recipe_PackagedWater_C",
+                "mDisplayName": "Packaged Water",
+                "mManufactoringDuration": "3.000000",
+                "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/RawResources/Water/Desc_Water.Desc_Water_C'\",Amount=1000),(ItemClass=\"/Game/FactoryGame/Resource/Parts/FluidCanister/Desc_FluidCanister.Desc_FluidCanister_C'\",Amount=1))",
+                "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/PackagedWater/Desc_PackagedWater.Desc_PackagedWater_C'\",Amount=1))",
+                "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/Packager/Build_Packager.Build_Packager_C\")"
+              }
+            ]
+          }
+        ]"#;
+        let gd = parse_docs(text, "test").unwrap();
+        let h = catalog_health(&gd);
+        assert_eq!(h.warnings.len(), 1);
+        assert!(
+            h.warnings[0].contains("Packaged Water") && h.warnings[0].contains("20/min"),
+            "names the recipe and the observed stale rate: {}",
+            h.warnings[0]
+        );
+        // A current-rate recipe stays silent — pinned via the synthetic
+        // current-shape catalog from packaged_water_parses_at_current_60_per_min.
+    }
+
+    #[test]
+    fn catalog_health_dates_full_catalogs_by_ficsonium() {
+        // Build a full-sized (≥100 recipe) synthetic catalog programmatically;
+        // era detection only speaks at that size.
+        let recipe = |i: u32| {
+            format!(
+                r#"{{"ClassName":"Recipe_Syn{i}_C","mDisplayName":"Syn {i}","mManufactoringDuration":"1.0",
+                    "mIngredients":"((ItemClass=\"/Game/X/Desc_OreIron.Desc_OreIron_C'\",Amount=1))",
+                    "mProduct":"((ItemClass=\"/Game/X/Desc_Syn{i}.Desc_Syn{i}_C'\",Amount=1))",
+                    "mProducedIn":"(\"/Game/X/Build_SmelterMk1.Build_SmelterMk1_C\")"}}"#
+            )
+        };
+        let recipes: Vec<String> = (0..120).map(recipe).collect();
+        let docs = |extra_item: &str| {
+            format!(
+                r#"[
+                  {{"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'","Classes":[
+                    {{"ClassName":"Desc_OreIron_C","mDisplayName":"Iron Ore","mForm":"RF_SOLID","mStackSize":"SS_MEDIUM"}}{extra_item}]}},
+                  {{"NativeClass":"/Script/CoreUObject.Class'/Script/FactoryGame.FGRecipe'","Classes":[{}]}}
+                ]"#,
+                recipes.join(",")
+            )
+        };
+        // With Ficsonium in the item catalog → 1.0+, no era warning.
+        let with = parse_docs(
+            &docs(r#",{"ClassName":"Desc_Ficsonium_C","mDisplayName":"Ficsonium","mForm":"RF_SOLID","mStackSize":"SS_MEDIUM"}"#),
+            "test",
+        )
+        .unwrap();
+        let h = catalog_health(&with);
+        assert!(h.full_catalog);
+        assert_eq!(h.era.as_deref(), Some("1.0 or newer"));
+        assert!(h.warnings.is_empty());
+        // Without it, a full catalog is dated pre-1.0 and warned about.
+        let without = parse_docs(&docs(""), "test").unwrap();
+        let h = catalog_health(&without);
+        assert!(h.full_catalog);
+        assert_eq!(h.era.as_deref(), Some("pre-1.0 (Update 8 or older)"));
+        assert_eq!(h.warnings.len(), 1);
+        assert!(h.warnings[0].contains("predates Satisfactory 1.0"));
     }
 
     #[test]
